@@ -15,7 +15,11 @@ public sealed record PageRequest
     public int Limit { get; }
 }
 
-public sealed record Page<T>(IReadOnlyList<T> Items, int TotalCount);
+public sealed record Page<T>(
+    IReadOnlyList<T> Items,
+    int TotalCount,
+    bool? HasMore = null,
+    string? SnapshotId = null);
 
 public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank, bool IsLearningHeadword = true);
 

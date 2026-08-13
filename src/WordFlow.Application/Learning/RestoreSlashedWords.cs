@@ -30,6 +30,6 @@ public sealed class RestoreSlashedWords
             return new Success<CardState>(commit.Card);
         }
         catch (LearningConcurrencyException exception) { return new Conflict<CardState>(exception.Message); }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception)) { return new StorageFailure<CardState>(exception.Message); }
+        catch (TransientStorageException exception) { return new StorageFailure<CardState>(exception.Message); }
     }
 }

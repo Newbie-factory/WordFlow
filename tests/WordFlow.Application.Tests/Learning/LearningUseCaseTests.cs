@@ -22,7 +22,7 @@ public sealed class LearningUseCaseTests
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current.Id, shortcut), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current, shortcut), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(expected, Assert.Single(store.Applied).Event.Action switch
@@ -43,7 +43,7 @@ public sealed class LearningUseCaseTests
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => handler.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), (RatingShortcut)99), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), (RatingShortcut)99), default));
 
         Assert.Empty(store.Applied);
         Assert.Equal(0, store.CardPageReads);
@@ -52,11 +52,11 @@ public sealed class LearningUseCaseTests
     [Fact]
     public async Task Failed_commit_never_reads_or_advances_the_next_card()
     {
-        var store = new FakeLearningStore([Card(1), Card(2)]) { ApplyFailure = new FakeDbException() };
+        var store = new FakeLearningStore([Card(1), Card(2)]) { ApplyFailure = new TransientStorageException("busy", new IOException()) };
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), RatingShortcut.F3), default);
 
         Assert.IsType<StorageFailure<LearningTransition>>(result);
         Assert.Equal(0, store.CardPageReads);
@@ -68,7 +68,7 @@ public sealed class LearningUseCaseTests
         var store = new FakeLearningStore([Card(1), Card(2)]);
         var handler = new SlashWord(store, Queue(store, [Word(1), Word(2)]), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Id(1)), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1)), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(LearningAction.Slash, Assert.Single(store.Applied).Event.Action);
@@ -125,12 +125,12 @@ public sealed class LearningUseCaseTests
         var submit = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         Assert.IsType<NotFound<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), RatingShortcut.F1), default));
 
         store.Cards[Id(1)] = Card(1);
         store.ApplyFailure = new LearningConcurrencyException(Id(1));
         Assert.IsType<Conflict<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), RatingShortcut.F1), default));
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public sealed class LearningUseCaseTests
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), new CardState(Id(1), null, Now), RatingShortcut.F3), default);
 
         var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
         Assert.Equal(Id(1), transition.Card.Id);
@@ -240,7 +240,8 @@ public sealed class LearningUseCaseTests
         {
             CardPageReads++;
             var ordered = Cards.Values.OrderBy(x => x.Id).ToArray();
-            return Task.FromResult(new Page<CardState>(ordered.Skip(page.Offset).Take(page.Limit).ToArray(), ordered.Length));
+            var items = ordered.Skip(page.Offset).Take(page.Limit).ToArray();
+            return Task.FromResult(new Page<CardState>(items, ordered.Length, page.Offset + items.Length < ordered.Length, "cards:v1"));
         }
 
         public Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct)
@@ -248,15 +249,25 @@ public sealed class LearningUseCaseTests
             var compensated = Events.Where(x => x.CompensatesEventId.HasValue).Select(x => x.CompensatesEventId!.Value).ToHashSet();
             return Task.FromResult(Events.LastOrDefault(x => x.Action != LearningAction.Undo && !compensated.Contains(x.EventId)));
         }
+
+        public Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct)
+        {
+            var duplicate = Applied.FirstOrDefault(x => x.CommandId == command.CommandId);
+            if (duplicate is not null) return Task.FromResult(new CommitResult(false, duplicate.Event.EventId, duplicate.Event.After));
+            var original = Events.LastOrDefault(x => x.Action != LearningAction.Undo && !Events.Any(u => u.CompensatesEventId == x.EventId))
+                ?? throw new LearningNotFoundException("There is no action to undo.");
+            var undo = new LearningActions(new RecordingScheduler(), new FakeTimeProvider(command.OccurredAt)).Undo(command.EventId, original);
+            return ApplyAsync(new LearningCommand(command.CommandId, undo), ct);
+        }
     }
 
     private sealed class FakeVocabularyRepository(IEnumerable<VocabularyWord> words) : IVocabularyRepository
     {
         private readonly VocabularyWord[] all = words.OrderBy(x => x.WordId).ToArray();
         public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
-            Task.FromResult(new Page<VocabularyWord>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length));
+            Task.FromResult(new Page<VocabularyWord>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length, page.Offset + Math.Min(page.Limit, Math.Max(0, all.Length - page.Offset)) < all.Length, "words:v1"));
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
-            Task.FromResult(new Page<VocabularySense>([], 0));
+            Task.FromResult(new Page<VocabularySense>([], 0, false, "senses:v1"));
     }
 }

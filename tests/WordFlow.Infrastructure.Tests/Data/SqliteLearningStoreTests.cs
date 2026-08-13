@@ -118,6 +118,81 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Atomic_undo_selects_deterministic_latest_uncompensated_event_across_cards()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("user.db"));
+        var store = new SqliteLearningStore(factory);
+        var first = Review(Id(50), InitialCard(), Rating.Good);
+        var secondCard = new CardState(Id(2), null, Now);
+        var second = Review(Id(51), secondCard, Rating.Hard);
+        await store.ApplyAsync(new LearningCommand(Id(150), first), default);
+        await store.ApplyAsync(new LearningCommand(Id(151), second), default);
+
+        var undoSecond = await store.UndoLatestAsync(new UndoLearningCommand(Id(152), Id(52), Now.AddMinutes(1)), default);
+        var undoFirst = await store.UndoLatestAsync(new UndoLearningCommand(Id(153), Id(53), Now.AddMinutes(2)), default);
+
+        Assert.Equal(second.Before, undoSecond.Card);
+        Assert.Equal(first.Before, undoFirst.Card);
+        await using var connection = await factory.OpenUserAsync(default);
+        var compensated = await StringsAsync(connection, "SELECT compensates_event_id FROM review_event WHERE action='Undo' ORDER BY rowid");
+        Assert.Equal(new[] { second.EventId.ToString("D"), first.EventId.ToString("D") }, compensated);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stale_displayed_rating_or_slash_conflicts_without_new_event(bool slash)
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("user.db"));
+        var store = new SqliteLearningStore(factory);
+        var displayed = InitialCard();
+        var intervening = Review(Id(60), displayed, Rating.Good);
+        await store.ApplyAsync(new LearningCommand(Id(160), intervening), default);
+        var staleEvent = slash
+            ? new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(1))).Slash(Id(61), displayed)
+            : Review(Id(61), displayed, Rating.Hard);
+
+        await Assert.ThrowsAsync<LearningConcurrencyException>(() =>
+            store.ApplyAsync(new LearningCommand(Id(161), staleEvent), default));
+
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+    }
+
+    [Fact]
+    public async Task Non_idempotent_event_identity_constraint_propagates_as_sqlite_error()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("user.db"));
+        var store = new SqliteLearningStore(factory);
+        var first = Review(Id(70), InitialCard(), Rating.Good);
+        await store.ApplyAsync(new LearningCommand(Id(170), first), default);
+        var reusedIdentity = Review(first.EventId, first.After, Rating.Hard);
+
+        var exception = await Assert.ThrowsAsync<SqliteException>(() =>
+            store.ApplyAsync(new LearningCommand(Id(171), reusedIdentity), default));
+
+        Assert.Equal(19, exception.SqliteErrorCode);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+    }
+
+    [Fact]
+    public async Task Malformed_learning_schema_propagates_as_sqlite_error()
+    {
+        var database = Database("malformed.db");
+        await using (var connection = new SqliteConnection($"Data Source={database};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(connection, "CREATE TABLE review_event(unexpected TEXT)");
+        }
+        var store = new SqliteLearningStore(new SqliteConnectionFactory(database));
+
+        var exception = await Assert.ThrowsAsync<SqliteException>(() => store.GetCommitAsync(Id(180), default));
+
+        Assert.Equal(1, exception.SqliteErrorCode);
+    }
+
+    [Fact]
     public async Task Stale_command_is_rejected_and_does_not_append_an_event()
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));

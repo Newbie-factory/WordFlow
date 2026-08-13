@@ -60,7 +60,7 @@ public sealed class GetNextCard
                 ?? new CardState(id, null, timeProvider.GetUtcNow());
             return new Success<NextCard?>(new NextCard(card, word));
         }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception))
+        catch (TransientStorageException exception)
         {
             return new StorageFailure<NextCard?>(exception.Message);
         }

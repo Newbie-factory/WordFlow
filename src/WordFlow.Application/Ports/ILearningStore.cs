@@ -22,6 +22,8 @@ public sealed record LearningCommand
 
 public sealed record CommitResult(bool Applied, Guid EventId, CardState Card);
 
+public sealed record UndoLearningCommand(Guid CommandId, Guid EventId, DateTimeOffset OccurredAt);
+
 public interface ILearningStore
 {
     Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct);
@@ -33,6 +35,8 @@ public interface ILearningStore
     Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct);
 
     Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct);
+
+    Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct);
 }
 
 public sealed class LearningConcurrencyException : InvalidOperationException
@@ -45,3 +49,8 @@ public sealed class LearningConcurrencyException : InvalidOperationException
 
     public Guid CardId { get; }
 }
+
+public sealed class LearningNotFoundException(string message) : InvalidOperationException(message);
+
+public sealed class TransientStorageException(string message, Exception innerException)
+    : IOException(message, innerException);

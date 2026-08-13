@@ -55,6 +55,10 @@ public sealed class RepositoryContractTests : IDisposable
             .Single(relation => relation.TargetWordId == synonym.Target && relation.RelationType == RelationKinds.Synonym
                 && relation.SourceSenseId == synonym.SourceSense && relation.TargetSenseId == synonym.TargetSense);
         Assert.Equal(synonym.Pos, synonymResult.PartOfSpeech);
+        var reverse = (await repository.GetRelationsAsync(synonym.Target, new PageRequest(0, 500), default)).Items
+            .Single(relation => relation.TargetWordId == synonym.Source && relation.RelationType == RelationKinds.Synonym
+                && relation.SourceSenseId == synonym.TargetSense && relation.TargetSenseId == synonym.SourceSense);
+        Assert.Equal(synonym.Pos, reverse.PartOfSpeech);
 
         var correction = await MisspellingRowAsync(relations);
         Assert.Contains((await repository.GetMisspellingsAsync(correction.Target, new PageRequest(0, 500), default)).Items,

@@ -54,10 +54,12 @@ public sealed class SqliteLearningStore : ILearningStore
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return new CommitResult(true, command.Event.EventId, command.Event.After);
         }
-        catch
+        catch (Exception exception)
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
             catch { /* Preserve the originating failure; disposal will close the connection. */ }
+            if (exception is SqliteException sqlite && IsTransient(sqlite))
+                throw new TransientStorageException("The learning store is temporarily unavailable.", sqlite);
             throw;
         }
     }
@@ -117,7 +119,10 @@ public sealed class SqliteLearningStore : ILearningStore
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         var cards = new List<CardState>();
         while (await reader.ReadAsync(ct).ConfigureAwait(false)) cards.Add(ReadCard(reader));
-        return new Page<CardState>(cards, total);
+        await using var version = connection.CreateCommand();
+        version.CommandText = "SELECT COALESCE(MAX(rowid),0) || ':' || COUNT(*) FROM review_event";
+        var snapshotId = Convert.ToString(await version.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture)!;
+        return new Page<CardState>(cards, total, page.Offset + cards.Count < total, $"cards:{snapshotId}");
     }
 
     public async Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct)
@@ -149,6 +154,62 @@ public sealed class SqliteLearningStore : ILearningStore
         {
             throw new InvalidDataException("The latest learning event contains corrupt persisted data.", exception);
         }
+    }
+
+    public async Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            var duplicate = await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false);
+            if (duplicate is not null)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return duplicate;
+            }
+
+            var original = await ReadLatestUndoableEventAsync(connection, transaction, ct).ConfigureAwait(false)
+                ?? throw new LearningNotFoundException("There is no action to undo.");
+            var current = await ReadCardAsync(connection, transaction, original.CardId, ct).ConfigureAwait(false);
+            EnsureExpectedSnapshot(current, original with { Before = original.After });
+            var undo = new ReviewEvent(
+                command.EventId, original.CardId, command.OccurredAt, LearningAction.Undo,
+                original.After, original.Before, original.EventId);
+            ValidateEvent(undo);
+            await InsertEventAsync(connection, transaction, new LearningCommand(command.CommandId, undo), ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.EventWritten);
+            await UpsertSnapshotAsync(connection, transaction, undo, ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return new CommitResult(true, undo.EventId, undo.After);
+        }
+        catch (Exception exception)
+        {
+            try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            if (exception is SqliteException sqlite && IsTransient(sqlite))
+                throw new TransientStorageException("The learning store is temporarily unavailable.", sqlite);
+            throw;
+        }
+    }
+
+    private static async Task<ReviewEvent?> ReadLatestUndoableEventAsync(
+        SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT r.event_id,r.card_id,r.occurred_at_utc,r.action,r.before_json,r.after_json,r.compensates_event_id
+            FROM review_event r
+            WHERE r.action <> 'Undo'
+              AND NOT EXISTS (SELECT 1 FROM review_event u WHERE u.compensates_event_id=r.event_id)
+            ORDER BY r.occurred_at_utc DESC,r.rowid DESC
+            LIMIT 1
+            """;
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        return ReadEvent(reader);
     }
 
     private static void ValidateEvent(ReviewEvent @event)
@@ -292,6 +353,15 @@ public sealed class SqliteLearningStore : ILearningStore
         Guid.TryParseExact(value, "D", out var id) && id != Guid.Empty
             ? id
             : throw new FormatException($"'{value}' is not a canonical non-empty GUID.");
+
+    private static ReviewEvent ReadEvent(SqliteDataReader reader) => new(
+        ParseId(reader.GetString(0)), ParseId(reader.GetString(1)), ParseUtc(reader.GetString(2)),
+        Enum.Parse<LearningAction>(reader.GetString(3), ignoreCase: false),
+        DeserializeCard(reader.GetString(4)), DeserializeCard(reader.GetString(5)),
+        reader.IsDBNull(6) ? null : ParseId(reader.GetString(6)));
+
+    private static bool IsTransient(SqliteException exception) =>
+        exception.SqliteErrorCode is 5 or 6 or 10 or 13 or 14 or 15;
 
     private sealed class CanonicalUtcConverter : JsonConverter<DateTimeOffset>
     {

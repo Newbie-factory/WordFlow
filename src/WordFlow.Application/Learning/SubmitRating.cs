@@ -9,7 +9,7 @@ public enum RatingShortcut { F1, F2, F3 }
 public sealed record SubmitRatingRequest(
     Guid CommandId,
     Guid EventId,
-    Guid CardId,
+    CardState ExpectedCard,
     RatingShortcut Shortcut,
     DailyPlan? Plan = null);
 
@@ -39,7 +39,7 @@ public sealed class SubmitRating
             _ => throw new ArgumentOutOfRangeException(nameof(request), request.Shortcut, "Only F1, F2, and F3 are rating actions."),
         };
         return await LearningMutation.CommitAndAdvanceAsync(
-            store, nextCard, request.CommandId, request.EventId, request.CardId,
+            store, nextCard, request.CommandId, request.EventId, request.ExpectedCard,
             card => actions.Review(request.EventId, card, rating), request.Plan ?? DailyPlan.Default, ct).ConfigureAwait(false);
     }
 }

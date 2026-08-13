@@ -25,7 +25,7 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         {
             items.Add(new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
-        return new Page<VocabularyWord>(items, total);
+        return new Page<VocabularyWord>(items, total, page.Offset + items.Count < total, $"vocabulary:{total}");
     }
 
     public async Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct)
@@ -60,7 +60,7 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
             if (string.IsNullOrWhiteSpace(senseId)) throw new InvalidDataException("Corpus sense ID is blank.");
             items.Add(new VocabularySense(senseId, ParseId(reader.GetString(1)), reader.GetString(2), reader.GetString(3)));
         }
-        return new Page<VocabularySense>(items, total);
+        return new Page<VocabularySense>(items, total, page.Offset + items.Count < total, $"senses:{wordId:D}:{total}");
     }
 
     private static async Task<int> CountAsync(SqliteConnection connection, string sql, CancellationToken ct, string? wordId = null)

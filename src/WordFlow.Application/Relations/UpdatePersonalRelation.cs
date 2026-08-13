@@ -38,7 +38,7 @@ public sealed class UpdatePersonalRelation
             await relations.SetOverrideAsync(relationOverride, ct).ConfigureAwait(false);
             return new Success<UserRelationOverride>(relationOverride);
         }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception))
+        catch (TransientStorageException exception)
         {
             return new StorageFailure<UserRelationOverride>(exception.Message);
         }

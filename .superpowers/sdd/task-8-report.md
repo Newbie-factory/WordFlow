@@ -61,3 +61,28 @@ It failed because the handler returned `NotFound<LearningTransition>` instead of
 
 - `GetNextCard` currently rebuilds the bounded daily queue by reading all card and vocabulary pages. This is correct for the current approximately 12,000-word offline corpus and keeps policy centralized, but a future substantially larger corpus may warrant a dedicated query-optimized queue port.
 - `WordFlow.App.Tests` remains an existing empty test assembly; all discoverable solution tests pass.
+
+## Independent-review remediation
+
+The review reported four Important and two Minor findings. All six are addressed.
+
+- Atomic undo: `ILearningStore.UndoLatestAsync` now opens one immediate transaction, resolves command idempotency, selects the deterministic latest uncompensated event, validates its current projection, appends the compensation, updates the card snapshot, and commits once. Equal timestamps use `rowid DESC`; already compensated originals are skipped. Different-card actions cannot interleave after selection because the write transaction owns the complete operation.
+- Displayed-state concurrency: rating and slash requests now carry the exact displayed `CardState`. The application creates `ReviewEvent.Before` from that snapshot, and the existing store transaction compares it against the persisted projection before insertion. Real SQLite tests commit an intervening update and prove stale rating/slash conflict with no second event.
+- Error boundary: the Application catches only explicit `TransientStorageException`. The SQLite learning adapter maps only availability/resource codes (busy, locked, I/O, full, cannot-open, protocol) to that type. Schema error 1, constraint error 19, corrupt persisted data, cancellation, and programmer/domain faults propagate.
+- Complete paging: `Page<T>` now carries mandatory-for-complete-read `HasMore` and `SnapshotId`. The helper rejects missing/changeable snapshots, changing/negative/underreported totals, continuation disagreement, premature empties, overfull pages, duplicates/ignored offsets, and non-progress. Adversarial tests cover all cases including concurrent mutation; repositories provide stable identities for each logical result set.
+- Confusables: tests enumerate all six supported kinds and read 602 relations plus 501 misspellings across pages.
+- Adapter evidence: reverse bidirectional synonyms assert swapped sense IDs/POS; atomic undo tests cover two cards, equal timestamps, insertion-order tie-breaking, and compensated-event exclusion.
+
+Remediation RED evidence includes the initial compile failure for missing `UndoLearningCommand`/atomic store API and wished-for displayed-snapshot request shape, followed by failing adversarial paging and broad fake-`DbException` expectations while the old boundary remained.
+
+Final remediation verification:
+
+- Application Release: 37/37 passed.
+- Domain Release: 129/129 passed.
+- Infrastructure Release: 60/60 passed.
+- Full Release solution: 226 discoverable tests passed; App test assembly remains empty.
+- Release build: 0 warnings, 0 errors.
+- Python vocabulary suite: 54/54 passed.
+- `git diff --check`: clean apart from informational Windows line-ending notices.
+
+No new blocking concern. Snapshot identity computation for relation pages is intentionally exhaustive because complete-read correctness is prioritized and current per-source relation sets are small.

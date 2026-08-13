@@ -68,6 +68,42 @@ public sealed class RelationUseCaseTests
     }
 
     [Fact]
+    public async Task Confusables_include_every_supported_kind_across_multiple_pages()
+    {
+        var source = Word(1, "source");
+        var kinds = RelationKinds.Confusable.OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        var words = Enumerable.Range(1, 603).Select(i => Word(i, $"word-{i:000}")).ToArray();
+        var rows = Enumerable.Range(2, 602).Select(i => new WordRelation(
+            source.WordId, Id(i), kinds[(i - 2) % kinds.Length], RelationDirection.Forward)).ToArray();
+        var corrections = Enumerable.Range(1, 501).Select(i => new MisspellingRelation($"typo-{i:000}", source.WordId));
+
+        var result = await new GetConfusables(new FakeRelations(rows, corrections), new FakeVocabulary(words, []), TimeProvider.System)
+            .HandleAsync(new(source.WordId), default);
+
+        var items = Assert.IsType<Success<IReadOnlyList<ConfusableItem>>>(result).Value;
+        Assert.Equal(1103, items.Count);
+        Assert.Equal(kinds, items.Where(x => x.WordId.HasValue).Select(x => x.RelationType).Distinct().OrderBy(x => x, StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(PagingFault.UnderreportedTotal)]
+    [InlineData(PagingFault.ChangingTotal)]
+    [InlineData(PagingFault.PrematureEmpty)]
+    [InlineData(PagingFault.IgnoredOffset)]
+    [InlineData(PagingFault.Overfull)]
+    [InlineData(PagingFault.ConcurrentMutation)]
+    public async Task Malformed_pages_propagate_as_corrupt_data(PagingFault fault)
+    {
+        var source = Word(1, "source");
+        var words = Enumerable.Range(1, 603).Select(i => Word(i, $"word-{i:000}")).ToArray();
+        var rows = Enumerable.Range(2, 602).Select(i => new WordRelation(source.WordId, Id(i), RelationKinds.PersonalConfusable, RelationDirection.Forward)).ToArray();
+        var repository = new FaultyRelations(rows, fault);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => new GetConfusables(repository, new FakeVocabulary(words, []), TimeProvider.System)
+            .HandleAsync(new(source.WordId), default));
+    }
+
+    [Fact]
     public async Task Personal_override_can_add_or_suppress_and_is_directionally_exact()
     {
         var source = Word(1, "source");
@@ -96,7 +132,7 @@ public sealed class RelationUseCaseTests
         var handler = new GetSynonyms(repository, vocabulary, TimeProvider.System);
         Assert.IsType<NotFound<IReadOnlyList<SynonymGroup>>>(await handler.HandleAsync(new(Id(1)), default));
 
-        vocabulary.Failure = new FakeDbException();
+        vocabulary.Failure = new TransientStorageException("busy", new IOException());
         Assert.IsType<StorageFailure<IReadOnlyList<SynonymGroup>>>(await handler.HandleAsync(new(Id(1)), default));
 
         vocabulary.Failure = new OperationCanceledException();
@@ -131,7 +167,7 @@ public sealed class RelationUseCaseTests
         private readonly VocabularySense[] allSenses = senses.ToArray();
         public Exception? Failure { get; set; }
         public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
-            Task.FromResult(new Page<VocabularyWord>(allWords.Skip(page.Offset).Take(page.Limit).ToArray(), allWords.Length));
+            Task.FromResult(new Page<VocabularyWord>(allWords.Skip(page.Offset).Take(page.Limit).ToArray(), allWords.Length, page.Offset + Math.Min(page.Limit, Math.Max(0, allWords.Length - page.Offset)) < allWords.Length, "words:v1"));
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct)
         {
             if (Failure is not null) throw Failure;
@@ -140,7 +176,8 @@ public sealed class RelationUseCaseTests
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct)
         {
             var matches = allSenses.Where(x => x.WordId == wordId).ToArray();
-            return Task.FromResult(new Page<VocabularySense>(matches.Skip(page.Offset).Take(page.Limit).ToArray(), matches.Length));
+            var items = matches.Skip(page.Offset).Take(page.Limit).ToArray();
+            return Task.FromResult(new Page<VocabularySense>(items, matches.Length, page.Offset + items.Length < matches.Length, "senses:v1"));
         }
     }
 
@@ -159,13 +196,15 @@ public sealed class RelationUseCaseTests
                 else merged.Remove((item.TargetWordId, item.RelationType));
             }
             var all = merged.Values.OrderBy(x => x.RelationType, StringComparer.Ordinal).ThenBy(x => x.TargetWordId).ToArray();
-            return Task.FromResult(new Page<WordRelation>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length));
+            var items = all.Skip(page.Offset).Take(page.Limit).ToArray();
+            return Task.FromResult(new Page<WordRelation>(items, all.Length, page.Offset + items.Length < all.Length, "relations:v1"));
         }
 
         public Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
         {
             var all = corrections.Where(x => x.TargetWordId == targetWordId).OrderBy(x => x.Spelling, StringComparer.Ordinal).ToArray();
-            return Task.FromResult(new Page<MisspellingRelation>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length));
+            var items = all.Skip(page.Offset).Take(page.Limit).ToArray();
+            return Task.FromResult(new Page<MisspellingRelation>(items, all.Length, page.Offset + items.Length < all.Length, "misspellings:v1"));
         }
 
         public Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct)
@@ -174,5 +213,26 @@ public sealed class RelationUseCaseTests
             Overrides.Add(relationOverride);
             return Task.CompletedTask;
         }
+    }
+
+    public enum PagingFault { UnderreportedTotal, ChangingTotal, PrematureEmpty, IgnoredOffset, Overfull, ConcurrentMutation }
+
+    private sealed class FaultyRelations(WordRelation[] rows, PagingFault fault) : IRelationRepository
+    {
+        private int calls;
+        public Task<Page<WordRelation>> GetRelationsAsync(Guid sourceWordId, PageRequest page, CancellationToken ct)
+        {
+            calls++;
+            if (fault == PagingFault.PrematureEmpty && calls == 2) return Task.FromResult(new Page<WordRelation>([], rows.Length, true, "fault:v1"));
+            var offset = fault == PagingFault.IgnoredOffset ? 0 : page.Offset;
+            var take = fault == PagingFault.Overfull ? page.Limit + 1 : page.Limit;
+            var total = fault == PagingFault.UnderreportedTotal ? 500 : fault == PagingFault.ChangingTotal && calls > 1 ? rows.Length + 1 : rows.Length;
+            var hasMore = fault == PagingFault.UnderreportedTotal ? true : (bool?)null;
+            var items = rows.Skip(offset).Take(take).ToArray();
+            var snapshot = fault == PagingFault.ConcurrentMutation && calls > 1 ? "fault:v2" : "fault:v1";
+            return Task.FromResult(new Page<WordRelation>(items, total, hasMore ?? offset + items.Length < total, snapshot));
+        }
+        public Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct) => Task.FromResult(new Page<MisspellingRelation>([], 0, false, "misspellings:v1"));
+        public Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct) => Task.CompletedTask;
     }
 }

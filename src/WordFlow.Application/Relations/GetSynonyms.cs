@@ -70,7 +70,7 @@ public sealed class GetSynonyms
                 }).ToArray();
             return new Success<IReadOnlyList<SynonymGroup>>(groups);
         }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception))
+        catch (TransientStorageException exception)
         {
             return new StorageFailure<IReadOnlyList<SynonymGroup>>(exception.Message);
         }

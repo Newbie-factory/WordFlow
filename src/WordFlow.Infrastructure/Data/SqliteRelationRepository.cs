@@ -70,7 +70,9 @@ public sealed class SqliteRelationRepository : IRelationRepository
 
         var ordered = merged.Values.OrderBy(relation => relation.RelationType, StringComparer.Ordinal)
             .ThenBy(relation => relation.TargetWordId).ToArray();
-        return new Page<WordRelation>(ordered.Skip(page.Offset).Take(page.Limit).ToArray(), ordered.Length);
+        var items = ordered.Skip(page.Offset).Take(page.Limit).ToArray();
+        var snapshot = string.Join('|', ordered.Select(x => $"{x.TargetWordId:D}:{x.RelationType}:{x.SourceSenseId}:{x.TargetSenseId}:{x.PartOfSpeech}"));
+        return new Page<WordRelation>(items, ordered.Length, page.Offset + items.Length < ordered.Length, snapshot.Length == 0 ? "relations:empty" : snapshot);
     }
 
     public async Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
@@ -95,7 +97,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
             if (string.IsNullOrWhiteSpace(spelling)) throw new InvalidDataException("A misspelling source cannot be blank.");
             items.Add(new MisspellingRelation(spelling, ParseId(reader.GetString(1))));
         }
-        return new Page<MisspellingRelation>(items, total);
+        return new Page<MisspellingRelation>(items, total, page.Offset + items.Count < total, $"misspellings:{targetWordId:D}:{total}");
     }
 
     public async Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct)

@@ -45,7 +45,7 @@ public sealed class GetConfusables
                 .ThenBy(x => x.WordId).ToArray();
             return new Success<IReadOnlyList<ConfusableItem>>(ordered);
         }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception))
+        catch (TransientStorageException exception)
         {
             return new StorageFailure<IReadOnlyList<ConfusableItem>>(exception.Message);
         }

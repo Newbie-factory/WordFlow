@@ -11,7 +11,7 @@ internal static class LearningMutation
         GetNextCard nextCard,
         Guid commandId,
         Guid eventId,
-        Guid cardId,
+        CardState expectedCard,
         Func<CardState, ReviewEvent> createEvent,
         DailyPlan plan,
         CancellationToken ct)
@@ -26,9 +26,9 @@ internal static class LearningMutation
             }
             else
             {
-                var card = await nextCard.ResolveCardAsync(cardId, ct).ConfigureAwait(false);
-                if (card is null) return new NotFound<LearningTransition>($"Card {cardId:D} was not found.");
-                commit = await store.ApplyAsync(new LearningCommand(commandId, createEvent(card)), ct).ConfigureAwait(false);
+                var known = await nextCard.ResolveCardAsync(expectedCard.Id, ct).ConfigureAwait(false);
+                if (known is null) return new NotFound<LearningTransition>($"Card {expectedCard.Id:D} was not found.");
+                commit = await store.ApplyAsync(new LearningCommand(commandId, createEvent(expectedCard)), ct).ConfigureAwait(false);
             }
 
             var next = await nextCard.HandleAsync(new GetNextCardRequest(plan), ct).ConfigureAwait(false);
@@ -43,7 +43,7 @@ internal static class LearningMutation
         {
             return new Conflict<LearningTransition>(exception.Message);
         }
-        catch (Exception exception) when (ExpectedStorageFailure.Is(exception))
+        catch (TransientStorageException exception)
         {
             return new StorageFailure<LearningTransition>(exception.Message);
         }
