@@ -22,7 +22,7 @@ public sealed class SlashLifecycleTests
     }
 
     [Fact]
-    public void Third_same_day_failure_activates_hard_word_protection_and_count_is_capped()
+    public void Third_same_day_failure_activates_hard_word_protection()
     {
         var engine = EngineAt(Now);
         var card = ActiveCard();
@@ -30,11 +30,47 @@ public sealed class SlashLifecycleTests
         card = engine.Review(Id(101), card, Rating.Again).After;
         card = engine.Review(Id(102), card, Rating.Again).After;
         card = engine.Review(Id(103), card, Rating.Again).After;
-        card = engine.Review(Id(104), card, Rating.Again).After;
 
         Assert.Equal(3, card.SameDayFailureCount);
         Assert.Equal(new DateTimeOffset(2026, 8, 14, 0, 0, 0, TimeSpan.Zero), card.HardWordProtectedUntil);
         Assert.Equal(Now.AddMinutes(10), card.DueAt);
+    }
+
+    [Theory]
+    [InlineData(Rating.Again)]
+    [InlineData(Rating.Hard)]
+    [InlineData(Rating.Good)]
+    public void Rating_transitions_are_rejected_before_protection_ends(Rating rating)
+    {
+        var protectedCard = ProtectedCard();
+        var engine = EngineAt(Now.AddHours(1));
+
+        Assert.Throws<InvalidOperationException>(() => engine.Review(Id(104), protectedCard, rating));
+        Assert.Equal(ProtectedCard(), protectedCard);
+    }
+
+    [Fact]
+    public void Rating_transition_is_allowed_at_exact_protection_end_instant()
+    {
+        var protectedCard = ProtectedCard();
+        var protectionEnd = protectedCard.HardWordProtectedUntil!.Value;
+
+        var review = EngineAt(protectionEnd).Review(Id(105), protectedCard, Rating.Good);
+
+        Assert.Equal(protectionEnd, review.OccurredAt);
+        Assert.Equal(LearningAction.Good, review.Action);
+    }
+
+    [Fact]
+    public void Slash_remains_allowed_during_hard_word_protection()
+    {
+        var protectedCard = ProtectedCard();
+
+        var slash = EngineAt(Now.AddHours(1)).Slash(Id(106), protectedCard);
+
+        Assert.Equal(LearningAction.Slash, slash.Action);
+        Assert.True(slash.After.Slash.IsSlashed);
+        Assert.Equal(protectedCard.MemoryState, slash.After.MemoryState);
     }
 
     [Fact]
@@ -136,6 +172,13 @@ public sealed class SlashLifecycleTests
             Id(1),
             new MemoryState(4.5, 12, Now.AddDays(-2)),
             Now.AddDays(5));
+
+    private static CardState ProtectedCard() => ActiveCard() with
+    {
+        SameDayFailureCount = 3,
+        FailureDayUtc = DateOnly.FromDateTime(Now.UtcDateTime),
+        HardWordProtectedUntil = new DateTimeOffset(2026, 8, 14, 0, 0, 0, TimeSpan.Zero),
+    };
 
     private static Guid Id(int value) => new($"00000000-0000-0000-0000-{value:D12}");
 

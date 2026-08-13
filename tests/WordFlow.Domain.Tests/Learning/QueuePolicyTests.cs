@@ -8,13 +8,25 @@ public sealed class QueuePolicyTests
     private static readonly DateTimeOffset Now = new(2026, 8, 13, 8, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void Default_plan_uses_forty_new_and_a_soft_one_hundred_twenty_review_limit()
+    public void Default_plan_uses_forty_new_and_a_soft_one_hundred_twenty_review_target()
     {
         var plan = DailyPlan.Default;
 
         Assert.Equal(40, plan.NewLimit);
-        Assert.Equal(120, plan.ReviewLimit);
-        Assert.True(plan.IsReviewLimitSoft);
+        Assert.Equal(120, plan.SoftReviewLimit);
+    }
+
+    [Fact]
+    public void Default_plan_builds_a_suggested_queue_up_to_its_soft_review_target()
+    {
+        var reviews = Enumerable.Range(1, 121)
+            .Select(index => Card(index, Now.AddDays(-index), 2))
+            .ToArray();
+
+        var queue = new QueuePolicy(new Fsrs6Scheduler()).Build(
+            new QueueInput(reviews, Array.Empty<Guid>(), DailyPlan.Default, Now));
+
+        Assert.Equal(DailyPlan.Default.SoftReviewLimit, queue.Count);
     }
 
     [Fact]
@@ -73,6 +85,29 @@ public sealed class QueuePolicyTests
     }
 
     [Fact]
+    public void Every_known_review_card_is_excluded_from_new_candidates_even_when_not_selected()
+    {
+        var selected = Card(1, Now.AddDays(-30), 1);
+        var capped = Card(2, Now.AddDays(-1), 20);
+        var future = Card(3, Now.AddMinutes(1), 2);
+        var slashed = LearningActions.Slash(Card(4, Now.AddMinutes(-1), 2), Now.AddHours(-1));
+        var protectedCard = Card(5, Now.AddMinutes(-1), 2) with
+        {
+            HardWordProtectedUntil = Now.AddHours(1),
+        };
+        var allKnownIds = new[] { selected.Id, capped.Id, future.Id, slashed.Id, protectedCard.Id };
+
+        var queue = new QueuePolicy(new Fsrs6Scheduler()).Build(
+            new QueueInput(
+                new[] { selected, capped, future, slashed, protectedCard },
+                allKnownIds.Append(Id(6)),
+                new DailyPlan(10, 1),
+                Now));
+
+        Assert.Equal(new[] { selected.Id, Id(6) }, queue);
+    }
+
+    [Fact]
     public void Duplicate_due_entries_do_not_consume_the_review_limit()
     {
         var highRisk = Card(1, Now.AddDays(-2), 1);
@@ -86,6 +121,30 @@ public sealed class QueuePolicyTests
                 Now));
 
         Assert.Equal(new[] { highRisk.Id, lowerRisk.Id }, queue);
+    }
+
+    [Fact]
+    public void Conflicting_snapshots_for_one_card_are_rejected_regardless_of_input_order()
+    {
+        var first = Card(1, Now.AddDays(-1), 1);
+        var conflicting = first with
+        {
+            MemoryState = new MemoryState(
+                first.MemoryState!.Difficulty + 1,
+                first.MemoryState.StabilityDays + 5,
+                first.MemoryState.LastReviewAt),
+        };
+
+        Assert.Throws<ArgumentException>(() => new QueueInput(
+            new[] { first, conflicting },
+            Array.Empty<Guid>(),
+            DailyPlan.Default,
+            Now));
+        Assert.Throws<ArgumentException>(() => new QueueInput(
+            new[] { conflicting, first },
+            Array.Empty<Guid>(),
+            DailyPlan.Default,
+            Now));
     }
 
     [Fact]

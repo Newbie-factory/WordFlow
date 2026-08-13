@@ -14,6 +14,22 @@ public sealed class QueueInput
         ArgumentNullException.ThrowIfNull(newCandidates);
 
         DueCards = dueCards.ToArray();
+        if (DueCards.Any(card => card is null))
+        {
+            throw new ArgumentException("Due cards cannot contain null snapshots.", nameof(dueCards));
+        }
+
+        foreach (var group in DueCards.GroupBy(card => card.Id))
+        {
+            var snapshot = group.First();
+            if (group.Skip(1).Any(candidate => candidate != snapshot))
+            {
+                throw new ArgumentException(
+                    $"Card {group.Key} has conflicting due-card snapshots.",
+                    nameof(dueCards));
+            }
+        }
+
         NewCandidates = newCandidates.ToArray();
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         CurrentInstant = currentInstant.ToUniversalTime();
@@ -58,11 +74,11 @@ public sealed class QueuePolicy
             .OrderByDescending(entry => entry.Risk)
             .ThenBy(entry => entry.Card.DueAt)
             .ThenBy(entry => entry.Card.Id)
-            .Take(input.DailyPlan.ReviewLimit)
+            .Take(input.DailyPlan.SoftReviewLimit)
             .Select(entry => entry.Card.Id)
             .ToArray();
 
-        var included = reviews.ToHashSet();
+        var included = input.DueCards.Select(card => card.Id).ToHashSet();
         var newCards = input.NewCandidates
             .Where(id => id != Guid.Empty && included.Add(id))
             .Distinct()

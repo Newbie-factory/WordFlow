@@ -26,6 +26,12 @@ public sealed class LearningActions
         }
 
         var now = timeProvider.GetUtcNow().ToUniversalTime();
+        if (card.HardWordProtectedUntil is { } protectedUntil
+            && protectedUntil.ToUniversalTime() > now)
+        {
+            throw new InvalidOperationException("A hard-word-protected card cannot be reviewed before protection ends.");
+        }
+
         var schedule = scheduler.Review(card.MemoryState, rating, now, 0.90);
         var after = card with
         {
