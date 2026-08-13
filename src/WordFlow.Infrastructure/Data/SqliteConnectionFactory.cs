@@ -83,6 +83,13 @@ public sealed class SqliteConnectionFactory
 
     private static async Task ConfigureAsync(SqliteConnection connection, bool writable, CancellationToken ct)
     {
+        if (writable)
+        {
+            await using var json = connection.CreateCommand();
+            json.CommandText = "SELECT json_valid('{\"supported\":true}')";
+            if (Convert.ToInt32(await json.ExecuteScalarAsync(ct).ConfigureAwait(false)) != 1)
+                throw new PlatformNotSupportedException("SQLite JSON functions are required for snapshot integrity.");
+        }
         await using var command = connection.CreateCommand();
         command.CommandText = writable
             ? $"PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout={BusyTimeoutMilliseconds}; PRAGMA journal_mode=WAL;"

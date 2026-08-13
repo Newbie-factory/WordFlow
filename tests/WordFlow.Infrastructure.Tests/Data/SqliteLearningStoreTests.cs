@@ -235,6 +235,26 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Single(Directory.GetFiles(directory, "upgrade.db.v1.*.backup"));
     }
 
+    [Fact]
+    public async Task Version_two_upgrade_rejects_preexisting_snapshot_row_json_identity_mismatch()
+    {
+        var database = Database("corrupt-upgrade.db");
+        var factory = new SqliteConnectionFactory(database);
+        var initialSql = await File.ReadAllTextAsync(Path.Combine(FindRepositoryRoot(), "src", "WordFlow.Infrastructure", "Data", "Migrations", "001_initial.sql"));
+        await new MigrationRunner(factory, [new SqliteMigration(1, "initial", initialSql)]).MigrateAsync(default);
+        await using (var connection = await factory.OpenUserAsync(default))
+        {
+            await ExecuteAsync(connection, $"INSERT INTO fsrs_parameter_snapshot VALUES ('{Id(70):D}','PendingPreview','{{\"Id\":\"{Id(71):D}\",\"Status\":\"PendingPreview\",\"CreatedAt\":\"{Now.UtcDateTime:O}\"}}','{Now.UtcDateTime:O}')");
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() => new MigrationRunner(factory).MigrateAsync(default));
+
+        await using var verify = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(0L, await ScalarAsync(verify, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='fsrs_parameter_snapshot_insert_consistency'"));
+        Assert.Single(Directory.GetFiles(directory, "corrupt-upgrade.db.v1.*.backup"));
+    }
+
     private async Task<SqliteConnectionFactory> CreateMigratedFactoryAsync(string userDatabase)
     {
         var factory = new SqliteConnectionFactory(userDatabase);

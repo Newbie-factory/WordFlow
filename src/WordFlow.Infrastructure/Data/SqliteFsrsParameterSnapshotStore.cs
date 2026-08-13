@@ -189,6 +189,12 @@ public sealed class SqliteFsrsParameterSnapshotStore : IFsrsParameterSnapshotSto
         try
         {
             connection.Open();
+            using (var json = connection.CreateCommand())
+            {
+                json.CommandText = "SELECT json_valid('{\"supported\":true}')";
+                if (Convert.ToInt32(json.ExecuteScalar()) != 1)
+                    throw new PlatformNotSupportedException("SQLite JSON functions are required for snapshot integrity.");
+            }
             using var command = connection.CreateCommand();
             command.CommandText = "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=5000;";
             command.ExecuteNonQuery();
