@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 
 namespace WordFlow.Domain.Scheduling;
 
@@ -31,6 +32,20 @@ public sealed class FsrsParameters
         0.1542,
     ];
 
+    private static readonly double[] OfficialLowerBounds =
+    [
+        0.001, 0.001, 0.001, 0.001, 1.0, 0.001, 0.001,
+        0.001, 0.0, 0.0, 0.001, 0.001, 0.001, 0.001,
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.1,
+    ];
+
+    private static readonly double[] OfficialUpperBounds =
+    [
+        100.0, 100.0, 100.0, 100.0, 10.0, 4.0, 4.0,
+        0.75, 4.5, 0.8, 3.5, 5.0, 0.25, 0.9,
+        4.0, 1.0, 6.0, 2.0, 2.0, 0.8, 0.8,
+    ];
+
     private readonly double[] values;
 
     public FsrsParameters(IEnumerable<double> values)
@@ -45,15 +60,19 @@ public sealed class FsrsParameters
 
         for (var index = 0; index < this.values.Length; index++)
         {
-            if (!double.IsFinite(this.values[index]))
+            var value = this.values[index];
+            var lower = OfficialLowerBounds[index];
+            var upper = OfficialUpperBounds[index];
+            if (!double.IsFinite(value) || value < lower || value > upper)
             {
-                throw new ArgumentOutOfRangeException(nameof(values), $"FSRS parameter {index} must be finite.");
+                throw new ArgumentOutOfRangeException(
+                    nameof(values),
+                    value,
+                    $"FSRS parameter at index {index} with value "
+                    + $"{value.ToString("R", CultureInfo.InvariantCulture)} must be finite and within "
+                    + $"[{lower.ToString("R", CultureInfo.InvariantCulture)}, "
+                    + $"{upper.ToString("R", CultureInfo.InvariantCulture)}].");
             }
-        }
-
-        if (this.values[20] <= 0.0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(values), "The forgetting-curve decay parameter must be positive.");
         }
 
         Values = new ReadOnlyCollection<double>(this.values);

@@ -215,7 +215,14 @@ public sealed class Fsrs6Scheduler : IFsrsScheduler
     private static void ValidateState(MemoryState state)
     {
         EnsureFinite(state.Difficulty, nameof(state.Difficulty));
-        EnsureFinitePositive(state.StabilityDays, nameof(state.StabilityDays));
+        if (!double.IsFinite(state.StabilityDays) || state.StabilityDays < MinimumStabilityDays)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(state),
+                state.StabilityDays,
+                $"Memory-state stability must be finite and at least {MinimumStabilityDays} day.");
+        }
+
         if (state.Difficulty < 1.0 || state.Difficulty > 10.0)
         {
             throw new ArgumentOutOfRangeException(nameof(state), "Memory-state difficulty must be within [1, 10].");

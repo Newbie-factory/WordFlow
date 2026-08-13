@@ -4,6 +4,46 @@ namespace WordFlow.Domain.Tests.Scheduling;
 
 public sealed class Fsrs6InvariantTests
 {
+    private static readonly (double Lower, double Upper)[] OfficialParameterBounds =
+    [
+        (0.001, 100.0), (0.001, 100.0), (0.001, 100.0), (0.001, 100.0),
+        (1.0, 10.0), (0.001, 4.0), (0.001, 4.0), (0.001, 0.75),
+        (0.0, 4.5), (0.0, 0.8), (0.001, 3.5), (0.001, 5.0),
+        (0.001, 0.25), (0.001, 0.9), (0.0, 4.0), (0.0, 1.0),
+        (1.0, 6.0), (0.0, 2.0), (0.0, 2.0), (0.0, 0.8), (0.1, 0.8),
+    ];
+
+    public static TheoryData<int, double> OfficialAcceptedParameterValues
+    {
+        get
+        {
+            var data = new TheoryData<int, double>();
+            for (var index = 0; index < OfficialParameterBounds.Length; index++)
+            {
+                data.Add(index, OfficialParameterBounds[index].Lower);
+                data.Add(index, OfficialParameterBounds[index].Upper);
+            }
+
+            return data;
+        }
+    }
+
+    public static TheoryData<int, double, double, double> OfficialRejectedParameterValues
+    {
+        get
+        {
+            var data = new TheoryData<int, double, double, double>();
+            for (var index = 0; index < OfficialParameterBounds.Length; index++)
+            {
+                var (lower, upper) = OfficialParameterBounds[index];
+                data.Add(index, Math.BitDecrement(lower), lower, upper);
+                data.Add(index, Math.BitIncrement(upper), lower, upper);
+            }
+
+            return data;
+        }
+    }
+
     [Fact]
     public void Ten_thousand_deterministic_histories_preserve_scheduler_invariants()
     {
@@ -106,6 +146,29 @@ public sealed class Fsrs6InvariantTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new FsrsParameters(nonFinite));
     }
 
+    [Theory]
+    [MemberData(nameof(OfficialAcceptedParameterValues))]
+    public void Every_official_parameter_boundary_is_accepted(int index, double boundary)
+    {
+        var values = FsrsParameters.Default.Values.ToArray();
+        values[index] = boundary;
+
+        var parameters = new FsrsParameters(values);
+
+        Assert.Equal(boundary, parameters.Values[index]);
+    }
+
+    [Theory]
+    [MemberData(nameof(OfficialRejectedParameterValues))]
+    public void Every_parameter_value_just_outside_official_bounds_is_rejected(
+        int index,
+        double value,
+        double lower,
+        double upper)
+    {
+        AssertParameterRangeError(index, value, lower, upper);
+    }
+
     [Fact]
     public void Parameter_values_are_immutable_snapshots()
     {
@@ -119,14 +182,36 @@ public sealed class Fsrs6InvariantTests
     }
 
     [Fact]
-    public void Finite_but_unrepresentable_interval_is_rejected_instead_of_wrapping()
+    public void Due_instant_outside_datetimeoffset_range_is_rejected_instead_of_wrapping()
     {
-        var values = FsrsParameters.Default.Values.ToArray();
-        values[2] = 3_000_000_000.0;
-        var scheduler = new Fsrs6Scheduler(new FsrsParameters(values));
-        var reviewedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var scheduler = new Fsrs6Scheduler();
+        var reviewedAt = DateTimeOffset.MaxValue.AddDays(-1);
 
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => scheduler.Review(null, Rating.Good, reviewedAt, 0.85));
+            () => scheduler.Review(null, Rating.Good, reviewedAt, 0.90));
+    }
+
+    [Fact]
+    public void Persisted_stability_accepts_official_minimum_and_rejects_just_below_it()
+    {
+        var scheduler = new Fsrs6Scheduler();
+        var reviewedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var atMinimum = new MemoryState(5.0, 0.001, reviewedAt);
+        var belowMinimum = new MemoryState(5.0, Math.BitDecrement(0.001), reviewedAt);
+
+        Assert.Equal(1.0, scheduler.Retrievability(atMinimum, reviewedAt));
+        Assert.Throws<ArgumentOutOfRangeException>(() => scheduler.Retrievability(belowMinimum, reviewedAt));
+    }
+
+    private static void AssertParameterRangeError(int index, double value, double lower, double upper)
+    {
+        var values = FsrsParameters.Default.Values.ToArray();
+        values[index] = value;
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() => new FsrsParameters(values));
+
+        Assert.Contains($"index {index}", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"value {value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"[{lower.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}, {upper.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}]", exception.Message, StringComparison.Ordinal);
     }
 }
