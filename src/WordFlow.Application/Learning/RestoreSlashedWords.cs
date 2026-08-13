@@ -3,7 +3,7 @@ using WordFlow.Domain.Learning;
 
 namespace WordFlow.Application.Learning;
 
-public sealed record RestoreSlashedWordRequest(Guid CommandId, Guid EventId, Guid CardId, RestoreMode Mode);
+public sealed record RestoreSlashedWordRequest(Guid CommandId, Guid EventId, Guid CardId, Guid ExpectedRevision, RestoreMode Mode);
 
 public sealed class RestoreSlashedWords
 {
@@ -23,10 +23,10 @@ public sealed class RestoreSlashedWords
         {
             var duplicate = await store.GetCommitAsync(request.CommandId, ct).ConfigureAwait(false);
             if (duplicate is not null) return new Success<CardState>(duplicate.Card);
-            var card = await store.GetCardAsync(request.CardId, ct).ConfigureAwait(false);
-            if (card is null) return new NotFound<CardState>($"Card {request.CardId:D} was not found.");
+            var projection = await store.GetCardProjectionAsync(request.CardId, ct).ConfigureAwait(false);
+            if (projection is null) return new NotFound<CardState>($"Card {request.CardId:D} was not found.");
             var commit = await store.ApplyAsync(new LearningCommand(
-                request.CommandId, actions.Restore(request.EventId, card, request.Mode)), ct).ConfigureAwait(false);
+                request.CommandId, actions.Restore(request.EventId, projection.Card, request.Mode), request.ExpectedRevision), ct).ConfigureAwait(false);
             return new Success<CardState>(commit.Card);
         }
         catch (LearningConcurrencyException exception) { return new Conflict<CardState>(exception.Message); }

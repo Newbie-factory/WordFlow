@@ -12,7 +12,10 @@ public sealed class SqliteRelationRepository : IRelationRepository
     public SqliteRelationRepository(SqliteConnectionFactory factory) =>
         this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
 
-    public async Task<Page<WordRelation>> GetRelationsAsync(Guid sourceWordId, PageRequest page, CancellationToken ct)
+    public Task<Page<WordRelation>> GetRelationsAsync(Guid sourceWordId, PageRequest page, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetRelationsCoreAsync(sourceWordId, page, ct));
+
+    private async Task<Page<WordRelation>> GetRelationsCoreAsync(Guid sourceWordId, PageRequest page, CancellationToken ct)
     {
         if (sourceWordId == Guid.Empty) throw new ArgumentException("A source word ID cannot be empty.", nameof(sourceWordId));
         ArgumentNullException.ThrowIfNull(page);
@@ -77,13 +80,19 @@ public sealed class SqliteRelationRepository : IRelationRepository
         return new Page<WordRelation>(items, ordered.Length, page.Offset + items.Length < ordered.Length, snapshot.Length == 0 ? "relations:empty" : snapshot);
     }
 
-    public async Task<ExhaustionProbe> ProbeRelationsEndAsync(Guid sourceWordId, int offset, string snapshotId, CancellationToken ct)
+    public Task<ExhaustionProbe> ProbeRelationsEndAsync(Guid sourceWordId, int offset, string snapshotId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => ProbeRelationsEndCoreAsync(sourceWordId, offset, ct));
+
+    private async Task<ExhaustionProbe> ProbeRelationsEndCoreAsync(Guid sourceWordId, int offset, CancellationToken ct)
     {
-        var page = await GetRelationsAsync(sourceWordId, new PageRequest(offset, 1), ct).ConfigureAwait(false);
+        var page = await GetRelationsCoreAsync(sourceWordId, new PageRequest(offset, 1), ct).ConfigureAwait(false);
         return new(page.Items.Count == 0, page.SnapshotId!);
     }
 
-    public async Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
+    public Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetMisspellingsCoreAsync(targetWordId, page, ct));
+
+    private async Task<Page<MisspellingRelation>> GetMisspellingsCoreAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
     {
         if (targetWordId == Guid.Empty) throw new ArgumentException("A target word ID cannot be empty.", nameof(targetWordId));
         ArgumentNullException.ThrowIfNull(page);
@@ -108,13 +117,19 @@ public sealed class SqliteRelationRepository : IRelationRepository
         return new Page<MisspellingRelation>(items, total, page.Offset + items.Count < total, $"misspellings:{targetWordId:D}:{total}");
     }
 
-    public async Task<ExhaustionProbe> ProbeMisspellingsEndAsync(Guid targetWordId, int offset, string snapshotId, CancellationToken ct)
+    public Task<ExhaustionProbe> ProbeMisspellingsEndAsync(Guid targetWordId, int offset, string snapshotId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => ProbeMisspellingsEndCoreAsync(targetWordId, offset, ct));
+
+    private async Task<ExhaustionProbe> ProbeMisspellingsEndCoreAsync(Guid targetWordId, int offset, CancellationToken ct)
     {
-        var page = await GetMisspellingsAsync(targetWordId, new PageRequest(offset, 1), ct).ConfigureAwait(false);
+        var page = await GetMisspellingsCoreAsync(targetWordId, new PageRequest(offset, 1), ct).ConfigureAwait(false);
         return new(page.Items.Count == 0, page.SnapshotId!);
     }
 
-    public async Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct)
+    public Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => SetOverrideCoreAsync(relationOverride, ct));
+
+    private async Task SetOverrideCoreAsync(UserRelationOverride relationOverride, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(relationOverride);
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);

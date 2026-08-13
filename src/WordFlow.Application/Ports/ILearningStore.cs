@@ -4,7 +4,7 @@ namespace WordFlow.Application.Ports;
 
 public sealed record LearningCommand
 {
-    public LearningCommand(Guid commandId, ReviewEvent @event, Guid? expectedRevision = null)
+    public LearningCommand(Guid commandId, ReviewEvent @event, Guid expectedRevision)
     {
         if (commandId == Guid.Empty)
         {
@@ -19,7 +19,7 @@ public sealed record LearningCommand
     public Guid CommandId { get; }
 
     public ReviewEvent Event { get; }
-    public Guid? ExpectedRevision { get; }
+    public Guid ExpectedRevision { get; }
 }
 
 public sealed record CommitResult(bool Applied, Guid EventId, CardState Card);

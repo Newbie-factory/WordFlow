@@ -96,6 +96,81 @@ public sealed class RepositoryContractTests : IDisposable
         Assert.Equal(8, relationError.SqliteErrorCode);
     }
 
+    [Fact]
+    public async Task Cannot_open_corpus_reads_are_translated_and_cancellation_propagates()
+    {
+        var missing = Path.Combine(directory, "missing.sqlite3");
+        var factory = new SqliteConnectionFactory(Path.Combine(directory, "user.db"), missing, missing);
+        var vocabulary = new SqliteVocabularyRepository(factory);
+        var relations = new SqliteRelationRepository(factory);
+
+        await Assert.ThrowsAsync<TransientStorageException>(() => vocabulary.GetWordsAsync(new PageRequest(0, 1), default));
+        await Assert.ThrowsAsync<TransientStorageException>(() => relations.GetRelationsAsync(Guid.NewGuid(), new PageRequest(0, 1), default));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => vocabulary.GetWordsAsync(new PageRequest(0, 1), cancelled.Token));
+    }
+
+    [Fact]
+    public async Task Locked_override_write_is_translated()
+    {
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var database = Path.Combine(directory, "locked-user.db");
+        var migrationFactory = new SqliteConnectionFactory(database, vocabulary, relations);
+        await new MigrationRunner(migrationFactory).MigrateAsync(default);
+        var factory = new SqliteConnectionFactory(database, vocabulary, relations, busyTimeoutMilliseconds: 1);
+        var repository = new SqliteRelationRepository(factory);
+        await using var blocker = await migrationFactory.OpenUserAsync(default);
+        await using var transaction = blocker.BeginTransaction(deferred: false);
+
+        await Assert.ThrowsAsync<TransientStorageException>(() => repository.SetOverrideAsync(
+            new UserRelationOverride(Guid.NewGuid(), Guid.NewGuid(), RelationKinds.PersonalConfusable, true), default));
+    }
+
+    [Fact]
+    public async Task Corpus_schema_corruption_and_programmer_errors_are_not_translated()
+    {
+        var malformed = Path.Combine(directory, "malformed.sqlite3");
+        await using (var connection = new SqliteConnection($"Data Source={malformed};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(connection, "CREATE TABLE unexpected(value TEXT)");
+        }
+        var malformedRepository = new SqliteVocabularyRepository(
+            new SqliteConnectionFactory(Path.Combine(directory, "user.db"), malformed, malformed));
+        var schemaError = await Assert.ThrowsAsync<SqliteException>(() =>
+            malformedRepository.GetWordsAsync(new PageRequest(0, 1), default));
+        Assert.Equal(1, schemaError.SqliteErrorCode);
+
+        var corrupt = Path.Combine(directory, "corrupt.sqlite3");
+        await File.WriteAllBytesAsync(corrupt, "not sqlite"u8.ToArray());
+        var corruptRepository = new SqliteRelationRepository(
+            new SqliteConnectionFactory(Path.Combine(directory, "user.db"), corrupt, corrupt));
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            corruptRepository.GetMisspellingsAsync(Guid.NewGuid(), new PageRequest(0, 1), default));
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            malformedRepository.GetWordAsync(Guid.Empty, default));
+    }
+
+    [Fact]
+    public async Task Override_constraint_error_is_not_translated()
+    {
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var factory = Factory(vocabulary, relations);
+        await new MigrationRunner(factory).MigrateAsync(default);
+        await using (var connection = await factory.OpenUserAsync(default))
+            await ExecuteAsync(connection, "CREATE TRIGGER reject_override BEFORE INSERT ON user_word_relation BEGIN SELECT RAISE(ABORT,'reject'); END");
+        var repository = new SqliteRelationRepository(factory);
+
+        var exception = await Assert.ThrowsAsync<SqliteException>(() => repository.SetOverrideAsync(
+            new UserRelationOverride(Guid.NewGuid(), Guid.NewGuid(), RelationKinds.PersonalConfusable, true), default));
+
+        Assert.Equal(19, exception.SqliteErrorCode);
+    }
+
     private SqliteConnectionFactory Factory(string vocabulary, string relations) =>
         new(Path.Combine(directory, "user.db"), vocabulary, relations);
 

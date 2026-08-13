@@ -10,6 +10,15 @@ public sealed class LearningUseCaseTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 14, 8, 0, 0, TimeSpan.Zero);
 
+    [Fact]
+    public void Interactive_learning_command_requires_an_explicit_non_nullable_revision()
+    {
+        var constructors = typeof(LearningCommand).GetConstructors();
+
+        Assert.All(constructors, constructor => Assert.Equal(3, constructor.GetParameters().Length));
+        Assert.Equal(typeof(Guid), typeof(LearningCommand).GetProperty(nameof(LearningCommand.ExpectedRevision))!.PropertyType);
+    }
+
     [Theory]
     [InlineData(RatingShortcut.F1, Rating.Again)]
     [InlineData(RatingShortcut.F2, Rating.Hard)]
@@ -87,12 +96,27 @@ public sealed class LearningUseCaseTests
         var store = new FakeLearningStore([slashed]);
         var handler = new RestoreSlashedWords(store, Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), slashed.Id, mode), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), slashed.Id, CardProjection.InitialRevision, mode), default);
 
         var restored = Assert.IsType<Success<CardState>>(result).Value;
         Assert.Equal(memory, restored.MemoryState);
         Assert.False(restored.Slash.IsSlashed);
         Assert.Equal(mode == RestoreMode.Immediate ? Now : active.DueAt, restored.DueAt);
+    }
+
+    [Fact]
+    public async Task Stale_restore_returns_conflict_without_appending()
+    {
+        var slashed = LearningActions.Slash(Card(1), Now.AddDays(-2));
+        var store = new FakeLearningStore([slashed]);
+        store.Events.Add(new ReviewEvent(Id(92), slashed.Id, Now, LearningAction.Slash, slashed, slashed));
+
+        var result = await new RestoreSlashedWords(store, Clock()).HandleAsync(
+            new(Guid.NewGuid(), Guid.NewGuid(), slashed.Id, CardProjection.InitialRevision, RestoreMode.Immediate), default);
+
+        Assert.IsType<Conflict<CardState>>(result);
+        Assert.Empty(store.Applied);
+        Assert.Single(store.Events);
     }
 
     [Fact]
@@ -155,11 +179,11 @@ public sealed class LearningUseCaseTests
         var handler = new RestoreSlashedWords(store, Clock());
         store.GetCardFailure = new OperationCanceledException();
         await Assert.ThrowsAsync<OperationCanceledException>(() => handler.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RestoreMode.Immediate), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), CardProjection.InitialRevision, RestoreMode.Immediate), default));
 
         store.GetCardFailure = new InvalidDataException("corrupt");
         await Assert.ThrowsAsync<InvalidDataException>(() => handler.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), RestoreMode.Immediate), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Id(1), CardProjection.InitialRevision, RestoreMode.Immediate), default));
     }
 
     [Fact]
@@ -250,8 +274,14 @@ public sealed class LearningUseCaseTests
             if (GetCardFailure is not null) throw GetCardFailure;
             return Task.FromResult(Cards.GetValueOrDefault(cardId));
         }
-        public Task<CardProjection?> GetCardProjectionAsync(Guid cardId, CancellationToken ct) => Task.FromResult(
-            Cards.TryGetValue(cardId, out var card) ? new CardProjection(card, Events.LastOrDefault(x => x.CardId == cardId)?.EventId ?? CardProjection.InitialRevision) : null);
+        public Task<CardProjection?> GetCardProjectionAsync(Guid cardId, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (GetCardFailure is not null) throw GetCardFailure;
+            return Task.FromResult(Cards.TryGetValue(cardId, out var card)
+                ? new CardProjection(card, Events.LastOrDefault(x => x.CardId == cardId)?.EventId ?? CardProjection.InitialRevision)
+                : null);
+        }
 
         public Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct)
         {
@@ -282,7 +312,8 @@ public sealed class LearningUseCaseTests
             var original = Events.LastOrDefault(x => x.Action != LearningAction.Undo && !Events.Any(u => u.CompensatesEventId == x.EventId))
                 ?? throw new LearningNotFoundException("There is no action to undo.");
             var undo = new LearningActions(new RecordingScheduler(), new FakeTimeProvider(command.OccurredAt)).Undo(command.EventId, original);
-            return ApplyAsync(new LearningCommand(command.CommandId, undo), ct);
+            var revision = Events.LastOrDefault(x => x.CardId == original.CardId)?.EventId ?? CardProjection.InitialRevision;
+            return ApplyAsync(new LearningCommand(command.CommandId, undo, revision), ct);
         }
     }
 

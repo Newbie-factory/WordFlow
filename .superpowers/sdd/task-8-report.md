@@ -115,3 +115,32 @@ Final verification after this remediation:
 - `git diff --check`: no whitespace errors; only informational Windows LF-to-CRLF notices.
 
 Self-review found no progress-ledger edits, WPF dependencies, arbitrary paging caps, swallowed cancellation, or broad SQLite exception mapping. The existing full-corpus queue scan remains the only documented non-blocking scale concern.
+
+## Final independent-review closure
+
+The last independent review identified two Important and two Minor gaps. This pass closes each with focused RED/GREEN evidence.
+
+- Consecutive same-card undo now validates the actual compensation lineage. If the current revision is not the selected original, it must be an Undo on the same card whose compensated event's `Before` and compensation `After` both equal the selected original's `After`. A real equal-time A-to-B-to-C sequence now undoes C-to-B and then B-to-A atomically, leaving four immutable rows and two correctly ordered compensation links. Card-value mismatch, unrelated revision lineage, and writers racing the transaction still conflict/serialize.
+- Every public `SqliteVocabularyRepository` and `SqliteRelationRepository` operation is wrapped across connection open/configuration, reads/probes, override autocommit write, and commit in the shared exact-code boundary. Only SQLite primary codes 5, 6, 10, 13, 14, and 15 become `TransientStorageException`; cancellation, schema error 1, corrupt databases, and programmer argument errors propagate. Real cannot-open vocabulary/relation reads and a locked override write cover the expected failures.
+- `LearningCommand.ExpectedRevision` is now required and non-nullable for all interactive mutations. `RestoreSlashedWordRequest` carries the displayed revision, reads a `CardProjection`, and stale restore returns `Conflict` without appending. Legacy history uses the separately named internal `TrustedReplayCommand`/`ApplyTrustedReplayBatchAsync` path, and all legacy import regressions remain green.
+- A deterministic `UndoEventSelected` hook launches a different-card writer after selection while the immediate transaction is held. The writer serializes after the compensation and becomes the true next latest action; the following undo compensates that writer. Same-command retry remains idempotent.
+
+RED evidence:
+
+- Same-card second undo failed with `LearningConcurrencyException` at the old `original.EventId` revision equality check.
+- Cannot-open corpus reads escaped as raw SQLite error 14 and locked override escaped as raw error 5.
+- The wished-for restore request failed compilation because no five-argument revision-bearing constructor existed.
+- The interactive-command contract test failed because `ExpectedRevision` was `Guid?` rather than `Guid`.
+- The selection-barrier test failed compilation because the wished-for `UndoEventSelected` hook did not exist.
+
+Final fresh verification:
+
+- Domain Release: 129/129 passed.
+- Application Release: 44/44 passed.
+- Infrastructure Release: 73/73 passed.
+- Full Release solution: 246 discoverable tests passed; the existing App test assembly remains empty.
+- Release build: 0 warnings, 0 errors.
+- Python vocabulary suite: 54/54 passed.
+- `git diff --check`: no whitespace errors; only informational Windows LF-to-CRLF notices.
+
+Self-review found no ledger edit, revisionless interactive constructor, broad SQLite catch, mutable history operation, arbitrary paging cap, or WPF dependency. The documented full-corpus queue-scan scale concern remains unchanged.

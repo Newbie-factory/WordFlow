@@ -12,6 +12,7 @@ public enum LearningCommitStage
 {
     EventWritten,
     CardPageRowsRead,
+    UndoEventSelected,
 }
 
 public sealed class SqliteLearningStore : ILearningStore
@@ -50,7 +51,7 @@ public sealed class SqliteLearningStore : ILearningStore
             }
 
             var current = await ReadCardProjectionAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
-            EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision ?? current?.Revision ?? CardProjection.InitialRevision);
+            EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision);
 
             await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
             faultInjector?.Invoke(LearningCommitStage.EventWritten);
@@ -66,7 +67,7 @@ public sealed class SqliteLearningStore : ILearningStore
         }
     }
 
-    internal async Task ApplyBatchAsync(IReadOnlyList<LearningCommand> commands, CancellationToken ct)
+    internal async Task ApplyTrustedReplayBatchAsync(IReadOnlyList<TrustedReplayCommand> commands, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(commands);
         if (commands.Count == 0) return;
@@ -80,8 +81,8 @@ public sealed class SqliteLearningStore : ILearningStore
             {
                 if (await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false) is not null) continue;
                 var current = await ReadCardProjectionAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
-                EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision ?? current?.Revision ?? CardProjection.InitialRevision);
-                await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
+                EnsureExpectedSnapshot(current, command.Event, current?.Revision ?? CardProjection.InitialRevision);
+                await InsertEventAsync(connection, transaction, command.CommandId, command.Event, ct).ConfigureAwait(false);
                 await UpsertSnapshotAsync(connection, transaction, command.Event, ct).ConfigureAwait(false);
             }
             await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -227,13 +228,14 @@ public sealed class SqliteLearningStore : ILearningStore
 
             var original = await ReadLatestUndoableEventAsync(connection, transaction, ct).ConfigureAwait(false)
                 ?? throw new LearningNotFoundException("There is no action to undo.");
+            faultInjector?.Invoke(LearningCommitStage.UndoEventSelected);
             var current = await ReadCardProjectionAsync(connection, transaction, original.CardId, ct).ConfigureAwait(false);
-            EnsureExpectedSnapshot(current, original with { Before = original.After }, original.EventId);
+            await EnsureUndoLineageAsync(connection, transaction, current, original, ct).ConfigureAwait(false);
             var undo = new ReviewEvent(
                 command.EventId, original.CardId, command.OccurredAt, LearningAction.Undo,
                 original.After, original.Before, original.EventId);
             ValidateEvent(undo);
-            await InsertEventAsync(connection, transaction, new LearningCommand(command.CommandId, undo), ct).ConfigureAwait(false);
+            await InsertEventAsync(connection, transaction, command.CommandId, undo, ct).ConfigureAwait(false);
             faultInjector?.Invoke(LearningCommitStage.EventWritten);
             await UpsertSnapshotAsync(connection, transaction, undo, ct).ConfigureAwait(false);
             await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -264,6 +266,41 @@ public sealed class SqliteLearningStore : ILearningStore
         return ReadEvent(reader);
     }
 
+    private static async Task EnsureUndoLineageAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CardProjection? current,
+        ReviewEvent original,
+        CancellationToken ct)
+    {
+        if (current is null || current.Card != original.After)
+            throw new LearningConcurrencyException(original.CardId);
+        if (current.Revision == original.EventId) return;
+
+        var latest = await ReadEventAsync(connection, transaction, current.Revision, ct).ConfigureAwait(false);
+        if (latest is not { Action: LearningAction.Undo, CompensatesEventId: { } compensatedId }
+            || latest.CardId != original.CardId
+            || latest.After != original.After)
+            throw new LearningConcurrencyException(original.CardId);
+        var compensated = await ReadEventAsync(connection, transaction, compensatedId, ct).ConfigureAwait(false);
+        if (compensated is null || compensated.CardId != original.CardId || compensated.Before != original.After)
+            throw new LearningConcurrencyException(original.CardId);
+    }
+
+    private static async Task<ReviewEvent?> ReadEventAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid eventId,
+        CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT event_id,card_id,occurred_at_utc,action,before_json,after_json,compensates_event_id FROM review_event WHERE event_id=$eventId";
+        command.Parameters.AddWithValue("$eventId", IdText(eventId));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false) ? ReadEvent(reader) : null;
+    }
+
     private static void ValidateEvent(ReviewEvent @event)
     {
         ArgumentNullException.ThrowIfNull(@event);
@@ -291,8 +328,10 @@ public sealed class SqliteLearningStore : ILearningStore
     }
 
     private static async Task InsertEventAsync(SqliteConnection connection, SqliteTransaction transaction, LearningCommand command, CancellationToken ct)
+        => await InsertEventAsync(connection, transaction, command.CommandId, command.Event, ct).ConfigureAwait(false);
+
+    private static async Task InsertEventAsync(SqliteConnection connection, SqliteTransaction transaction, Guid commandId, ReviewEvent @event, CancellationToken ct)
     {
-        var @event = command.Event;
         await using var insert = connection.CreateCommand();
         insert.Transaction = transaction;
         insert.CommandText = """
@@ -300,7 +339,7 @@ public sealed class SqliteLearningStore : ILearningStore
             VALUES ($eventId, $commandId, $cardId, $occurredAt, $action, $compensates, $before, $after)
             """;
         insert.Parameters.AddWithValue("$eventId", IdText(@event.EventId));
-        insert.Parameters.AddWithValue("$commandId", IdText(command.CommandId));
+        insert.Parameters.AddWithValue("$commandId", IdText(commandId));
         insert.Parameters.AddWithValue("$cardId", IdText(@event.CardId));
         insert.Parameters.AddWithValue("$occurredAt", MigrationRunner.UtcText(@event.OccurredAt));
         insert.Parameters.AddWithValue("$action", @event.Action.ToString());
@@ -442,3 +481,5 @@ public sealed class SqliteLearningStore : ILearningStore
             writer.WriteStringValue(MigrationRunner.UtcText(value));
     }
 }
+
+internal sealed record TrustedReplayCommand(Guid CommandId, ReviewEvent Event);

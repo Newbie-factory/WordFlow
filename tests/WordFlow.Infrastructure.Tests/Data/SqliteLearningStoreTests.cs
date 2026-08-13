@@ -21,7 +21,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var store = new SqliteLearningStore(factory);
         var review = Review(Id(11), InitialCard(), Rating.Good);
 
-        var result = await store.ApplyAsync(new LearningCommand(Id(101), review), default);
+        var result = await store.ApplyAsync(Command(Id(101), review), default);
 
         Assert.True(result.Applied);
         Assert.Equal(review.After, result.Card);
@@ -49,7 +49,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var review = Review(Id(12), InitialCard(), Rating.Good);
 
         await Assert.ThrowsAsync<InjectedFailureException>(
-            () => store.ApplyAsync(new LearningCommand(Id(102), review), default));
+            () => store.ApplyAsync(Command(Id(102), review), default));
 
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
@@ -64,8 +64,8 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var first = Review(Id(13), InitialCard(), Rating.Good);
         var conflictingRetry = first with { EventId = Id(14), Action = LearningAction.Hard };
 
-        var committed = await store.ApplyAsync(new LearningCommand(Id(103), first), default);
-        var retried = await store.ApplyAsync(new LearningCommand(Id(103), conflictingRetry), default);
+        var committed = await store.ApplyAsync(Command(Id(103), first), default);
+        var retried = await store.ApplyAsync(Command(Id(103), conflictingRetry), default);
 
         Assert.True(committed.Applied);
         Assert.False(retried.Applied);
@@ -84,8 +84,8 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var undo = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(1)))
             .Undo(Id(16), original);
 
-        await store.ApplyAsync(new LearningCommand(Id(104), original), default);
-        await store.ApplyAsync(new LearningCommand(Id(105), undo), default);
+        await store.ApplyAsync(Command(Id(104), original), default);
+        await store.ApplyAsync(Command(Id(105), undo, original.EventId), default);
 
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
@@ -101,7 +101,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var store = new SqliteLearningStore(factory);
         var commandId = Id(140);
         var review = Review(Id(40), InitialCard(), Rating.Good);
-        await store.ApplyAsync(new LearningCommand(commandId, review), default);
+        await store.ApplyAsync(Command(commandId, review), default);
 
         var commit = await store.GetCommitAsync(commandId, default);
         var cards = await store.GetCardsAsync(new PageRequest(0, 500), default);
@@ -113,7 +113,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal(review, latest);
 
         var undo = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(1))).Undo(Id(41), review);
-        await store.ApplyAsync(new LearningCommand(Id(141), undo), default);
+        await store.ApplyAsync(Command(Id(141), undo, review.EventId), default);
         Assert.Null(await store.GetLatestUndoableEventAsync(default));
     }
 
@@ -125,8 +125,8 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var first = Review(Id(50), InitialCard(), Rating.Good);
         var secondCard = new CardState(Id(2), null, Now);
         var second = Review(Id(51), secondCard, Rating.Hard);
-        await store.ApplyAsync(new LearningCommand(Id(150), first), default);
-        await store.ApplyAsync(new LearningCommand(Id(151), second), default);
+        await store.ApplyAsync(Command(Id(150), first), default);
+        await store.ApplyAsync(Command(Id(151), second), default);
 
         var undoSecond = await store.UndoLatestAsync(new UndoLearningCommand(Id(152), Id(52), Now.AddMinutes(1)), default);
         var undoFirst = await store.UndoLatestAsync(new UndoLearningCommand(Id(153), Id(53), Now.AddMinutes(2)), default);
@@ -138,6 +138,29 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal(new[] { second.EventId.ToString("D"), first.EventId.ToString("D") }, compensated);
     }
 
+    [Fact]
+    public async Task Consecutive_same_card_undo_follows_compensation_lineage_append_only()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("same-card-undo.db"));
+        var store = new SqliteLearningStore(factory);
+        var first = Review(Id(54), InitialCard(), Rating.Good);
+        var second = Review(Id(55), first.After, Rating.Hard) with { OccurredAt = first.OccurredAt };
+        await store.ApplyAsync(new LearningCommand(Id(154), first, CardProjection.InitialRevision), default);
+        await store.ApplyAsync(new LearningCommand(Id(155), second, first.EventId), default);
+
+        var undoSecond = await store.UndoLatestAsync(new UndoLearningCommand(Id(156), Id(56), Now.AddMinutes(1)), default);
+        var undoFirst = await store.UndoLatestAsync(new UndoLearningCommand(Id(157), Id(57), Now.AddMinutes(2)), default);
+
+        Assert.Equal(first.After, undoSecond.Card);
+        Assert.Equal(first.Before, undoFirst.Card);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(4L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+        Assert.Equal(
+            new[] { second.EventId.ToString("D"), first.EventId.ToString("D") },
+            await StringsAsync(connection, "SELECT compensates_event_id FROM review_event WHERE action='Undo' ORDER BY rowid"));
+        Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event WHERE action='Undo'"));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -147,13 +170,13 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var store = new SqliteLearningStore(factory);
         var displayed = InitialCard();
         var intervening = Review(Id(60), displayed, Rating.Good);
-        await store.ApplyAsync(new LearningCommand(Id(160), intervening), default);
+        await store.ApplyAsync(Command(Id(160), intervening), default);
         var staleEvent = slash
             ? new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(1))).Slash(Id(61), displayed)
             : Review(Id(61), displayed, Rating.Hard);
 
         await Assert.ThrowsAsync<LearningConcurrencyException>(() =>
-            store.ApplyAsync(new LearningCommand(Id(161), staleEvent), default));
+            store.ApplyAsync(Command(Id(161), staleEvent), default));
 
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
@@ -165,11 +188,11 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
         var store = new SqliteLearningStore(factory);
         var first = Review(Id(70), InitialCard(), Rating.Good);
-        await store.ApplyAsync(new LearningCommand(Id(170), first), default);
+        await store.ApplyAsync(Command(Id(170), first), default);
         var reusedIdentity = Review(first.EventId, first.After, Rating.Hard);
 
         var exception = await Assert.ThrowsAsync<SqliteException>(() =>
-            store.ApplyAsync(new LearningCommand(Id(171), reusedIdentity), default));
+            store.ApplyAsync(Command(Id(171), reusedIdentity, first.EventId), default));
 
         Assert.Equal(19, exception.SqliteErrorCode);
         await using var connection = await factory.OpenUserAsync(default);
@@ -232,7 +255,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var database = Database("locked.db");
         var factory = await CreateMigratedFactoryAsync(database);
         var store = new SqliteLearningStore(new SqliteConnectionFactory(database, busyTimeoutMilliseconds: 1));
-        var command = new LearningCommand(Id(190), Review(Id(90), InitialCard(), Rating.Good));
+        var command = Command(Id(190), Review(Id(90), InitialCard(), Rating.Good));
         await using var blocker = await factory.OpenUserAsync(default);
         await using var transaction = blocker.BeginTransaction(deferred: false);
         await Assert.ThrowsAsync<TransientStorageException>(() => store.ApplyAsync(command, default));
@@ -262,7 +285,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
     {
         var factory = await CreateMigratedFactoryAsync(Database("undo-retry.db"));
         var store = new SqliteLearningStore(factory);
-        await store.ApplyAsync(new LearningCommand(Id(200), Review(Id(100), InitialCard(), Rating.Good)), default);
+        await store.ApplyAsync(Command(Id(200), Review(Id(100), InitialCard(), Rating.Good)), default);
         var command = new UndoLearningCommand(Id(201), Id(101), Now.AddMinutes(1));
 
         var results = await Task.WhenAll(store.UndoLatestAsync(command, default), store.UndoLatestAsync(command, default));
@@ -274,11 +297,46 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Different_card_writer_at_undo_selection_serializes_and_becomes_next_latest()
+    {
+        var database = Database("undo-writer-barrier.db");
+        var factory = await CreateMigratedFactoryAsync(database);
+        var seed = new SqliteLearningStore(factory);
+        var selected = Review(Id(102), InitialCard(), Rating.Good);
+        await seed.ApplyAsync(Command(Id(202), selected), default);
+        Task<CommitResult>? writer = null;
+        using var attempted = new ManualResetEventSlim();
+        var undoStore = new SqliteLearningStore(factory, stage =>
+        {
+            if (stage != LearningCommitStage.UndoEventSelected || writer is not null) return;
+            var other = Review(Id(103), new CardState(Id(2), null, Now), Rating.Hard) with { OccurredAt = Now.AddMinutes(5) };
+            writer = Task.Run(async () =>
+            {
+                attempted.Set();
+                return await new SqliteLearningStore(factory).ApplyAsync(Command(Id(203), other), default);
+            });
+            Assert.True(attempted.Wait(TimeSpan.FromSeconds(5)));
+        });
+
+        var firstUndo = await undoStore.UndoLatestAsync(new UndoLearningCommand(Id(204), Id(104), Now.AddMinutes(1)), default);
+        var writerResult = await writer!;
+        var secondUndo = await seed.UndoLatestAsync(new UndoLearningCommand(Id(205), Id(105), Now.AddMinutes(6)), default);
+
+        Assert.Equal(selected.Before, firstUndo.Card);
+        Assert.True(writerResult.Applied);
+        Assert.Equal(Id(2), secondUndo.Card.Id);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(
+            new[] { selected.EventId.ToString("D"), Id(103).ToString("D") },
+            await StringsAsync(connection, "SELECT compensates_event_id FROM review_event WHERE action='Undo' ORDER BY rowid"));
+    }
+
+    [Fact]
     public async Task Card_page_rows_and_snapshot_token_share_one_read_transaction()
     {
         var factory = await CreateMigratedFactoryAsync(Database("coherent-read.db"));
         var seed = new SqliteLearningStore(factory);
-        await seed.ApplyAsync(new LearningCommand(Id(210), Review(Id(110), InitialCard(), Rating.Good)), default);
+        await seed.ApplyAsync(Command(Id(210), Review(Id(110), InitialCard(), Rating.Good)), default);
         var injected = false;
         var store = new SqliteLearningStore(factory, stage =>
         {
@@ -286,7 +344,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
             injected = true;
             var other = new CardState(Id(2), null, Now);
             var review = Review(Id(111), other, Rating.Good);
-            new SqliteLearningStore(factory).ApplyAsync(new LearningCommand(Id(211), review), default).GetAwaiter().GetResult();
+            new SqliteLearningStore(factory).ApplyAsync(Command(Id(211), review), default).GetAwaiter().GetResult();
         });
 
         var first = await store.GetCardsAsync(new PageRequest(0, 500), default);
@@ -305,10 +363,10 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var store = new SqliteLearningStore(factory);
         var first = Review(Id(17), InitialCard(), Rating.Good);
         var stale = Review(Id(18), InitialCard(), Rating.Hard);
-        await store.ApplyAsync(new LearningCommand(Id(106), first), default);
+        await store.ApplyAsync(Command(Id(106), first), default);
 
         await Assert.ThrowsAsync<LearningConcurrencyException>(
-            () => store.ApplyAsync(new LearningCommand(Id(107), stale), default));
+            () => store.ApplyAsync(Command(Id(107), stale), default));
 
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
@@ -319,7 +377,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
         var store = new SqliteLearningStore(factory);
-        await store.ApplyAsync(new LearningCommand(Id(109), Review(Id(20), InitialCard(), Rating.Good)), default);
+        await store.ApplyAsync(Command(Id(109), Review(Id(20), InitialCard(), Rating.Good)), default);
         await using var connection = await factory.OpenUserAsync(default);
 
         await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection, "UPDATE review_event SET action='Hard'"));
@@ -332,7 +390,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
         var store = new SqliteLearningStore(factory);
         var slash = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now)).Slash(Id(25), InitialCard());
-        await store.ApplyAsync(new LearningCommand(Id(125), slash), default);
+        await store.ApplyAsync(Command(Id(125), slash), default);
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(1L, await ScalarAsync(connection, "PRAGMA recursive_triggers"));
 
@@ -351,7 +409,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
         var store = new SqliteLearningStore(factory);
-        var command = new LearningCommand(Id(110), Review(Id(21), InitialCard(), Rating.Good));
+        var command = Command(Id(110), Review(Id(21), InitialCard(), Rating.Good));
 
         var results = await Task.WhenAll(
             store.ApplyAsync(command, default),
@@ -372,7 +430,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         cancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            store.ApplyAsync(new LearningCommand(Id(111), Review(Id(22), InitialCard(), Rating.Good)), cancellation.Token));
+            store.ApplyAsync(Command(Id(111), Review(Id(22), InitialCard(), Rating.Good)), cancellation.Token));
 
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
@@ -500,6 +558,9 @@ public sealed class SqliteLearningStoreTests : IDisposable
 
     private static ReviewEvent Review(Guid eventId, CardState before, Rating rating) =>
         new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now)).Review(eventId, before, rating);
+
+    private static LearningCommand Command(Guid commandId, ReviewEvent @event, Guid? revision = null) =>
+        new(commandId, @event, revision ?? CardProjection.InitialRevision);
 
     private static CardState InitialCard() => new(Id(1), null, Now);
 

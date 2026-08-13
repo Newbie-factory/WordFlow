@@ -34,7 +34,7 @@ public sealed class LegacyLearningHistoryImporter
             throw new InvalidOperationException("A promoted vocabulary database is required for legacy import.");
         var mappings = await LegacyVocabularyIdMapper.ReadAsync(
             legacyVocabularyPath, factory.VocabularyDatabasePath, ct).ConfigureAwait(false);
-        var commands = new List<LearningCommand>();
+        var commands = new List<TrustedReplayCommand>();
         var expectedSlashEvents = new List<(Guid EventId, long CardId, string Action, string At)>();
         await using var legacy = new SqliteConnection(new SqliteConnectionStringBuilder
         {
@@ -56,7 +56,7 @@ public sealed class LegacyLearningHistoryImporter
                     Guid.ParseExact(reader.GetString(0), "D"), stableId, ParseUtc(reader.GetString(3)),
                     Enum.Parse<LearningAction>(reader.GetString(4), ignoreCase: false), before, after,
                     reader.IsDBNull(5) ? null : Guid.ParseExact(reader.GetString(5), "D"));
-                commands.Add(new LearningCommand(Guid.ParseExact(reader.GetString(1), "D"), @event));
+                commands.Add(new TrustedReplayCommand(Guid.ParseExact(reader.GetString(1), "D"), @event));
             }
         }
         await using (var slash = legacy.CreateCommand())
@@ -78,7 +78,7 @@ public sealed class LegacyLearningHistoryImporter
                 throw new InvalidDataException("Legacy slash projection content does not match review history.");
         }
 
-        await new SqliteLearningStore(factory).ApplyBatchAsync(commands, ct).ConfigureAwait(false);
+        await new SqliteLearningStore(factory).ApplyTrustedReplayBatchAsync(commands, ct).ConfigureAwait(false);
         return new LegacyImportResult(mappings, commands.Count, expectedSlashEvents.Count);
     }
 

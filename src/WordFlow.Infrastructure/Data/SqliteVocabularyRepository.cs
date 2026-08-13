@@ -12,7 +12,10 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
     public SqliteVocabularyRepository(SqliteConnectionFactory factory) =>
         this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
 
-    public async Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct)
+    public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetWordsCoreAsync(page, ct));
+
+    private async Task<Page<VocabularyWord>> GetWordsCoreAsync(PageRequest page, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(page);
         await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
@@ -30,7 +33,10 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return new Page<VocabularyWord>(items, total, page.Offset + items.Count < total, $"vocabulary:{total}");
     }
 
-    public async Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct)
+    public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => ProbeWordsEndCoreAsync(offset, ct));
+
+    private async Task<ExhaustionProbe> ProbeWordsEndCoreAsync(int offset, CancellationToken ct)
     {
         await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
         var total = await CountAsync(connection, "SELECT COUNT(*) FROM vocabulary", ct).ConfigureAwait(false);
@@ -40,7 +46,10 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return new(Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false)) == 0, $"vocabulary:{total}");
     }
 
-    public async Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct)
+    public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetWordCoreAsync(wordId, ct));
+
+    private async Task<VocabularyWord?> GetWordCoreAsync(Guid wordId, CancellationToken ct)
     {
         if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
         await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
@@ -52,7 +61,10 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2));
     }
 
-    public async Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct)
+    public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetSensesCoreAsync(wordId, page, ct));
+
+    private async Task<Page<VocabularySense>> GetSensesCoreAsync(Guid wordId, PageRequest page, CancellationToken ct)
     {
         if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
         ArgumentNullException.ThrowIfNull(page);
@@ -75,7 +87,10 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return new Page<VocabularySense>(items, total, page.Offset + items.Count < total, $"senses:{wordId:D}:{total}");
     }
 
-    public async Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct)
+    public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => ProbeSensesEndCoreAsync(wordId, offset, ct));
+
+    private async Task<ExhaustionProbe> ProbeSensesEndCoreAsync(Guid wordId, int offset, CancellationToken ct)
     {
         await using var connection = await factory.OpenRelationsAsync(ct).ConfigureAwait(false);
         var total = await CountAsync(connection, "SELECT COUNT(*) FROM lexical_sense WHERE entry_id=$wordId", ct, wordId.ToString("D")).ConfigureAwait(false);
