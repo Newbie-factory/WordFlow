@@ -12,4 +12,7 @@
     <ProjectReference Include="..\WordFlow.Application\WordFlow.Application.csproj" />
     <ProjectReference Include="..\WordFlow.Domain\WordFlow.Domain.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Data\Migrations\001_initial.sql" />
+  </ItemGroup>
 </Project>
