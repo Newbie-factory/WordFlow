@@ -11,67 +11,114 @@ public sealed class RepositoryContractTests : IDisposable
     public RepositoryContractTests() => Directory.CreateDirectory(directory);
 
     [Fact]
-    public async Task Corpus_connection_is_truly_read_only_and_rejects_writes()
+    public async Task Checked_in_promoted_artifacts_support_word_sense_and_nullable_rank_pages()
     {
-        var corpus = Path.Combine(directory, "corpus.db");
-        await CreateCorpusAsync(corpus);
-        var factory = new SqliteConnectionFactory(Path.Combine(directory, "user.db"), corpus);
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var repository = new SqliteVocabularyRepository(Factory(vocabulary, relations));
 
-        await using var connection = await factory.OpenCorpusAsync(default);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO word VALUES ('00000000-0000-0000-0000-000000000099', 'write', 99)";
+        var words = await repository.GetWordsAsync(new PageRequest(0, 500), default);
+        var nullRank = words.Items.FirstOrDefault(word => word.FrequencyRank is null)
+            ?? (await FindNullRankPageAsync(repository));
+        var senses = await repository.GetSensesAsync(nullRank.WordId, new PageRequest(0, 500), default);
 
-        var error = await Assert.ThrowsAsync<SqliteException>(() => command.ExecuteNonQueryAsync());
-        Assert.Equal(8, error.SqliteErrorCode);
-    }
-
-    [Fact]
-    public async Task Word_and_sense_pages_are_stable_and_validate_page_arguments()
-    {
-        var corpus = Path.Combine(directory, "corpus.db");
-        await CreateCorpusAsync(corpus);
-        var repository = new SqliteVocabularyRepository(
-            new SqliteConnectionFactory(Path.Combine(directory, "user.db"), corpus));
-
-        var words = await repository.GetWordsAsync(new PageRequest(0, 1), default);
-        var senses = await repository.GetSensesAsync(Id(1), new PageRequest(0, 10), default);
-
-        Assert.Equal(2, words.TotalCount);
-        Assert.Equal("alpha", Assert.Single(words.Items).Lemma);
-        Assert.Equal("first", Assert.Single(senses.Items).Definition);
+        Assert.True(words.TotalCount >= 10_000);
+        Assert.Null(nullRank.FrequencyRank);
+        Assert.All(senses.Items, sense => Assert.Equal(nullRank.WordId, sense.WordId));
         Assert.Throws<ArgumentOutOfRangeException>(() => new PageRequest(-1, 10));
         Assert.Throws<ArgumentOutOfRangeException>(() => new PageRequest(0, 0));
     }
 
     [Fact]
-    public async Task User_relation_overrides_live_only_in_user_database_and_overlay_corpus_relations()
+    public async Task Relation_direction_is_respected_and_user_overrides_are_user_only()
     {
-        var corpus = Path.Combine(directory, "corpus.db");
-        var user = Path.Combine(directory, "user.db");
-        await CreateCorpusAsync(corpus);
-        var factory = new SqliteConnectionFactory(user, corpus);
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var factory = Factory(vocabulary, relations);
         await new MigrationRunner(factory).MigrateAsync(default);
         var repository = new SqliteRelationRepository(factory);
+        var (forwardSource, forwardTarget, forwardKind) = await RelationRowAsync(relations, "forward");
+        var (biSource, biTarget, biKind) = await RelationRowAsync(relations, "bidirectional");
 
-        await repository.SetOverrideAsync(new UserRelationOverride(Id(1), Id(2), "synonym", false), default);
-        Assert.Empty((await repository.GetRelationsAsync(Id(1), new PageRequest(0, 10), default)).Items);
-        await repository.SetOverrideAsync(new UserRelationOverride(Id(1), Id(2), "antonym", true), default);
-        var relations = await repository.GetRelationsAsync(Id(1), new PageRequest(0, 10), default);
+        Assert.Contains((await repository.GetRelationsAsync(forwardSource, new PageRequest(0, 500), default)).Items,
+            relation => relation.TargetWordId == forwardTarget && relation.RelationType == forwardKind && relation.Direction == RelationDirection.Forward);
+        Assert.DoesNotContain((await repository.GetRelationsAsync(forwardTarget, new PageRequest(0, 500), default)).Items,
+            relation => relation.TargetWordId == forwardSource && relation.RelationType == forwardKind && relation.Direction == RelationDirection.Bidirectional);
+        Assert.Contains((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
+            relation => relation.TargetWordId == biSource && relation.RelationType == biKind && relation.Direction == RelationDirection.Bidirectional);
 
-        Assert.Equal("antonym", Assert.Single(relations.Items).RelationType);
-        await using var corpusConnection = await factory.OpenCorpusAsync(default);
-        Assert.Equal(0L, await ScalarAsync(corpusConnection,
+        await repository.SetOverrideAsync(new UserRelationOverride(biTarget, biSource, biKind, false), default);
+        Assert.DoesNotContain((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
+            relation => relation.TargetWordId == biSource && relation.RelationType == biKind);
+        await repository.SetOverrideAsync(new UserRelationOverride(biTarget, biSource, "personal_confusable", true), default);
+        Assert.Contains((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
+            relation => relation.TargetWordId == biSource && relation.RelationType == "personal_confusable");
+
+        await using var relationConnection = await factory.OpenRelationsAsync(default);
+        Assert.Equal(0L, await ScalarAsync(relationConnection,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='user_word_relation'"));
         await using var userConnection = await factory.OpenUserAsync(default);
         Assert.Equal(2L, await ScalarAsync(userConnection, "SELECT COUNT(*) FROM user_word_relation"));
     }
 
-    private static async Task CreateCorpusAsync(string path)
+    [Fact]
+    public async Task Both_checked_in_corpus_copies_are_truly_read_only()
     {
-        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var factory = Factory(vocabulary, relations);
+
+        await using var vocabularyConnection = await factory.OpenVocabularyAsync(default);
+        var vocabularyError = await Assert.ThrowsAsync<SqliteException>(() =>
+            ExecuteAsync(vocabularyConnection, "DELETE FROM vocabulary"));
+        await using var relationConnection = await factory.OpenRelationsAsync(default);
+        var relationError = await Assert.ThrowsAsync<SqliteException>(() =>
+            ExecuteAsync(relationConnection, "DELETE FROM published_relation_base"));
+
+        Assert.Equal(8, vocabularyError.SqliteErrorCode);
+        Assert.Equal(8, relationError.SqliteErrorCode);
+    }
+
+    private SqliteConnectionFactory Factory(string vocabulary, string relations) =>
+        new(Path.Combine(directory, "user.db"), vocabulary, relations);
+
+    private string CopyArtifact(string name)
+    {
+        var source = Path.Combine(FindRepositoryRoot(), "data", "ielts", name);
+        var target = Path.Combine(directory, name);
+        File.Copy(source, target);
+        return target;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var current = AppContext.BaseDirectory;
+        while (current is not null && !File.Exists(Path.Combine(current, "WordFlow.sln")))
+            current = Directory.GetParent(current)?.FullName;
+        return current ?? throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+
+    private static async Task<VocabularyWord> FindNullRankPageAsync(SqliteVocabularyRepository repository)
+    {
+        for (var offset = 500; ; offset += 500)
+        {
+            var page = await repository.GetWordsAsync(new PageRequest(offset, 500), default);
+            var found = page.Items.FirstOrDefault(word => word.FrequencyRank is null);
+            if (found is not null) return found;
+            if (offset + page.Items.Count >= page.TotalCount) throw new Xunit.Sdk.XunitException("Promoted artifact has no null frequency rank.");
+        }
+    }
+
+    private static async Task<(Guid Source, Guid Target, string Kind)> RelationRowAsync(string path, string direction)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
         await connection.OpenAsync();
-        await ExecuteAsync(connection, "CREATE TABLE word(word_id TEXT PRIMARY KEY, lemma TEXT NOT NULL, frequency_rank INTEGER NOT NULL); CREATE TABLE sense(sense_id TEXT PRIMARY KEY, word_id TEXT NOT NULL, definition TEXT NOT NULL); CREATE TABLE word_relation(source_word_id TEXT NOT NULL, target_word_id TEXT NOT NULL, relation_type TEXT NOT NULL, PRIMARY KEY(source_word_id,target_word_id,relation_type));");
-        await ExecuteAsync(connection, $"INSERT INTO word VALUES ('{Id(1):D}', 'alpha', 1), ('{Id(2):D}', 'beta', 2); INSERT INTO sense VALUES ('{Id(11):D}', '{Id(1):D}', 'first'); INSERT INTO word_relation VALUES ('{Id(1):D}', '{Id(2):D}', 'synonym');");
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_entry_id,target_entry_id,kind FROM published_word_relation WHERE direction=$direction AND source_entry_id IS NOT NULL LIMIT 1";
+        command.Parameters.AddWithValue("$direction", direction);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetString(2));
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)
@@ -87,8 +134,6 @@ public sealed class RepositoryContractTests : IDisposable
         command.CommandText = sql;
         return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
-
-    private static Guid Id(int value) => new($"00000000-0000-0000-0000-{value:D12}");
 
     public void Dispose() => Directory.Delete(directory, recursive: true);
 }

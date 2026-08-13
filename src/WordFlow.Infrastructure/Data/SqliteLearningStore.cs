@@ -46,14 +46,7 @@ public sealed class SqliteLearningStore : ILearningStore
             }
 
             var current = await ReadCardAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
-            if (current is null && command.Event.Before.MemoryState is not null)
-            {
-                throw new LearningConcurrencyException(command.Event.CardId);
-            }
-            if (current is not null && current != command.Event.Before)
-            {
-                throw new LearningConcurrencyException(command.Event.CardId);
-            }
+            EnsureExpectedSnapshot(current, command.Event);
 
             await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
             faultInjector?.Invoke(LearningCommitStage.EventWritten);
@@ -65,6 +58,33 @@ public sealed class SqliteLearningStore : ILearningStore
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
             catch { /* Preserve the originating failure; disposal will close the connection. */ }
+            throw;
+        }
+    }
+
+    internal async Task ApplyBatchAsync(IReadOnlyList<LearningCommand> commands, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        if (commands.Count == 0) return;
+        foreach (var command in commands) ValidateEvent(command.Event);
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            foreach (var command in commands)
+            {
+                if (await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false) is not null) continue;
+                var current = await ReadCardAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
+                EnsureExpectedSnapshot(current, command.Event);
+                await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
+                await UpsertSnapshotAsync(connection, transaction, command.Event, ct).ConfigureAwait(false);
+            }
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             throw;
         }
     }
@@ -83,6 +103,12 @@ public sealed class SqliteLearningStore : ILearningStore
         if (@event.Before.Id != @event.CardId || @event.After.Id != @event.CardId) throw new ArgumentException("Event snapshots must belong to the event card.", nameof(@event));
         if (@event.Action == LearningAction.Undo && @event.CompensatesEventId is null) throw new ArgumentException("Undo requires a compensated event ID.", nameof(@event));
         if (@event.Action != LearningAction.Undo && @event.CompensatesEventId is not null) throw new ArgumentException("Only undo can compensate an event.", nameof(@event));
+    }
+
+    private static void EnsureExpectedSnapshot(CardState? current, ReviewEvent @event)
+    {
+        if (current is null && @event.Before.MemoryState is not null) throw new LearningConcurrencyException(@event.CardId);
+        if (current is not null && current != @event.Before) throw new LearningConcurrencyException(@event.CardId);
     }
 
     private static async Task<CommitResult?> FindCommandAsync(SqliteConnection connection, SqliteTransaction transaction, Guid commandId, CancellationToken ct)

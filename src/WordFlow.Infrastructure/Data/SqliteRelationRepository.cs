@@ -17,17 +17,32 @@ public sealed class SqliteRelationRepository : IRelationRepository
         var source = sourceWordId.ToString("D");
         var merged = new Dictionary<(Guid Target, string Type), WordRelation>();
 
-        await using (var corpus = await factory.OpenCorpusAsync(ct).ConfigureAwait(false))
+        await using (var corpus = await factory.OpenRelationsAsync(ct).ConfigureAwait(false))
         {
             await using var command = corpus.CreateCommand();
-            command.CommandText = "SELECT target_word_id, relation_type FROM word_relation WHERE source_word_id=$source ORDER BY relation_type,target_word_id";
+            command.CommandText = """
+                SELECT target_entry_id, kind, direction
+                FROM published_word_relation
+                WHERE source_entry_id=$source
+                UNION ALL
+                SELECT source_entry_id, kind, direction
+                FROM published_word_relation
+                WHERE target_entry_id=$source AND direction='bidirectional' AND source_entry_id IS NOT NULL
+                ORDER BY kind, target_entry_id
+                """;
             command.Parameters.AddWithValue("$source", source);
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
                 var target = ParseId(reader.GetString(0));
                 var type = reader.GetString(1);
-                merged[(target, type)] = new WordRelation(sourceWordId, target, type);
+                var direction = reader.GetString(2) switch
+                {
+                    "forward" => RelationDirection.Forward,
+                    "bidirectional" => RelationDirection.Bidirectional,
+                    var value => throw new InvalidDataException($"Unknown relation direction '{value}'."),
+                };
+                merged[(target, type)] = new WordRelation(sourceWordId, target, type, direction);
             }
         }
 
@@ -42,7 +57,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
                 var target = ParseId(reader.GetString(0));
                 var type = reader.GetString(1);
                 if (reader.GetInt64(2) == 0) merged.Remove((target, type));
-                else merged[(target, type)] = new WordRelation(sourceWordId, target, type);
+                else merged[(target, type)] = new WordRelation(sourceWordId, target, type, RelationDirection.Forward);
             }
         }
 

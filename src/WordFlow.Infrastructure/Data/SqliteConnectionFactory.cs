@@ -6,18 +6,24 @@ public sealed class SqliteConnectionFactory
 {
     private const int BusyTimeoutMilliseconds = 5000;
 
-    public SqliteConnectionFactory(string userDatabasePath, string? corpusDatabasePath = null)
+    public SqliteConnectionFactory(
+        string userDatabasePath,
+        string? vocabularyDatabasePath = null,
+        string? relationDatabasePath = null)
     {
         if (string.IsNullOrWhiteSpace(userDatabasePath)) throw new ArgumentException("A user database path is required.", nameof(userDatabasePath));
         UserDatabasePath = Path.GetFullPath(userDatabasePath);
-        CorpusDatabasePath = corpusDatabasePath is null ? null : Path.GetFullPath(corpusDatabasePath);
+        VocabularyDatabasePath = vocabularyDatabasePath is null ? null : Path.GetFullPath(vocabularyDatabasePath);
+        RelationDatabasePath = relationDatabasePath is null ? VocabularyDatabasePath : Path.GetFullPath(relationDatabasePath);
     }
 
     public string UserDatabasePath { get; }
 
-    public string? CorpusDatabasePath { get; }
+    public string? VocabularyDatabasePath { get; }
 
-    public SqliteConnectionFactory WithCorpus(string corpusDatabasePath) => new(UserDatabasePath, corpusDatabasePath);
+    public string? RelationDatabasePath { get; }
+
+    public SqliteConnectionFactory WithCorpus(string corpusDatabasePath) => new(UserDatabasePath, corpusDatabasePath, corpusDatabasePath);
 
     public async Task<SqliteConnection> OpenUserAsync(CancellationToken ct)
     {
@@ -42,12 +48,23 @@ public sealed class SqliteConnectionFactory
         }
     }
 
-    public async Task<SqliteConnection> OpenCorpusAsync(CancellationToken ct)
+    public Task<SqliteConnection> OpenVocabularyAsync(CancellationToken ct) =>
+        OpenReadOnlyAsync(VocabularyDatabasePath, "A vocabulary database path was not configured.", ct);
+
+    public Task<SqliteConnection> OpenRelationsAsync(CancellationToken ct) =>
+        OpenReadOnlyAsync(RelationDatabasePath, "A relation database path was not configured.", ct);
+
+    public Task<SqliteConnection> OpenCorpusAsync(CancellationToken ct) => OpenVocabularyAsync(ct);
+
+    private static async Task<SqliteConnection> OpenReadOnlyAsync(
+        string? databasePath,
+        string missingPathMessage,
+        CancellationToken ct)
     {
-        if (CorpusDatabasePath is null) throw new InvalidOperationException("A corpus database path was not configured.");
+        if (databasePath is null) throw new InvalidOperationException(missingPathMessage);
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = CorpusDatabasePath,
+            DataSource = databasePath,
             Mode = SqliteOpenMode.ReadOnly,
             Pooling = false,
         }.ToString());
@@ -68,8 +85,8 @@ public sealed class SqliteConnectionFactory
     {
         await using var command = connection.CreateCommand();
         command.CommandText = writable
-            ? $"PRAGMA foreign_keys=ON; PRAGMA busy_timeout={BusyTimeoutMilliseconds}; PRAGMA journal_mode=WAL;"
-            : $"PRAGMA query_only=ON; PRAGMA busy_timeout={BusyTimeoutMilliseconds};";
+            ? $"PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout={BusyTimeoutMilliseconds}; PRAGMA journal_mode=WAL;"
+            : $"PRAGMA query_only=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout={BusyTimeoutMilliseconds};";
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 }

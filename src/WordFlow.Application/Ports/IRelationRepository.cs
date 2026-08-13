@@ -1,6 +1,16 @@
 namespace WordFlow.Application.Ports;
 
-public sealed record WordRelation(Guid SourceWordId, Guid TargetWordId, string RelationType);
+public enum RelationDirection
+{
+    Forward,
+    Bidirectional,
+}
+
+public sealed record WordRelation(
+    Guid SourceWordId,
+    Guid TargetWordId,
+    string RelationType,
+    RelationDirection Direction);
 
 public sealed record UserRelationOverride
 {

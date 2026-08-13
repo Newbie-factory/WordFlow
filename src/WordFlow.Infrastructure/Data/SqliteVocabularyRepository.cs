@@ -13,17 +13,17 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
     public async Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(page);
-        await using var connection = await factory.OpenCorpusAsync(ct).ConfigureAwait(false);
-        var total = await CountAsync(connection, "SELECT COUNT(*) FROM word", ct).ConfigureAwait(false);
+        await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
+        var total = await CountAsync(connection, "SELECT COUNT(*) FROM vocabulary", ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT word_id, lemma, frequency_rank FROM word ORDER BY frequency_rank, word_id LIMIT $limit OFFSET $offset";
+        command.CommandText = "SELECT stable_id, word, frequency_rank FROM vocabulary ORDER BY frequency_rank IS NULL, frequency_rank, word COLLATE NOCASE, stable_id LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         var items = new List<VocabularyWord>();
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            items.Add(new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.GetInt32(2)));
+            items.Add(new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
         return new Page<VocabularyWord>(items, total);
     }
@@ -32,11 +32,11 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
     {
         if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
         ArgumentNullException.ThrowIfNull(page);
-        await using var connection = await factory.OpenCorpusAsync(ct).ConfigureAwait(false);
+        await using var connection = await factory.OpenRelationsAsync(ct).ConfigureAwait(false);
         var id = wordId.ToString("D");
-        var total = await CountAsync(connection, "SELECT COUNT(*) FROM sense WHERE word_id=$wordId", ct, id).ConfigureAwait(false);
+        var total = await CountAsync(connection, "SELECT COUNT(*) FROM lexical_sense WHERE entry_id=$wordId", ct, id).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT sense_id, word_id, definition FROM sense WHERE word_id=$wordId ORDER BY sense_id LIMIT $limit OFFSET $offset";
+        command.CommandText = "SELECT sense_id, entry_id, definition_en FROM lexical_sense WHERE entry_id=$wordId ORDER BY sense_id LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$wordId", id);
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
@@ -44,7 +44,9 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         var items = new List<VocabularySense>();
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            items.Add(new VocabularySense(ParseId(reader.GetString(0)), ParseId(reader.GetString(1)), reader.GetString(2)));
+            var senseId = reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(senseId)) throw new InvalidDataException("Corpus sense ID is blank.");
+            items.Add(new VocabularySense(senseId, ParseId(reader.GetString(1)), reader.GetString(2)));
         }
         return new Page<VocabularySense>(items, total);
     }

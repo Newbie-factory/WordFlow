@@ -75,6 +75,98 @@ public sealed class SqliteFsrsParameterSnapshotStoreTests : IDisposable
         Assert.Null(store.FindActivation(Id(12)));
     }
 
+    [Fact]
+    public async Task Activated_snapshot_payload_and_status_are_immutable_and_restore_recovers_exact_bytes()
+    {
+        var factory = await FactoryAsync();
+        var store = new SqliteFsrsParameterSnapshotStore(factory);
+        var trusted = store.AppendSnapshot(OptimizationSnapshot.TrustedInitial(Id(20), FsrsParameters.Default, Now));
+        store.AppendActivation(new FsrsParametersActivated(Id(21), trusted.Id, Now, ActivationReason.Initial, null));
+        var optimized = store.AppendSnapshot(Snapshot(Id(22), OptimizationSnapshotStatus.ReadyForActivation));
+        store.AppendActivation(new FsrsParametersActivated(Id(23), optimized.Id, Now.AddMinutes(1), ActivationReason.Optimized, null));
+        var optimizedBytes = await SnapshotJsonAsync(factory, optimized.Id);
+        var changedValues = optimized.CandidateParameters.Values.ToArray();
+        changedValues[0] *= 1.01;
+
+        Assert.Throws<InvalidOperationException>(() => store.UpdateSnapshot(
+            optimized with { CandidateParameters = new FsrsParameters(changedValues) }));
+        Assert.Throws<InvalidOperationException>(() => store.UpdateSnapshot(
+            trusted with { Status = OptimizationSnapshotStatus.ReadyForActivation }));
+        await using (var connection = await factory.OpenUserAsync(default))
+        {
+            await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => ExecuteAsync(connection,
+                $"UPDATE fsrs_parameter_snapshot SET snapshot_json='{{}}' WHERE snapshot_id='{optimized.Id:D}'"));
+            await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => ExecuteAsync(connection,
+                $"UPDATE fsrs_parameter_snapshot SET status='ReadyForActivation' WHERE snapshot_id='{trusted.Id:D}'"));
+        }
+        Assert.Equal(optimizedBytes, await SnapshotJsonAsync(factory, optimized.Id));
+        store.AppendActivation(new FsrsParametersActivated(Id(24), trusted.Id, Now.AddMinutes(2), ActivationReason.Restored, Id(21)));
+        Assert.Equal(FsrsParameters.Default.Values, store.ActiveParameters.Values);
+        Assert.Equal(await SnapshotJsonAsync(factory, trusted.Id), await ActiveSnapshotJsonAsync(factory));
+    }
+
+    [Fact]
+    public async Task Only_pending_preview_status_can_transition_without_payload_mutation()
+    {
+        var factory = await FactoryAsync();
+        var store = new SqliteFsrsParameterSnapshotStore(factory);
+        var pending = store.AppendSnapshot(Snapshot(Id(30), OptimizationSnapshotStatus.PendingPreview));
+
+        var ready = store.UpdateSnapshot(pending with { Status = OptimizationSnapshotStatus.ReadyForActivation });
+
+        Assert.Equal(OptimizationSnapshotStatus.ReadyForActivation, ready.Status);
+        Assert.Throws<InvalidOperationException>(() => store.UpdateSnapshot(ready with { Status = OptimizationSnapshotStatus.PreviewFailed }));
+        Assert.Throws<InvalidOperationException>(() => store.UpdateSnapshot(ready with { TrainingLoss = ready.TrainingLoss + .1 }));
+    }
+
+    [Fact]
+    public async Task Conflict_replace_cannot_rewrite_activation_or_snapshot_history()
+    {
+        var factory = await FactoryAsync();
+        var store = new SqliteFsrsParameterSnapshotStore(factory);
+        var snapshot = store.AppendSnapshot(Snapshot(Id(40), OptimizationSnapshotStatus.ReadyForActivation));
+        store.AppendActivation(new FsrsParametersActivated(Id(41), snapshot.Id, Now, ActivationReason.Optimized, null));
+        await using var connection = await factory.OpenUserAsync(default);
+
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => ExecuteAsync(connection,
+            "REPLACE INTO fsrs_parameter_activation SELECT activation_id,snapshot_id,activated_at_utc,'Restored',source_activation_id FROM fsrs_parameter_activation"));
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => ExecuteAsync(connection,
+            "INSERT OR REPLACE INTO fsrs_parameter_snapshot SELECT snapshot_id,status,'{}',created_at_utc FROM fsrs_parameter_snapshot"));
+        Assert.Equal(ActivationReason.Optimized, store.FindActivation(Id(41))!.Reason);
+        Assert.Equal(snapshot.CandidateParameters.Values, store.FindSnapshot(Id(40))!.CandidateParameters.Values);
+    }
+
+    private static async Task ExecuteAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<SqliteConnectionFactory> FactoryAsync()
+    {
+        var factory = new SqliteConnectionFactory(Path.Combine(directory, "user.db"));
+        await new MigrationRunner(factory).MigrateAsync(default);
+        return factory;
+    }
+
+    private static async Task<string> SnapshotJsonAsync(SqliteConnectionFactory factory, Guid id)
+    {
+        await using var connection = await factory.OpenUserAsync(default);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT snapshot_json FROM fsrs_parameter_snapshot WHERE snapshot_id=$id";
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        return (string)(await command.ExecuteScalarAsync())!;
+    }
+
+    private static async Task<string> ActiveSnapshotJsonAsync(SqliteConnectionFactory factory)
+    {
+        await using var connection = await factory.OpenUserAsync(default);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT s.snapshot_json FROM app_setting a JOIN fsrs_parameter_snapshot s ON s.snapshot_id=a.value WHERE a.key='fsrs.active_snapshot_id'";
+        return (string)(await command.ExecuteScalarAsync())!;
+    }
+
     private static OptimizationSnapshot Snapshot(Guid id, OptimizationSnapshotStatus status)
     {
         var values = FsrsParameters.Default.Values.ToArray();

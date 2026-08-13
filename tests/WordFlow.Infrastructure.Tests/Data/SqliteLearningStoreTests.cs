@@ -123,6 +123,26 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Conflict_replace_cannot_bypass_event_or_projection_immutability()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("user.db"));
+        var store = new SqliteLearningStore(factory);
+        var slash = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now)).Slash(Id(25), InitialCard());
+        await store.ApplyAsync(new LearningCommand(Id(125), slash), default);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(connection, "PRAGMA recursive_triggers"));
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            "INSERT OR REPLACE INTO review_event SELECT event_id,command_id,card_id,occurred_at_utc,'Undo',compensates_event_id,before_json,after_json FROM review_event"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            "REPLACE INTO slash_event SELECT event_id,card_id,'Undo',occurred_at_utc FROM slash_event"));
+
+        Assert.Equal("Slash", await TextAsync(connection, "SELECT action FROM review_event"));
+        Assert.Equal("Slash", await TextAsync(connection, "SELECT action FROM slash_event"));
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event r JOIN slash_event s ON s.event_id=r.event_id AND s.action=r.action"));
+    }
+
+    [Fact]
     public async Task Concurrent_retries_of_one_command_converge_to_one_committed_event()
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
@@ -183,7 +203,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         }
         var runner = new MigrationRunner(factory, new[]
         {
-            new SqliteMigration(2, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
+            new SqliteMigration(3, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
         });
 
         await Assert.ThrowsAsync<SqliteException>(() => runner.MigrateAsync(default));
@@ -192,33 +212,27 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal("dark", await TextAsync(verify, "SELECT value FROM app_setting WHERE key='theme'"));
         Assert.Equal(0L, await ScalarAsync(verify,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='should_rollback'"));
-        Assert.Single(Directory.GetFiles(directory, "user.db.v1.*.backup"));
+        Assert.Equal(2L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(2L, await ScalarAsync(verify, "SELECT COUNT(*) FROM schema_version"));
+        Assert.Single(Directory.GetFiles(directory, "user.db.v2.*.backup"));
     }
 
     [Fact]
-    public async Task Stable_word_id_retains_review_and_slash_history_after_corpus_promotion()
+    public async Task Existing_version_one_database_is_hardened_by_version_two_migration()
     {
-        var userDatabase = Database("user.db");
-        var factory = await CreateMigratedFactoryAsync(userDatabase);
-        var store = new SqliteLearningStore(factory);
-        var slash = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now))
-            .Slash(Id(19), InitialCard());
-        await store.ApplyAsync(new LearningCommand(Id(108), slash), default);
-        var oldCorpus = Database("corpus-8000.db");
-        var promotedCorpus = Database("corpus-promoted.db");
-        await CreateCorpusAsync(oldCorpus, (InitialCard().Id, "retain", 7999));
-        await CreateCorpusAsync(promotedCorpus, (InitialCard().Id, "retain", 12001));
+        var database = Database("upgrade.db");
+        var factory = new SqliteConnectionFactory(database);
+        var initialSql = await File.ReadAllTextAsync(Path.Combine(FindRepositoryRoot(), "src", "WordFlow.Infrastructure", "Data", "Migrations", "001_initial.sql"));
+        await new MigrationRunner(factory, [new SqliteMigration(1, "initial", initialSql)]).MigrateAsync(default);
+        await using (var before = await factory.OpenUserAsync(default))
+            Assert.Equal(1L, await ScalarAsync(before, "SELECT MAX(version) FROM schema_version"));
 
-        var oldWord = Assert.Single((await new SqliteVocabularyRepository(
-            factory.WithCorpus(oldCorpus)).GetWordsAsync(new PageRequest(0, 20), default)).Items);
-        var promotedWord = Assert.Single((await new SqliteVocabularyRepository(
-            factory.WithCorpus(promotedCorpus)).GetWordsAsync(new PageRequest(0, 20), default)).Items);
+        await new MigrationRunner(factory).MigrateAsync(default);
 
-        Assert.Equal(oldWord.WordId, promotedWord.WordId);
-        Assert.True((await store.GetCardAsync(promotedWord.WordId, default))!.Slash.IsSlashed);
-        await using var connection = await factory.OpenUserAsync(default);
-        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
-        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM slash_event"));
+        await using var after = await factory.OpenUserAsync(default);
+        Assert.Equal(2L, await ScalarAsync(after, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(6L, await ScalarAsync(after, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('fsrs_parameter_snapshot_insert_identity','fsrs_parameter_snapshot_update_guard','fsrs_parameter_snapshot_delete_guard','review_event_insert_identity','slash_event_insert_identity','fsrs_parameter_activation_insert_identity')"));
+        Assert.Single(Directory.GetFiles(directory, "upgrade.db.v1.*.backup"));
     }
 
     private async Task<SqliteConnectionFactory> CreateMigratedFactoryAsync(string userDatabase)
@@ -235,6 +249,13 @@ public sealed class SqliteLearningStoreTests : IDisposable
 
     private static Guid Id(int value) => new($"00000000-0000-0000-0000-{value:D12}");
     private string Database(string name) => Path.Combine(directory, name);
+
+    private static string FindRepositoryRoot()
+    {
+        var current = AppContext.BaseDirectory;
+        while (current is not null && !File.Exists(Path.Combine(current, "WordFlow.sln"))) current = Directory.GetParent(current)?.FullName;
+        return current ?? throw new DirectoryNotFoundException();
+    }
 
     private static async Task<long> ScalarAsync(SqliteConnection connection, string sql)
     {
@@ -265,22 +286,6 @@ public sealed class SqliteLearningStoreTests : IDisposable
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync();
-    }
-
-    private static async Task CreateCorpusAsync(string path, params (Guid Id, string Lemma, int Rank)[] words)
-    {
-        await using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
-        await connection.OpenAsync();
-        await ExecuteAsync(connection, "CREATE TABLE word(word_id TEXT PRIMARY KEY, lemma TEXT NOT NULL, frequency_rank INTEGER NOT NULL); CREATE TABLE sense(sense_id TEXT PRIMARY KEY, word_id TEXT NOT NULL, definition TEXT NOT NULL); CREATE TABLE word_relation(source_word_id TEXT NOT NULL, target_word_id TEXT NOT NULL, relation_type TEXT NOT NULL, PRIMARY KEY(source_word_id,target_word_id,relation_type));");
-        foreach (var word in words)
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "INSERT INTO word VALUES ($id, $lemma, $rank)";
-            command.Parameters.AddWithValue("$id", word.Id.ToString("D"));
-            command.Parameters.AddWithValue("$lemma", word.Lemma);
-            command.Parameters.AddWithValue("$rank", word.Rank);
-            await command.ExecuteNonQueryAsync();
-        }
     }
 
     public void Dispose() => Directory.Delete(directory, recursive: true);

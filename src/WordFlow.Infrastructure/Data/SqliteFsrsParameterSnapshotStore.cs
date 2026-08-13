@@ -58,12 +58,23 @@ public sealed class SqliteFsrsParameterSnapshotStore : IFsrsParameterSnapshotSto
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         using var connection = Open();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var existing = FindSnapshotWithinTransaction(connection, transaction, snapshot.Id)
+            ?? throw new KeyNotFoundException($"FSRS parameter snapshot '{snapshot.Id:D}' was not found.");
+        if (existing.Status != OptimizationSnapshotStatus.PendingPreview
+            || snapshot.Status is not (OptimizationSnapshotStatus.ReadyForActivation or OptimizationSnapshotStatus.PreviewFailed))
+            throw new InvalidOperationException("Only a pending preview can transition to ready or preview-failed.");
+        if (JsonSerializer.Serialize(existing with { Status = snapshot.Status }, JsonOptions)
+            != JsonSerializer.Serialize(snapshot, JsonOptions))
+            throw new InvalidOperationException("FSRS snapshot parameters, audit, and provenance are immutable.");
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE fsrs_parameter_snapshot SET status=$status,snapshot_json=$json WHERE snapshot_id=$id";
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE fsrs_parameter_snapshot SET status=$status,snapshot_json=$json WHERE snapshot_id=$id AND status='PendingPreview'";
         command.Parameters.AddWithValue("$id", snapshot.Id.ToString("D"));
         command.Parameters.AddWithValue("$status", snapshot.Status.ToString());
         command.Parameters.AddWithValue("$json", JsonSerializer.Serialize(snapshot, JsonOptions));
-        if (command.ExecuteNonQuery() != 1) throw new KeyNotFoundException($"FSRS parameter snapshot '{snapshot.Id:D}' was not found.");
+        if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("FSRS snapshot status changed concurrently or is activated.");
+        transaction.Commit();
         return snapshot;
     }
 
@@ -179,7 +190,7 @@ public sealed class SqliteFsrsParameterSnapshotStore : IFsrsParameterSnapshotSto
         {
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;";
+            command.CommandText = "PRAGMA foreign_keys=ON; PRAGMA recursive_triggers=ON; PRAGMA busy_timeout=5000;";
             command.ExecuteNonQuery();
             return connection;
         }

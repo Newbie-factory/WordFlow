@@ -17,9 +17,9 @@ public sealed record PageRequest
 
 public sealed record Page<T>(IReadOnlyList<T> Items, int TotalCount);
 
-public sealed record VocabularyWord(Guid WordId, string Lemma, int FrequencyRank);
+public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank);
 
-public sealed record VocabularySense(Guid SenseId, Guid WordId, string Definition);
+public sealed record VocabularySense(string SenseId, Guid WordId, string Definition);
 
 public interface IVocabularyRepository
 {

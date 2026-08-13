@@ -13,7 +13,7 @@ public sealed class MigrationRunner
     public MigrationRunner(SqliteConnectionFactory factory, IEnumerable<SqliteMigration>? migrations = null)
     {
         this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
-        this.migrations = (migrations ?? new[] { LoadInitialMigration() })
+        this.migrations = (migrations ?? LoadEmbeddedMigrations())
             .OrderBy(migration => migration.Version)
             .ToArray();
         if (this.migrations.Any(migration => migration.Version <= 0 || string.IsNullOrWhiteSpace(migration.Sql))
@@ -87,14 +87,21 @@ public sealed class MigrationRunner
         return Convert.ToInt32(await version.ExecuteScalarAsync(ct).ConfigureAwait(false));
     }
 
-    private static SqliteMigration LoadInitialMigration()
+    private static IEnumerable<SqliteMigration> LoadEmbeddedMigrations()
     {
-        const string suffix = ".Data.Migrations.001_initial.sql";
         var assembly = typeof(MigrationRunner).Assembly;
-        var name = assembly.GetManifestResourceNames().Single(resource => resource.EndsWith(suffix, StringComparison.Ordinal));
-        using var stream = assembly.GetManifestResourceStream(name) ?? throw new InvalidOperationException("Initial migration resource is missing.");
-        using var reader = new StreamReader(stream);
-        return new SqliteMigration(1, "initial", reader.ReadToEnd());
+        foreach (var resource in assembly.GetManifestResourceNames()
+                     .Where(name => name.Contains(".Data.Migrations.", StringComparison.Ordinal) && name.EndsWith(".sql", StringComparison.Ordinal))
+                     .OrderBy(name => name, StringComparer.Ordinal))
+        {
+            var fileName = resource[(resource.LastIndexOf(".Data.Migrations.", StringComparison.Ordinal) + ".Data.Migrations.".Length)..^4];
+            var separator = fileName.IndexOf('_');
+            if (separator != 3 || !int.TryParse(fileName[..separator], out var version))
+                throw new InvalidOperationException($"Migration resource '{resource}' has an invalid name.");
+            using var stream = assembly.GetManifestResourceStream(resource) ?? throw new InvalidOperationException($"Migration resource '{resource}' is missing.");
+            using var reader = new StreamReader(stream);
+            yield return new SqliteMigration(version, fileName[(separator + 1)..], reader.ReadToEnd());
+        }
     }
 
     internal static string UtcText(DateTimeOffset value) => value.UtcDateTime.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
