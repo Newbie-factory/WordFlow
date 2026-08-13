@@ -1,0 +1,92 @@
+{
+  "bounds": {
+    "exceeded_soft_max_due_to_closure": true,
+    "soft_max": 12000,
+    "soft_min": 10000
+  },
+  "counts": {
+    "ordinary": 12000,
+    "required_closure": 46,
+    "tiers": {
+      "academic_extension": 5050,
+      "core": 5010,
+      "foundation": 1891,
+      "frequency_extension": 49,
+      "required_closure": 46
+    },
+    "total": 12046,
+    "with_chinese_translation": 12046,
+    "with_phonetic": 11565,
+    "with_provenance": 12046
+  },
+  "forbidden_headwords": {
+    "present": [],
+    "words": [
+      "dissimuate",
+      "stimuate"
+    ]
+  },
+  "passed_build_gates": true,
+  "policy_version": "wordflow-vocabulary-selection-v1",
+  "rejections": {
+    "below_quality_threshold": 751969,
+    "empty_chinese_translation": 1872
+  },
+  "required": {
+    "missing": [],
+    "present": 46,
+    "source_keys": {
+      "idp_animals": 3,
+      "user_approved_2026_08_13": 43
+    },
+    "total": 46,
+    "words": [
+      "block",
+      "carnivorous",
+      "colleague",
+      "college",
+      "conserve",
+      "converse",
+      "degenerate",
+      "degrade",
+      "desperate",
+      "devaluation",
+      "devastation",
+      "deviation",
+      "disparate",
+      "dissimulate",
+      "extend",
+      "extent",
+      "flock",
+      "generalization",
+      "generation",
+      "generosity",
+      "herbivorous",
+      "inhabit",
+      "inherent",
+      "inherit",
+      "inhibit",
+      "observe",
+      "omnivorous",
+      "perceptible",
+      "pistol",
+      "piston",
+      "postal",
+      "static",
+      "statistic",
+      "statue",
+      "status",
+      "stimulate",
+      "stipulate",
+      "strategy",
+      "submit",
+      "summit",
+      "susceptible",
+      "tragedy",
+      "triumph",
+      "trumpet",
+      "vacation",
+      "vocation"
+    ]
+  }
+}

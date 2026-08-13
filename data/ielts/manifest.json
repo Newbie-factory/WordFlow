@@ -1,0 +1,58 @@
+{
+  "artifacts": {
+    "csv": {
+      "bytes": 4109177,
+      "path": "vocabulary.csv",
+      "sha256": "3A6ED0FE17BFFABDABD433184B038BC368B5F14080123EB5B44595E9631004F5"
+    },
+    "quality_report": {
+      "path": "../reports/vocabulary-quality.json",
+      "sha256": "CFB0BD2DCA3EEBF99C830F0C49AA0830EC63BE8995192287673C8F64B916056A"
+    },
+    "sqlite": {
+      "bytes": 5570560,
+      "path": "vocabulary.sqlite3",
+      "sha256": "7B0D2ED0161EC0BC1F4B238A84DFD9D20AAB0A413C412A64501EAD4E52FA1BB9"
+    }
+  },
+  "counts": {
+    "ordinary": 12000,
+    "required_closure": 46,
+    "required_present": 46,
+    "tiers": {
+      "academic_extension": 5050,
+      "core": 5010,
+      "foundation": 1891,
+      "frequency_extension": 49,
+      "required_closure": 46
+    },
+    "total": 12046
+  },
+  "dataset_name": "WordFlow Quality-Gated IELTS and Academic Vocabulary",
+  "inputs": {
+    "curated_vocabulary": {
+      "path": "data/curated/required_vocabulary.csv",
+      "sha256": "EC5922B9E94B22F08402612064FC00E08457E6AB567C7447CF01F6B51F555310"
+    },
+    "source_registry": {
+      "path": "data/curated/source_registry.json",
+      "sha256": "C109604A497310430886A05850A93155E08D448708FF42702308AC612A7B93F6"
+    }
+  },
+  "policy_version": "wordflow-vocabulary-selection-v1",
+  "schema_version": 1,
+  "selection_policy": {
+    "disclaimer": "IELTS does not publish an official exhaustive vocabulary list. This corpus is a reproducible, quality-gated learning selection from documented evidence.",
+    "minimum_ordinary_score": 75,
+    "required_closure_may_exceed_soft_max": true,
+    "soft_max": 12000,
+    "soft_min": 10000
+  },
+  "source": {
+    "key": "ecdict",
+    "license": "MIT",
+    "name": "ECDICT",
+    "source_sha256": "1A6947E04785DB63613A92E14903CDAE7954F7E84860B10E68E5C7CBB3F9C3CF",
+    "url": "https://github.com/skywind3000/ECDICT"
+  }
+}

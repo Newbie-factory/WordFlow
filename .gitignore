@@ -3,6 +3,8 @@ bin/
 obj/
 artifacts/
 TestResults/
+__pycache__/
+*.py[cod]
 
 # Isolated implementation worktrees
 .worktrees/
@@ -30,3 +32,5 @@ data/ielts/ielts_7000plus.csv
 data/sources/ecdict/ecdict.csv
 data/ielts/ielts_8000.csv
 data/ielts/ielts_vocabulary.sqlite3
+data/ielts/vocabulary.csv
+data/ielts/vocabulary.sqlite3

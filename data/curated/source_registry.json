@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "ecdict": {
+      "name": "ECDICT",
+      "url": "https://github.com/skywind3000/ECDICT",
+      "license": "MIT",
+      "role": "Licensed English-Chinese entry content and source metadata"
+    },
+    "idp_animals": {
+      "name": "IDP IELTS animal vocabulary topic evidence",
+      "url": "https://ielts.idp.com/vietnam/about/news-and-articles/article-ielts-vocabulary-animals/en-gb",
+      "license": "Reference metadata only; no definitions copied",
+      "role": "Topic-family membership evidence for herbivorous, carnivorous and omnivorous"
+    },
+    "user_approved_2026_08_13": {
+      "name": "WordFlow design specification section 8.2",
+      "path": "docs/superpowers/specs/2026-08-13-wordflow-windows-design.md",
+      "license": "Project-authored requirements",
+      "role": "User-approved confusable-closure membership; entry content remains from ECDICT"
+    }
+  }
+}
