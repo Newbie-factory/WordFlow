@@ -4,6 +4,9 @@ obj/
 artifacts/
 TestResults/
 
+# Isolated implementation worktrees
+.worktrees/
+
 # IDE and user state
 .vs/
 .idea/
