@@ -65,3 +65,37 @@ Let `w[i]` denote parameter `i`, `G` the numeric rating, `D` difficulty, `S` sta
 ## Frozen vector coverage
 
 The golden suite freezes initial Again/Hard/Good, a ten-minute same-day Hard review, an exact-24-hour transition, a 10.5-day delayed Good review, a 30-day Again lapse, retention settings 0.85/0.90/0.95, and two equivalent instants spanning local/UTC calendar dates. The invariant suite runs 10,000 deterministic histories and checks finite states/probabilities, positive intervals, monotonic due instants, difficulty range, UTC normalization, the `R(S)=0.9` identity, and retention ordering.
+
+## Safe local parameter optimization
+
+WordFlow's `FsrsParameterOptimizer` is a bounded deterministic C# coordinate search. It runs in-process without Python, network, database, or WPF dependencies. The default fixed seed is `0x5F3759DF`; the seed determines the repeatable direction order. Four search rounds evaluate both multiplicative directions for each of the 21 parameters with a decreasing step. Every candidate is constructed through `FsrsParameters`, so the Task 4 official bounds remain the single enforced parameter domain. Cancellation is checked during filtering, every history evaluation, and every candidate evaluation. `IProgress<OptimizationProgress>` reports plain progress values without any dispatcher reference; the caller chooses how those reports are marshalled.
+
+Eligibility requires at least 400 valid input reviews. Validity is deterministic in the supplied event order:
+
+- the command and card identifiers are nonblank;
+- the event is neither undone nor inverse;
+- the event kind is `Rating`, never Slash or another business event;
+- the numeric rating is exactly Again (`1`), Hard (`2`), or Good (`3`);
+- every occurrence of a duplicated command ID is excluded; and
+- a card's accepted review timestamp is strictly later than its previous accepted timestamp.
+
+The optimizer then orders valid samples by their normalized UTC instants. The chronological split boundary is the 80th percentile event instant. The split unit is a whole card history: a history wholly before the boundary is training data, a history wholly at/after the boundary is validation data, and a card spanning the boundary is excluded from both objectives. This conservative gap prevents both future-to-past leakage and per-card identity/history leakage when card histories interleave. The eligibility count remains the count before this split; optimization is `NotEligible` if either objective partition cannot be evaluated.
+
+For each partition, a new card's first rating initializes its state but is not a supervised observation because no pre-review retrievability exists. Each subsequent rating uses the pinned scheduler's continuous UTC retrievability immediately before the review. Again is binary failure; Hard and Good are binary recall success. The objective is mean Bernoulli negative log likelihood:
+
+```text
+L = mean(-y log(R) - (1-y) log(1-R))
+```
+
+Only the logarithm input is clamped to `[1e-15, 1-1e-15]`; the FSRS prediction and state update are not clamped or otherwise altered. Baseline and candidate use the identical evaluator. Non-finite or empty objectives are not usable. A training-selected candidate is activated as an optimization result only when its validation loss is no greater than the baseline validation loss plus `1e-12`; otherwise the baseline is retained. This held-out rule is the overfitting guard.
+
+The independent optimization fixture is [`fsrs6-optimizer-fixture.json`](fsrs6-optimizer-fixture.json). It pins two continuous-time pre-review probabilities and their binary recall log loss. Reproduce it only for development/provenance checks:
+
+```powershell
+python docs\algorithms\generate_fsrs6_optimizer_fixture.py `
+  --py-fsrs-root $env:TEMP\wordflow-py-fsrs-v6.3.0 `
+  --output $env:TEMP\fsrs6-optimizer-fixture.json
+git diff --no-index -- docs\algorithms\fsrs6-optimizer-fixture.json $env:TEMP\fsrs6-optimizer-fixture.json
+```
+
+At the application boundary, every run appends a snapshot containing algorithm version, source and result parameter sets, sample and loss metrics, UTC creation time, and acceptance status. Accepted results receive a due-date preview before activation. Activation appends a settings event; it changes only the active parameter set consulted by later scheduling computations. No API exists in this use case to rewrite ratings or mass-reschedule cards. Restore likewise appends a new activation event pointing to a previous snapshot. The persistence port is intentionally focused and has no Task 7 SQLite implementation.

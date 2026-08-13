@@ -1,0 +1,22 @@
+{
+  "adaptation": "continuous UTC TotalDays",
+  "mean_binary_recall_log_loss": 1.2292513965155736,
+  "predictions": [
+    0.7696434024095495,
+    0.8888277865983849
+  ],
+  "provenance": {
+    "commit": "854a51496993d088175f6d7da0bbfaa414034c61",
+    "repository": "https://github.com/open-spaced-repetition/py-fsrs"
+  },
+  "ratings": [
+    3,
+    3,
+    1
+  ],
+  "reviewed_at": [
+    "2025-01-01T00:00:00+00:00",
+    "2025-01-11T12:00:00+00:00",
+    "2025-02-10T12:00:00+00:00"
+  ]
+}
