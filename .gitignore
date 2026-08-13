@@ -1,0 +1,28 @@
+# Build outputs
+bin/
+obj/
+artifacts/
+TestResults/
+
+# IDE and user state
+.vs/
+.idea/
+*.user
+*.suo
+
+# Visual brainstorming companion runtime
+.superpowers/
+
+# Imported personal skins and runtime user data
+user-data/
+*.log
+
+# Download fragments and superseded intermediate exports
+data/sources/ecdict/parts/
+data/sources/ecdict/ECDICT-master.zip
+data/ielts/ielts_7000plus.csv
+
+# Large local source corpus and reproducible generated vocabulary artifacts
+data/sources/ecdict/ecdict.csv
+data/ielts/ielts_8000.csv
+data/ielts/ielts_vocabulary.sqlite3
