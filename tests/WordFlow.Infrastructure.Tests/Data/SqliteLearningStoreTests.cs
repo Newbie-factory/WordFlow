@@ -255,6 +255,38 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Single(Directory.GetFiles(directory, "corrupt-upgrade.db.v1.*.backup"));
     }
 
+    [Theory]
+    [InlineData("Id")]
+    [InlineData("Status")]
+    [InlineData("CreatedAt")]
+    public async Task Version_two_upgrade_rejects_preexisting_snapshot_missing_required_json_path(string path)
+    {
+        var database = Database($"missing-{path}.db");
+        var factory = new SqliteConnectionFactory(database);
+        var initialSql = await File.ReadAllTextAsync(Path.Combine(FindRepositoryRoot(), "src", "WordFlow.Infrastructure", "Data", "Migrations", "001_initial.sql"));
+        await new MigrationRunner(factory, [new SqliteMigration(1, "initial", initialSql)]).MigrateAsync(default);
+        var snapshotId = Id(72);
+        var json = $"{{\"Id\":\"{snapshotId:D}\",\"Status\":\"PendingPreview\",\"CreatedAt\":\"{Now.UtcDateTime:O}\"}}";
+        await using (var connection = await factory.OpenUserAsync(default))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO fsrs_parameter_snapshot VALUES ($id,'PendingPreview',json_remove($json,$path),$at)";
+            command.Parameters.AddWithValue("$id", snapshotId.ToString("D"));
+            command.Parameters.AddWithValue("$json", json);
+            command.Parameters.AddWithValue("$path", $"$.{path}");
+            command.Parameters.AddWithValue("$at", Now.UtcDateTime.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() => new MigrationRunner(factory).MigrateAsync(default));
+
+        await using var verify = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(0L, await ScalarAsync(verify, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='fsrs_parameter_snapshot_insert_consistency'"));
+        Assert.Equal(1L, await ScalarAsync(verify, $"SELECT COUNT(*) FROM fsrs_parameter_snapshot WHERE snapshot_id='{snapshotId:D}' AND json_type(snapshot_json,'$.{path}') IS NULL"));
+        Assert.Single(Directory.GetFiles(directory, $"missing-{path}.db.v1.*.backup"));
+    }
+
     private async Task<SqliteConnectionFactory> CreateMigratedFactoryAsync(string userDatabase)
     {
         var factory = new SqliteConnectionFactory(userDatabase);

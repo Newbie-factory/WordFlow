@@ -167,6 +167,57 @@ public sealed class SqliteFsrsParameterSnapshotStoreTests : IDisposable
         await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => command.ExecuteNonQueryAsync());
     }
 
+    [Theory]
+    [InlineData("Id")]
+    [InlineData("Status")]
+    [InlineData("CreatedAt")]
+    public async Task Database_rejects_snapshot_insert_missing_required_json_path(string path)
+    {
+        var factory = await FactoryAsync();
+        var snapshot = Snapshot(Id(62), OptimizationSnapshotStatus.PendingPreview);
+        await using var connection = await factory.OpenUserAsync(default);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO fsrs_parameter_snapshot(snapshot_id,status,snapshot_json,created_at_utc)
+            VALUES ($id,'PendingPreview',json_remove($json, $path),$at)
+            """;
+        command.Parameters.AddWithValue("$id", snapshot.Id.ToString("D"));
+        command.Parameters.AddWithValue("$json", System.Text.Json.JsonSerializer.Serialize(snapshot));
+        command.Parameters.AddWithValue("$path", $"$.{path}");
+        command.Parameters.AddWithValue("$at", Now.UtcDateTime.ToString("O"));
+
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => command.ExecuteNonQueryAsync());
+    }
+
+    [Theory]
+    [InlineData("ReadyForActivation", "Id")]
+    [InlineData("ReadyForActivation", "Status")]
+    [InlineData("ReadyForActivation", "CreatedAt")]
+    [InlineData("PreviewFailed", "Id")]
+    [InlineData("PreviewFailed", "Status")]
+    [InlineData("PreviewFailed", "CreatedAt")]
+    public async Task Allowed_status_transition_cannot_delete_required_json_path(string targetStatus, string path)
+    {
+        var factory = await FactoryAsync();
+        var store = new SqliteFsrsParameterSnapshotStore(factory);
+        var pending = store.AppendSnapshot(Snapshot(Id(63), OptimizationSnapshotStatus.PendingPreview));
+        var originalJson = await SnapshotJsonAsync(factory, pending.Id);
+        await using var connection = await factory.OpenUserAsync(default);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE fsrs_parameter_snapshot
+            SET status=$status,
+                snapshot_json=json_remove(json_set(snapshot_json, '$.Status', $status), $path)
+            WHERE snapshot_id=$id
+            """;
+        command.Parameters.AddWithValue("$status", targetStatus);
+        command.Parameters.AddWithValue("$path", $"$.{path}");
+        command.Parameters.AddWithValue("$id", pending.Id.ToString("D"));
+
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal(originalJson, await SnapshotJsonAsync(factory, pending.Id));
+    }
+
     [Fact]
     public async Task Conflict_replace_cannot_rewrite_activation_or_snapshot_history()
     {

@@ -5,25 +5,25 @@ CREATE TEMP TABLE snapshot_integrity_check (
 INSERT INTO snapshot_integrity_check(invalid_count)
 SELECT COUNT(*)
 FROM fsrs_parameter_snapshot
-WHERE json_valid(snapshot_json) <> 1
-   OR json_type(snapshot_json, '$.Id') <> 'text'
-   OR lower(json_extract(snapshot_json, '$.Id')) <> lower(snapshot_id)
-   OR json_type(snapshot_json, '$.Status') <> 'text'
-   OR json_extract(snapshot_json, '$.Status') <> status
-   OR json_type(snapshot_json, '$.CreatedAt') <> 'text'
-   OR json_extract(snapshot_json, '$.CreatedAt') <> created_at_utc;
+WHERE json_valid(snapshot_json) IS NOT 1
+   OR json_type(snapshot_json, '$.Id') IS NOT 'text'
+   OR lower(json_extract(snapshot_json, '$.Id')) IS NOT lower(snapshot_id)
+   OR json_type(snapshot_json, '$.Status') IS NOT 'text'
+   OR json_extract(snapshot_json, '$.Status') IS NOT status
+   OR json_type(snapshot_json, '$.CreatedAt') IS NOT 'text'
+   OR json_extract(snapshot_json, '$.CreatedAt') IS NOT created_at_utc;
 
 DROP TABLE snapshot_integrity_check;
 
 CREATE TRIGGER IF NOT EXISTS fsrs_parameter_snapshot_insert_consistency
 BEFORE INSERT ON fsrs_parameter_snapshot
-WHEN json_valid(NEW.snapshot_json) <> 1
-  OR json_type(NEW.snapshot_json, '$.Id') <> 'text'
-  OR lower(json_extract(NEW.snapshot_json, '$.Id')) <> lower(NEW.snapshot_id)
-  OR json_type(NEW.snapshot_json, '$.Status') <> 'text'
-  OR json_extract(NEW.snapshot_json, '$.Status') <> NEW.status
-  OR json_type(NEW.snapshot_json, '$.CreatedAt') <> 'text'
-  OR json_extract(NEW.snapshot_json, '$.CreatedAt') <> NEW.created_at_utc
+WHEN json_valid(NEW.snapshot_json) IS NOT 1
+  OR json_type(NEW.snapshot_json, '$.Id') IS NOT 'text'
+  OR lower(json_extract(NEW.snapshot_json, '$.Id')) IS NOT lower(NEW.snapshot_id)
+  OR json_type(NEW.snapshot_json, '$.Status') IS NOT 'text'
+  OR json_extract(NEW.snapshot_json, '$.Status') IS NOT NEW.status
+  OR json_type(NEW.snapshot_json, '$.CreatedAt') IS NOT 'text'
+  OR json_extract(NEW.snapshot_json, '$.CreatedAt') IS NOT NEW.created_at_utc
 BEGIN
     SELECT RAISE(ABORT, 'fsrs_parameter_snapshot row and JSON identity must agree');
 END;
@@ -37,17 +37,18 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS fsrs_parameter_snapshot_update_guard
 BEFORE UPDATE ON fsrs_parameter_snapshot
-WHEN OLD.status <> 'PendingPreview'
+WHEN OLD.status IS NOT 'PendingPreview'
   OR NEW.status NOT IN ('ReadyForActivation','PreviewFailed')
-  OR NEW.snapshot_id <> OLD.snapshot_id
-  OR NEW.created_at_utc <> OLD.created_at_utc
-  OR json_valid(NEW.snapshot_json) <> 1
-  OR json_remove(OLD.snapshot_json, '$.Status') <> json_remove(NEW.snapshot_json, '$.Status')
-  OR json_type(NEW.snapshot_json, '$.Id') <> 'text'
-  OR lower(json_extract(NEW.snapshot_json, '$.Id')) <> lower(NEW.snapshot_id)
-  OR json_type(NEW.snapshot_json, '$.CreatedAt') <> 'text'
-  OR json_extract(NEW.snapshot_json, '$.CreatedAt') <> NEW.created_at_utc
-  OR json_extract(NEW.snapshot_json, '$.Status') <> NEW.status
+  OR NEW.snapshot_id IS NOT OLD.snapshot_id
+  OR NEW.created_at_utc IS NOT OLD.created_at_utc
+  OR json_valid(NEW.snapshot_json) IS NOT 1
+  OR json_remove(OLD.snapshot_json, '$.Status') IS NOT json_remove(NEW.snapshot_json, '$.Status')
+  OR json_type(NEW.snapshot_json, '$.Id') IS NOT 'text'
+  OR lower(json_extract(NEW.snapshot_json, '$.Id')) IS NOT lower(NEW.snapshot_id)
+  OR json_type(NEW.snapshot_json, '$.Status') IS NOT 'text'
+  OR json_extract(NEW.snapshot_json, '$.Status') IS NOT NEW.status
+  OR json_type(NEW.snapshot_json, '$.CreatedAt') IS NOT 'text'
+  OR json_extract(NEW.snapshot_json, '$.CreatedAt') IS NOT NEW.created_at_utc
   OR EXISTS (SELECT 1 FROM fsrs_parameter_activation WHERE snapshot_id=OLD.snapshot_id)
 BEGIN
     SELECT RAISE(ABORT, 'fsrs_parameter_snapshot payload and activated history are immutable');
