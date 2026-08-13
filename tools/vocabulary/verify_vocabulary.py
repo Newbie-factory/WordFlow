@@ -248,6 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--relations-path", type=Path)
     parser.add_argument("--relations-curated", type=Path, default=Path("data/curated/confusable_groups.csv"))
     parser.add_argument("--misspellings", type=Path, default=Path("data/curated/misspellings.csv"))
+    parser.add_argument("--relation-approval-policy", type=Path, default=Path("data/curated/relation_approval_policy.json"))
     parser.add_argument("--relations-quality", type=Path)
     parser.add_argument("--relations-manifest", type=Path)
     parser.add_argument("--oewn", type=Path, default=Path("data/sources/oewn/english-wordnet-2025-json.zip"))
@@ -276,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest_path,
             oewn=args.oewn,
             source_registry=args.source_registry,
+            approval_policy=args.relation_approval_policy,
         )
         payload["relations"] = asdict(relation_report)
         relations_passed = relation_report.passed

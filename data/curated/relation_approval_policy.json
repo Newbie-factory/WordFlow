@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "policy_version": "wordflow-reviewed-relations-2026-08-13-v1",
+  "curated_file_sha256": "45701DAB4271C3ACC508BB0ECA4C2D6E9ADD4C57793B56512B65521F25C7FA8B",
+  "misspellings_file_sha256": "59953E8B4514DE0A0DAF39E62E83C918A7A0383450FD444A9884FB955BA57454",
+  "groups": [
+    {"group_id": "g01", "relation_kind": "root_confusable", "members": ["degenerate", "degrade"]},
+    {"group_id": "g02", "relation_kind": "antonym_confusable", "members": ["herbivorous", "carnivorous"]},
+    {"group_id": "g03", "relation_kind": "root_confusable", "members": ["generation", "generalization", "generosity"]},
+    {"group_id": "g04", "relation_kind": "spelling_similar", "members": ["strategy", "tragedy"]},
+    {"group_id": "g05", "relation_kind": "spelling_similar", "members": ["pistol", "piston", "postal"]},
+    {"group_id": "g06", "relation_kind": "root_confusable", "members": ["extent", "extend"]},
+    {"group_id": "g07", "relation_kind": "root_confusable", "members": ["static", "statistic", "statue", "status"]},
+    {"group_id": "g08", "relation_kind": "spelling_similar", "members": ["summit", "submit"]},
+    {"group_id": "g09", "relation_kind": "spelling_similar", "members": ["stimulate", "stipulate", "dissimulate"]},
+    {"group_id": "g10", "relation_kind": "spelling_similar", "members": ["colleague", "college"]},
+    {"group_id": "g11", "relation_kind": "pronunciation_similar", "members": ["flock", "block"]},
+    {"group_id": "g12", "relation_kind": "root_confusable", "members": ["perceptible", "susceptible"]},
+    {"group_id": "g13", "relation_kind": "spelling_similar", "members": ["trumpet", "triumph"]},
+    {"group_id": "g14", "relation_kind": "pronunciation_similar", "members": ["vacation", "vocation"]},
+    {"group_id": "g15", "relation_kind": "spelling_similar", "members": ["inhabit", "inhibit", "inherit", "inherent"]},
+    {"group_id": "g16", "relation_kind": "spelling_similar", "members": ["desperate", "disparate"]},
+    {"group_id": "g17", "relation_kind": "spelling_similar", "members": ["devaluation", "deviation", "devastation"]},
+    {"group_id": "g18", "relation_kind": "root_confusable", "members": ["conserve", "converse", "observe"]}
+  ],
+  "misspellings": [
+    {"misspelling": "stimuate", "target": "stimulate"},
+    {"misspelling": "dissimuate", "target": "dissimulate"}
+  ]
+}

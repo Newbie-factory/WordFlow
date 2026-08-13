@@ -122,6 +122,20 @@ def write_registry(path: Path, archive: Path) -> None:
     }, indent=2) + "\n", encoding="utf-8")
 
 
+def write_approval_policy(path: Path, curated: Path, misspellings: Path) -> None:
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "policy_version": "test-reviewed-relations-v1",
+        "curated_file_sha256": sha256(curated),
+        "misspellings_file_sha256": sha256(misspellings),
+        "groups": [
+            {"group_id": "g01", "relation_kind": "spelling_similar", "members": ["degenerate", "degrade"]},
+            {"group_id": "g02", "relation_kind": "antonym_confusable", "members": ["herbivorous", "carnivorous"]},
+        ],
+        "misspellings": [{"misspelling": "stimuate", "target": "stimulate"}],
+    }, indent=2) + "\n", encoding="utf-8")
+
+
 class RelationBuilderTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -131,12 +145,15 @@ class RelationBuilderTests(unittest.TestCase):
         self.curated = root / "groups.csv"
         self.misspellings = root / "misspellings.csv"
         self.registry = root / "source_registry.json"
+        self.approval_policy = root / "relation_approval_policy.json"
         self.output = root / "relations.sqlite3"
         write_vocabulary(self.vocabulary)
         write_oewn(self.oewn)
         write_curated(self.curated)
         write_misspellings(self.misspellings)
         write_registry(self.registry, self.oewn)
+        write_approval_policy(self.approval_policy, self.curated, self.misspellings)
+        self.approval_sha = sha256(self.approval_policy)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -146,6 +163,10 @@ class RelationBuilderTests(unittest.TestCase):
 
         with patch("tools.vocabulary.build_relations.OEWN_BYTES", self.oewn.stat().st_size), patch(
             "tools.vocabulary.build_relations.OEWN_SHA256", sha256(self.oewn)
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_SHA256", self.approval_sha
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_VERSION", "test-reviewed-relations-v1"
         ):
             return build(RelationBuildConfig(
                 vocabulary=self.vocabulary,
@@ -156,6 +177,7 @@ class RelationBuilderTests(unittest.TestCase):
                 report=self.output.with_suffix(".quality.json"),
                 manifest=self.output.with_suffix(".manifest.json"),
                 source_registry=self.registry,
+                approval_policy=self.approval_policy,
             ))
 
     def test_synonyms_are_sense_and_pos_bound(self) -> None:
@@ -228,6 +250,10 @@ class RelationBuilderTests(unittest.TestCase):
         second_output = self.output.with_name("relations-second.sqlite3")
         with patch("tools.vocabulary.build_relations.OEWN_BYTES", self.oewn.stat().st_size), patch(
             "tools.vocabulary.build_relations.OEWN_SHA256", sha256(self.oewn)
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_SHA256", self.approval_sha
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_VERSION", "test-reviewed-relations-v1"
         ):
             second = build(RelationBuildConfig(
                 vocabulary=self.vocabulary,
@@ -238,13 +264,19 @@ class RelationBuilderTests(unittest.TestCase):
                 report=second_output.with_suffix(".quality.json"),
                 manifest=second_output.with_suffix(".manifest.json"),
                 source_registry=self.registry,
+                approval_policy=self.approval_policy,
             ))
         self.assertEqual(first.sqlite_sha256, second.sqlite_sha256)
         with patch("tools.vocabulary.build_relations.OEWN_BYTES", self.oewn.stat().st_size), patch(
             "tools.vocabulary.build_relations.OEWN_SHA256", sha256(self.oewn)
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_SHA256", self.approval_sha
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_VERSION", "test-reviewed-relations-v1"
         ):
             verification = verify_relations(self.output, vocabulary=self.vocabulary, curated=self.curated,
-                misspellings=self.misspellings, oewn=self.oewn, source_registry=self.registry)
+                misspellings=self.misspellings, oewn=self.oewn, source_registry=self.registry,
+                approval_policy=self.approval_policy)
         self.assertTrue(verification.passed)
         self.assertEqual(verification.sqlite_integrity, "ok")
 
@@ -265,6 +297,7 @@ class RelationBuilderTests(unittest.TestCase):
                     report=self.output.with_suffix(".quality.json"),
                     manifest=self.output.with_suffix(".manifest.json"),
                     source_registry=self.registry,
+                    approval_policy=self.approval_policy,
                 )
             )
         self.assertFalse(self.output.exists())
@@ -295,20 +328,29 @@ class RelationBuilderTests(unittest.TestCase):
         self.oewn.write_bytes(self.oewn.read_bytes() + b"substitute")
         with patch("tools.vocabulary.build_relations.OEWN_BYTES", pinned_bytes), patch(
             "tools.vocabulary.build_relations.OEWN_SHA256", pinned_hash
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_SHA256", self.approval_sha
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_VERSION", "test-reviewed-relations-v1"
         ):
             with self.assertRaisesRegex(ValueError, "OEWN (byte count|hash) mismatch"):
                 build(RelationBuildConfig(self.vocabulary, self.oewn, self.curated, self.misspellings,
                     self.output, self.output.with_suffix('.quality.json'), self.output.with_suffix('.manifest.json'),
-                    self.registry))
+                    self.registry, self.approval_policy))
 
-    def _verify(self):
+    def _verify(self, approval_sha: str | None = None):
         from tools.vocabulary.build_relations import verify_relation_artifacts
         with patch("tools.vocabulary.build_relations.OEWN_BYTES", self.oewn.stat().st_size), patch(
             "tools.vocabulary.build_relations.OEWN_SHA256", sha256(self.oewn)
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_SHA256", approval_sha or self.approval_sha
+        ), patch(
+            "tools.vocabulary.build_relations.APPROVAL_POLICY_VERSION", "test-reviewed-relations-v1"
         ):
             return verify_relation_artifacts(self.output, vocabulary=self.vocabulary, curated=self.curated,
                 misspellings=self.misspellings, quality=self.output.with_suffix('.quality.json'),
-                manifest=self.output.with_suffix('.manifest.json'), oewn=self.oewn, source_registry=self.registry)
+                manifest=self.output.with_suffix('.manifest.json'), oewn=self.oewn, source_registry=self.registry,
+                approval_policy=self.approval_policy)
 
     def _rehash_database(self) -> None:
         manifest = self.output.with_suffix('.manifest.json')
@@ -369,6 +411,89 @@ class RelationBuilderTests(unittest.TestCase):
         registry = Path('data/curated/source_registry.json')
         policy = load_oewn_policy(registry)
         self.assertEqual((policy['bytes'], policy['sha256']), (OEWN_BYTES, OEWN_SHA256))
+
+    def test_checked_in_approval_policy_anchors_all_reviewed_inputs(self) -> None:
+        from tools.vocabulary.build_relations import load_approval_policy, validate_approved_inputs
+
+        repository = Path(__file__).resolve().parents[3]
+        policy_path = repository / "data/curated/relation_approval_policy.json"
+        policy = load_approval_policy(policy_path)
+        self.assertEqual([group["group_id"] for group in policy["groups"]], [f"g{number:02d}" for number in range(1, 19)])
+        self.assertEqual(len(policy["groups"]), 18)
+        self.assertEqual(policy["misspellings"], [
+            {"misspelling": "stimuate", "target": "stimulate"},
+            {"misspelling": "dissimuate", "target": "dissimulate"},
+        ])
+        validate_approved_inputs(
+            repository / "data/curated/confusable_groups.csv",
+            repository / "data/curated/misspellings.csv",
+            policy_path,
+        )
+
+    def test_approved_group_contract_rejects_deletion_relabel_member_and_content_edits(self) -> None:
+        from tools.vocabulary.build_relations import validate_approved_inputs
+
+        repository = Path(__file__).resolve().parents[3]
+        policy = repository / "data/curated/relation_approval_policy.json"
+        source = repository / "data/curated/confusable_groups.csv"
+        approved_misspellings = repository / "data/curated/misspellings.csv"
+        with source.open("r", encoding="utf-8-sig", newline="") as stream:
+            fieldnames = tuple(csv.DictReader(stream).fieldnames or ())
+            stream.seek(0)
+            original = list(csv.DictReader(stream))
+
+        mutations = {
+            "g18 deletion": lambda rows: [row for row in rows if row["group_id"] != "g18"],
+            "g02 relabel": lambda rows: [dict(row, relation_kind="spelling_similar") if row["group_id"] == "g02" else row for row in rows],
+            "member substitution": lambda rows: [dict(row, word="substitute") if index == 0 else row for index, row in enumerate(rows)],
+            "contrast edit": lambda rows: [dict(row, contrast_zh_cn=row["contrast_zh_cn"] + "篡改") if index == 0 else row for index, row in enumerate(rows)],
+            "collocation edit": lambda rows: [dict(row, collocation=row["collocation"] + " tampered") if index == 0 else row for index, row in enumerate(rows)],
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                candidate = Path(self.temp.name) / f"{label.replace(' ', '-')}.csv"
+                with candidate.open("w", encoding="utf-8", newline="") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+                    writer.writeheader(); writer.writerows(mutate([dict(row) for row in original]))
+                with self.assertRaisesRegex(ValueError, "approved curated input"):
+                    validate_approved_inputs(candidate, approved_misspellings, policy)
+
+    def test_approved_misspelling_contract_rejects_replaced_deleted_and_extra_pairs(self) -> None:
+        from tools.vocabulary.build_relations import validate_approved_inputs
+
+        repository = Path(__file__).resolve().parents[3]
+        policy = repository / "data/curated/relation_approval_policy.json"
+        approved_curated = repository / "data/curated/confusable_groups.csv"
+        source = repository / "data/curated/misspellings.csv"
+        with source.open("r", encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream); fieldnames = tuple(reader.fieldnames or ()); original = list(reader)
+        extra = dict(original[0], misspelling="stimulatee")
+        mutations = {
+            "replaced": [dict(original[0], target="stipulate"), *original[1:]],
+            "deleted": original[:-1],
+            "extra": [*original, extra],
+        }
+        for label, rows in mutations.items():
+            with self.subTest(label=label):
+                candidate = Path(self.temp.name) / f"misspellings-{label}.csv"
+                with candidate.open("w", encoding="utf-8", newline="") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+                    writer.writeheader(); writer.writerows(rows)
+                with self.assertRaisesRegex(ValueError, "approved misspelling input"):
+                    validate_approved_inputs(approved_curated, candidate, policy)
+
+    def test_builder_and_verifier_reject_policy_tamper_and_malformed_policy_cleanly(self) -> None:
+        self.approval_policy.write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "approval policy SHA-256 mismatch"):
+            self.build()
+        self.assertFalse(self.output.exists())
+
+        write_approval_policy(self.approval_policy, self.curated, self.misspellings)
+        self.build()
+        self.approval_policy.write_text("{", encoding="utf-8")
+        result = self._verify(sha256(self.approval_policy))
+        self.assertFalse(result.passed)
+        self.assertTrue(any("malformed approval policy" in error for error in result.errors))
 
     def test_malformed_manifest_returns_clean_failure(self) -> None:
         self.build(); self.output.with_suffix('.manifest.json').write_text('{}\n',encoding='utf-8')

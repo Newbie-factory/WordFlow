@@ -1,2 +1,3 @@
 data/licenses/OEWN-2025-LICENSE.md text eol=lf whitespace=-trailing-space,-blank-at-eof
 data/licenses/WORDNET-LICENSE.txt text eol=lf whitespace=-trailing-space,-blank-at-eof
+data/curated/relation_approval_policy.json text eol=lf

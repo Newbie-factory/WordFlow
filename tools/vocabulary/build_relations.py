@@ -33,6 +33,8 @@ OEWN_LICENSE = "CC BY 4.0 with underlying Princeton WordNet license; see data/li
 OEWN_ROLE = "Sense, POS, synset, antonym and derivational evidence for published lexical relations"
 OEWN_BYTES = 9_986_555
 OEWN_SHA256 = "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51"
+APPROVAL_POLICY_VERSION = "wordflow-reviewed-relations-2026-08-13-v1"
+APPROVAL_POLICY_SHA256 = "5D9D5A95AFD220E285B8205702F6F906597C2D01D8808EA8A242F90934BC503E"
 RELATION_NAMESPACE = uuid.UUID("715948b4-5b8f-5f33-b82c-4e8f82db65ca")
 CURATED_FIELDS = ("group_id", "word", "relation_kind", "contrast_zh_cn", "collocation", "source_key", "review_state")
 MISSPELLING_FIELDS = ("misspelling", "target", "contrast_zh_cn", "source_key", "review_state")
@@ -58,6 +60,7 @@ class RelationBuildConfig:
     report: Path
     manifest: Path
     source_registry: Path
+    approval_policy: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +136,97 @@ def load_misspellings(path: Path) -> tuple[dict[str, str], ...]:
             raise ValueError("invalid reviewed directional misspelling")
         seen.add(row["misspelling"])
     return tuple(rows)
+
+
+def load_approval_policy(path: Path) -> dict[str, object]:
+    actual_sha = sha256(path)
+    if actual_sha != APPROVAL_POLICY_SHA256:
+        raise ValueError(
+            f"approval policy SHA-256 mismatch: expected {APPROVAL_POLICY_SHA256}, got {actual_sha}"
+        )
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"malformed approval policy: {error}") from error
+    if not isinstance(policy, dict) or set(policy) != {
+        "schema_version", "policy_version", "curated_file_sha256",
+        "misspellings_file_sha256", "groups", "misspellings",
+    }:
+        raise ValueError("malformed approval policy: exact top-level schema required")
+    if policy["schema_version"] != 1:
+        raise ValueError("malformed approval policy: schema_version must be 1")
+    if not isinstance(policy["policy_version"], str) or not policy["policy_version"]:
+        raise ValueError("malformed approval policy: policy_version required")
+    if policy["policy_version"] != APPROVAL_POLICY_VERSION:
+        raise ValueError("repository approval policy version mismatch")
+    for key in ("curated_file_sha256", "misspellings_file_sha256"):
+        value = policy[key]
+        if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789ABCDEF" for character in value):
+            raise ValueError(f"malformed approval policy: {key} must be uppercase SHA-256")
+    groups = policy["groups"]
+    if not isinstance(groups, list) or not groups:
+        raise ValueError("malformed approval policy: groups must be a nonempty list")
+    seen_groups: set[str] = set()
+    for group in groups:
+        if not isinstance(group, dict) or set(group) != {"group_id", "relation_kind", "members"}:
+            raise ValueError("malformed approval policy: invalid group object")
+        group_id, kind, members = group["group_id"], group["relation_kind"], group["members"]
+        if not isinstance(group_id, str) or group_id in seen_groups or kind not in CURATED_KINDS:
+            raise ValueError("malformed approval policy: invalid group identity or classification")
+        if not isinstance(members, list) or len(members) < 2 or any(not isinstance(word, str) or normalize_word(word) != word for word in members) or len(set(members)) != len(members):
+            raise ValueError("malformed approval policy: invalid ordered group members")
+        seen_groups.add(group_id)
+    corrections = policy["misspellings"]
+    if not isinstance(corrections, list) or not corrections:
+        raise ValueError("malformed approval policy: misspellings must be a nonempty list")
+    seen_misspellings: set[str] = set()
+    for correction in corrections:
+        if not isinstance(correction, dict) or set(correction) != {"misspelling", "target"}:
+            raise ValueError("malformed approval policy: invalid misspelling object")
+        misspelling, target = correction["misspelling"], correction["target"]
+        if not isinstance(misspelling, str) or not isinstance(target, str) or normalize_word(misspelling) != misspelling or normalize_word(target) != target or misspelling == target or misspelling in seen_misspellings:
+            raise ValueError("malformed approval policy: invalid directional misspelling")
+        seen_misspellings.add(misspelling)
+    return policy
+
+
+def validate_approved_inputs(curated: Path, misspellings: Path, approval_policy: Path) -> dict[str, object]:
+    policy = load_approval_policy(approval_policy)
+    curated_sha = sha256(curated)
+    misspellings_sha = sha256(misspellings)
+    try:
+        groups = load_curated_groups(curated)
+    except (OSError, UnicodeError, csv.Error, ValueError) as error:
+        raise ValueError(f"approved curated input invalid: {error}") from error
+    actual_groups = [
+        {
+            "group_id": group_id,
+            "relation_kind": members[0]["relation_kind"],
+            "members": [member["word"] for member in members],
+        }
+        for group_id, members in groups.items()
+    ]
+    if any(len({member["relation_kind"] for member in members}) != 1 for members in groups.values()) or actual_groups != policy["groups"]:
+        raise ValueError("approved curated input group contract mismatch")
+    if curated_sha != policy["curated_file_sha256"]:
+        raise ValueError(
+            f"approved curated input content SHA-256 mismatch: expected {policy['curated_file_sha256']}, got {curated_sha}"
+        )
+    try:
+        corrections = load_misspellings(misspellings)
+    except (OSError, UnicodeError, csv.Error, ValueError) as error:
+        raise ValueError(f"approved misspelling input invalid: {error}") from error
+    actual_corrections = [
+        {"misspelling": row["misspelling"], "target": row["target"]}
+        for row in corrections
+    ]
+    if actual_corrections != policy["misspellings"]:
+        raise ValueError("approved misspelling input pair contract mismatch")
+    if misspellings_sha != policy["misspellings_file_sha256"]:
+        raise ValueError(
+            f"approved misspelling input content SHA-256 mismatch: expected {policy['misspellings_file_sha256']}, got {misspellings_sha}"
+        )
+    return policy
 
 
 def load_oewn_policy(path: Path) -> dict[str, object]:
@@ -286,7 +380,8 @@ def _write_sqlite(path: Path, senses, published, candidates, metadata: dict[str,
         connection.commit(); connection.execute("VACUUM")
 
 
-def _expected_inputs(vocabulary: Path, oewn: Path, curated: Path, misspellings: Path, registry: Path):
+def _expected_inputs(vocabulary: Path, oewn: Path, curated: Path, misspellings: Path, registry: Path, approval_policy: Path):
+    validate_approved_inputs(curated, misspellings, approval_policy)
     words, details = _load_vocabulary(vocabulary)
     policy = load_oewn_policy(registry)
     archive = _validate_archive(oewn, policy)
@@ -333,10 +428,10 @@ def _schema(connection):
     return {(row[0], row[1]): row[2] for row in connection.execute("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
 
 
-def verify_relations(path: Path, *, vocabulary: Path, curated: Path, misspellings: Path, oewn: Path, source_registry: Path) -> RelationVerificationReport:
+def verify_relations(path: Path, *, vocabulary: Path, curated: Path, misspellings: Path, oewn: Path, source_registry: Path, approval_policy: Path) -> RelationVerificationReport:
     errors=[]; integrity="error"; sense_count=published_count=candidate_count=0
     try:
-        _, _, _, expected_senses, expected_published, expected_candidates, _, _ = _expected_inputs(vocabulary,oewn,curated,misspellings,source_registry)
+        _, _, _, expected_senses, expected_published, expected_candidates, _, _ = _expected_inputs(vocabulary,oewn,curated,misspellings,source_registry,approval_policy)
         with closing(sqlite3.connect(path)) as connection:
             integrity=connection.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity!="ok": errors.append("sqlite_integrity")
@@ -355,15 +450,15 @@ def verify_relations(path: Path, *, vocabulary: Path, curated: Path, misspelling
     return RelationVerificationReport(not errors,tuple(errors),integrity,sense_count,published_count,candidate_count)
 
 
-def verify_relation_artifacts(path: Path, *, vocabulary: Path, curated: Path, misspellings: Path, quality: Path, manifest: Path, oewn: Path, source_registry: Path) -> RelationArtifactVerification:
+def verify_relation_artifacts(path: Path, *, vocabulary: Path, curated: Path, misspellings: Path, quality: Path, manifest: Path, oewn: Path, source_registry: Path, approval_policy: Path) -> RelationArtifactVerification:
     errors=[]; relation=None
     try:
         manifest_data=json.loads(manifest.read_text(encoding="utf-8")); quality_data=json.loads(quality.read_text(encoding="utf-8"))
         policy=load_oewn_policy(source_registry)
-        relation=verify_relations(path,vocabulary=vocabulary,curated=curated,misspellings=misspellings,oewn=oewn,source_registry=source_registry)
+        relation=verify_relations(path,vocabulary=vocabulary,curated=curated,misspellings=misspellings,oewn=oewn,source_registry=source_registry,approval_policy=approval_policy)
         if not relation.passed: errors.extend(relation.errors)
-        _,details,groups,senses,published,candidates,semantic_filters,generation=_expected_inputs(vocabulary,oewn,curated,misspellings,source_registry)
-        inputs={"vocabulary_sha256":sha256(vocabulary),"oewn_sha256":sha256(oewn),"oewn_bytes":oewn.stat().st_size,"curated_sha256":sha256(curated),"misspellings_sha256":sha256(misspellings),"source_registry_sha256":sha256(source_registry)}
+        _,details,groups,senses,published,candidates,semantic_filters,generation=_expected_inputs(vocabulary,oewn,curated,misspellings,source_registry,approval_policy)
+        inputs={"vocabulary_sha256":sha256(vocabulary),"oewn_sha256":sha256(oewn),"oewn_bytes":oewn.stat().st_size,"curated_sha256":sha256(curated),"misspellings_sha256":sha256(misspellings),"source_registry_sha256":sha256(source_registry),"approval_policy_sha256":sha256(approval_policy)}
         expected_quality=_quality_payload(details,groups,senses,published,candidates,semantic_filters,generation,inputs)
         if quality_data!=expected_quality: errors.append("quality_exact_recomputation")
         if set(manifest_data) != {"schema_version","build_version","source","inputs","artifacts"} or manifest_data.get("schema_version")!=2 or manifest_data.get("build_version")!=BUILD_VERSION: errors.append("manifest_schema")
@@ -392,20 +487,20 @@ def _promote_files(staged_to_final, backup_root: Path, *, replace=os.replace):
 
 
 def build(config: RelationBuildConfig) -> RelationBuildReport:
-    config=RelationBuildConfig(*(Path(value).resolve(strict=index<4 or index==7) for index,value in enumerate((config.vocabulary,config.oewn,config.curated,config.misspellings,config.output,config.report,config.manifest,config.source_registry))))
-    inputs=(config.vocabulary,config.oewn,config.curated,config.misspellings,config.source_registry); targets=(config.output,config.report,config.manifest)
+    config=RelationBuildConfig(*(Path(value).resolve(strict=index<4 or index>=7) for index,value in enumerate((config.vocabulary,config.oewn,config.curated,config.misspellings,config.output,config.report,config.manifest,config.source_registry,config.approval_policy))))
+    inputs=(config.vocabulary,config.oewn,config.curated,config.misspellings,config.source_registry,config.approval_policy); targets=(config.output,config.report,config.manifest)
     if len(set(targets))!=3 or set(inputs)&set(targets): raise ValueError("relation inputs and outputs must not collide")
     for target in targets: target.parent.mkdir(parents=True,exist_ok=True)
     policy=load_oewn_policy(config.source_registry)
-    _,details,groups,senses,published,candidates,semantic_filters,generation=_expected_inputs(*inputs[:4],config.source_registry)
-    input_hashes={"vocabulary_sha256":sha256(config.vocabulary),"oewn_sha256":sha256(config.oewn),"oewn_bytes":config.oewn.stat().st_size,"curated_sha256":sha256(config.curated),"misspellings_sha256":sha256(config.misspellings),"source_registry_sha256":sha256(config.source_registry)}
+    _,details,groups,senses,published,candidates,semantic_filters,generation=_expected_inputs(*inputs)
+    input_hashes={"vocabulary_sha256":sha256(config.vocabulary),"oewn_sha256":sha256(config.oewn),"oewn_bytes":config.oewn.stat().st_size,"curated_sha256":sha256(config.curated),"misspellings_sha256":sha256(config.misspellings),"source_registry_sha256":sha256(config.source_registry),"approval_policy_sha256":sha256(config.approval_policy)}
     staging_root=Path(tempfile.mkdtemp(prefix=".relations.staging-",dir=config.output.parent)); backup_root=staging_root/".backups"
     staged_db,staged_quality,staged_manifest=staging_root/"relations.sqlite3",staging_root/"relations-quality.json",staging_root/"relations-manifest.json"
     try:
         _write_sqlite(staged_db,senses,published,candidates,expected_metadata(policy))
         quality=_quality_payload(details,groups,senses,published,candidates,semantic_filters,generation,input_hashes); write_json(staged_quality,quality)
         manifest={"schema_version":2,"build_version":BUILD_VERSION,"source":{"key":OEWN_KEY,"name":OEWN_NAME,"url":OEWN_URL,"edition":OEWN_EDITION,"license":OEWN_LICENSE,"bytes":policy["bytes"],"sha256":policy["sha256"]},"inputs":input_hashes,"artifacts":{"relations.sqlite3":sha256(staged_db),"relations-quality.json":sha256(staged_quality)}}; write_json(staged_manifest,manifest)
-        verification=verify_relation_artifacts(staged_db,vocabulary=config.vocabulary,curated=config.curated,misspellings=config.misspellings,quality=staged_quality,manifest=staged_manifest,oewn=config.oewn,source_registry=config.source_registry)
+        verification=verify_relation_artifacts(staged_db,vocabulary=config.vocabulary,curated=config.curated,misspellings=config.misspellings,quality=staged_quality,manifest=staged_manifest,oewn=config.oewn,source_registry=config.source_registry,approval_policy=config.approval_policy)
         if not verification.passed: raise RuntimeError(f"staged verification failed: {verification.errors}")
         _promote_files(((staged_db,config.output),(staged_quality,config.report),(staged_manifest,config.manifest)),backup_root)
     finally: shutil.rmtree(staging_root,ignore_errors=True)
@@ -415,13 +510,13 @@ def build(config: RelationBuildConfig) -> RelationBuildReport:
 
 def parse_args(argv=None):
     parser=argparse.ArgumentParser(description="Build WordFlow's pinned offline lexical relations")
-    for name in ("vocabulary","oewn","curated","misspellings","output","source-registry"): parser.add_argument(f"--{name}",type=Path,required=True)
+    for name in ("vocabulary","oewn","curated","misspellings","output","source-registry","approval-policy"): parser.add_argument(f"--{name}",type=Path,required=True)
     parser.add_argument("--report",type=Path); parser.add_argument("--manifest",type=Path)
     return parser.parse_args(argv)
 
 
 def main(argv=None):
-    args=parse_args(argv); report=build(RelationBuildConfig(args.vocabulary,args.oewn,args.curated,args.misspellings,args.output,args.report or args.output.with_name("relations-quality.json"),args.manifest or args.output.with_name("relations-manifest.json"),args.source_registry)); print(json.dumps(asdict(report),indent=2)); return 0
+    args=parse_args(argv); report=build(RelationBuildConfig(args.vocabulary,args.oewn,args.curated,args.misspellings,args.output,args.report or args.output.with_name("relations-quality.json"),args.manifest or args.output.with_name("relations-manifest.json"),args.source_registry,args.approval_policy)); print(json.dumps(asdict(report),indent=2)); return 0
 
 
 if __name__=="__main__": raise SystemExit(main())
