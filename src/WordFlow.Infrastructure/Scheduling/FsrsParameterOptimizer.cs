@@ -10,6 +10,7 @@ public sealed class FsrsOptimizerOptions
     public int SearchRounds { get; init; } = 4;
 
     public FsrsParameters? FixedCandidate { get; init; }
+
 }
 
 public sealed record EvaluationPartition(
@@ -58,58 +59,73 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
         var valid = FilterValidSamples(samples, ct);
         if (valid.Count < MinimumEligibleSampleCount)
         {
-            return new(
+            return EmptyResult(
                 OptimizationStatus.NotEligible,
                 baseline,
+                samples.Count,
                 valid.Count,
-                0,
-                0,
-                double.NaN,
-                double.NaN,
-                double.NaN,
-                double.NaN,
-                baseline,
-                double.NaN,
-                double.NaN);
+                "At least 400 valid review events are required.");
         }
 
-        var partition = CreateEvaluationPartition(valid, ValidationFraction);
-        if (partition.Training.Count == 0 || partition.Validation.Count == 0)
+        var partition = CreateEvaluationPartition(valid, ValidationFraction, ct);
+        var baselineEvaluator = (Func<IReadOnlyList<ReviewSample>, FsrsParameters, CancellationToken, LossEvaluation>)EvaluateLogLoss;
+        var trainingOk = TryEvaluate(
+            partition.Training, baseline, baselineEvaluator, ct, out var baselineTraining, out var baselineError);
+        var validationOk = TryEvaluate(
+            partition.Validation, baseline, baselineEvaluator, ct, out var baselineValidation, out var validationError);
+        if (!trainingOk || !validationOk)
         {
-            return new(
-                OptimizationStatus.NotEligible,
+            var reason = baselineError ?? validationError ?? "Baseline objective is unusable.";
+            return Result(
+                OptimizationStatus.InvalidData,
                 baseline,
+                baseline,
+                samples.Count,
                 valid.Count,
-                partition.Training.Count,
-                partition.Validation.Count,
-                double.NaN,
-                double.NaN,
-                double.NaN,
-                double.NaN,
-                baseline,
-                double.NaN,
-                double.NaN);
+                partition,
+                baselineTraining,
+                baselineValidation,
+                baselineTraining,
+                baselineValidation,
+                $"Baseline evaluation failed: {reason}");
         }
 
-        var baselineTraining = EvaluateLogLoss(partition.Training, baseline, ct);
-        var baselineValidation = EvaluateLogLoss(partition.Validation, baseline, ct);
-        EnsureUsableLoss(baselineTraining);
-        EnsureUsableLoss(baselineValidation);
+        if (!IsUsable(baselineTraining) || !IsUsable(baselineValidation))
+        {
+            return Result(
+                OptimizationStatus.NotEligible,
+                baseline,
+                baseline,
+                samples.Count,
+                valid.Count,
+                partition,
+                baselineTraining,
+                baselineValidation,
+                baselineTraining,
+                baselineValidation,
+                "Training and validation partitions must both contain replayable supervised observations.");
+        }
 
+        var candidateEvaluator = (Func<IReadOnlyList<ReviewSample>, FsrsParameters, CancellationToken, LossEvaluation>)EvaluateLogLoss;
         var totalEvaluations = 1 + (options.FixedCandidate is null ? options.SearchRounds * 21 * 2 : 1);
         var completed = 0;
         var candidate = options.FixedCandidate ?? baseline;
-        var candidateTraining = options.FixedCandidate is null
-            ? baselineTraining
-            : EvaluateLogLoss(partition.Training, candidate, ct);
+        var candidateTraining = baselineTraining;
+        string? candidateFailure = null;
+
         if (options.FixedCandidate is not null)
         {
+            if (!TryEvaluate(partition.Training, candidate, candidateEvaluator, ct, out candidateTraining, out candidateFailure)
+                || !IsUsable(candidateTraining))
+            {
+                candidateFailure ??= "Candidate training objective is non-finite or empty.";
+            }
             completed++;
             progress?.Report(new(
                 (double)completed / totalEvaluations,
                 completed,
                 totalEvaluations,
-                candidateTraining.Loss));
+                baselineTraining.Loss));
         }
         else
         {
@@ -125,16 +141,15 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
                     {
                         ct.ThrowIfCancellationRequested();
                         var trial = Perturb(best, index, direction, round);
-                        var trialEvaluation = EvaluateLogLoss(partition.Training, trial, ct);
-                        completed++;
-                        if (double.IsFinite(trialEvaluation.Loss)
-                            && trialEvaluation.ObservationCount > 0
+                        if (TryEvaluate(partition.Training, trial, candidateEvaluator, ct, out var trialEvaluation, out _)
+                            && IsUsable(trialEvaluation)
                             && trialEvaluation.Loss < bestLoss)
                         {
                             best = trial;
                             bestLoss = trialEvaluation.Loss;
                         }
 
+                        completed++;
                         progress?.Report(new(
                             (double)completed / totalEvaluations,
                             completed,
@@ -145,34 +160,67 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
             }
 
             candidate = best;
-            candidateTraining = EvaluateLogLoss(partition.Training, candidate, ct);
+            if (!TryEvaluate(partition.Training, candidate, candidateEvaluator, ct, out candidateTraining, out candidateFailure)
+                || !IsUsable(candidateTraining))
+            {
+                candidateFailure ??= "Final candidate training objective is non-finite or empty.";
+            }
         }
 
-        EnsureUsableLoss(candidateTraining);
-        var candidateValidation = EvaluateLogLoss(partition.Validation, candidate, ct);
-        EnsureUsableLoss(candidateValidation);
+        if (candidateFailure is not null)
+        {
+            return Result(
+                OptimizationStatus.BaselineRetained,
+                baseline,
+                candidate,
+                samples.Count,
+                valid.Count,
+                partition,
+                baselineTraining,
+                baselineValidation,
+                candidateTraining,
+                new(double.NaN, 0, Array.Empty<double>()),
+                $"Candidate rejected: {candidateFailure}");
+        }
+
+        if (!TryEvaluate(partition.Validation, candidate, candidateEvaluator, ct, out var candidateValidation, out candidateFailure)
+            || !IsUsable(candidateValidation))
+        {
+            return Result(
+                OptimizationStatus.BaselineRetained,
+                baseline,
+                candidate,
+                samples.Count,
+                valid.Count,
+                partition,
+                baselineTraining,
+                baselineValidation,
+                candidateTraining,
+                candidateValidation,
+                $"Candidate rejected: {candidateFailure ?? "validation objective is non-finite or empty"}.");
+        }
+
         completed = totalEvaluations;
         progress?.Report(new(1.0, completed, totalEvaluations, candidateTraining.Loss));
-
         var accepted = candidateValidation.Loss <= baselineValidation.Loss + ValidationTolerance;
-        return new(
+        return Result(
             accepted ? OptimizationStatus.Accepted : OptimizationStatus.BaselineRetained,
             accepted ? candidate : baseline,
-            valid.Count,
-            partition.Training.Count,
-            partition.Validation.Count,
-            accepted ? candidateTraining.Loss : baselineTraining.Loss,
-            accepted ? candidateValidation.Loss : baselineValidation.Loss,
-            baselineTraining.Loss,
-            baselineValidation.Loss,
             candidate,
-            candidateTraining.Loss,
-            candidateValidation.Loss);
+            samples.Count,
+            valid.Count,
+            partition,
+            baselineTraining,
+            baselineValidation,
+            candidateTraining,
+            candidateValidation,
+            accepted ? null : "Candidate validation loss exceeds the baseline tolerance.");
     }
 
     public static EvaluationPartition CreateEvaluationPartition(
         IReadOnlyList<ReviewSample> samples,
-        double validationFraction)
+        double validationFraction,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(samples);
         if (!double.IsFinite(validationFraction) || validationFraction <= 0 || validationFraction >= 1)
@@ -180,7 +228,11 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
             throw new ArgumentOutOfRangeException(nameof(validationFraction));
         }
 
-        var ordered = samples.OrderBy(x => x.ReviewedAt.ToUniversalTime()).ToArray();
+        ct.ThrowIfCancellationRequested();
+        var ordered = samples.ToArray();
+        ct.ThrowIfCancellationRequested();
+        Array.Sort(ordered, CompareSamples);
+        ct.ThrowIfCancellationRequested();
         if (ordered.Length < 2)
         {
             return new(ordered, Array.Empty<ReviewSample>());
@@ -191,26 +243,40 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
             1,
             ordered.Length - 1);
         var boundary = ordered[boundaryIndex].ReviewedAt.ToUniversalTime();
+        var histories = new Dictionary<string, List<ReviewSample>>(StringComparer.Ordinal);
+        foreach (var sample in ordered)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!histories.TryGetValue(sample.CardId, out var history))
+            {
+                history = [];
+                histories.Add(sample.CardId, history);
+            }
+            history.Add(sample);
+        }
+
         var training = new List<ReviewSample>();
         var validation = new List<ReviewSample>();
-        foreach (var history in ordered.GroupBy(x => x.CardId, StringComparer.Ordinal))
+        foreach (var history in histories.Values)
         {
-            var cardSamples = history.OrderBy(x => x.ReviewedAt.ToUniversalTime()).ToArray();
-            var first = cardSamples[0].ReviewedAt.ToUniversalTime();
-            var last = cardSamples[^1].ReviewedAt.ToUniversalTime();
+            ct.ThrowIfCancellationRequested();
+            var first = history[0].ReviewedAt.ToUniversalTime();
+            var last = history[^1].ReviewedAt.ToUniversalTime();
             if (last < boundary)
             {
-                training.AddRange(cardSamples);
+                training.AddRange(history);
             }
             else if (first >= boundary)
             {
-                validation.AddRange(cardSamples);
+                validation.AddRange(history);
             }
         }
 
-        return new(
-            training.OrderBy(x => x.ReviewedAt.ToUniversalTime()).ToArray(),
-            validation.OrderBy(x => x.ReviewedAt.ToUniversalTime()).ToArray());
+        ct.ThrowIfCancellationRequested();
+        training.Sort(CompareSamples);
+        validation.Sort(CompareSamples);
+        ct.ThrowIfCancellationRequested();
+        return new(training, validation);
     }
 
     public static LossEvaluation EvaluateLogLoss(
@@ -224,9 +290,12 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
         var states = new Dictionary<string, MemoryState>(StringComparer.Ordinal);
         var predictions = new List<double>();
         var sum = 0.0;
-        var count = 0;
+        var ordered = samples.ToArray();
+        ct.ThrowIfCancellationRequested();
+        Array.Sort(ordered, CompareSamples);
+        ct.ThrowIfCancellationRequested();
 
-        foreach (var sample in samples.OrderBy(x => x.ReviewedAt.ToUniversalTime()))
+        foreach (var sample in ordered)
         {
             ct.ThrowIfCancellationRequested();
             var rating = (Rating)sample.RatingValue!.Value;
@@ -241,27 +310,37 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
                 var recalled = rating is Rating.Hard or Rating.Good;
                 sum += recalled ? -Math.Log(probability) : -Math.Log(1.0 - probability);
                 predictions.Add(result.RetrievabilityBeforeReview);
-                count++;
             }
 
             states[sample.CardId] = result.State;
         }
 
-        return new(count == 0 ? double.NaN : sum / count, count, predictions);
+        return new(
+            predictions.Count == 0 ? double.NaN : sum / predictions.Count,
+            predictions.Count,
+            predictions);
     }
 
-    private static IReadOnlyList<ReviewSample> FilterValidSamples(
+    public static IReadOnlyList<ReviewSample> FilterValidSamples(
         IReadOnlyList<ReviewSample> samples,
         CancellationToken ct)
     {
-        var duplicateCommands = samples
-            .Where(sample => sample is not null && !string.IsNullOrWhiteSpace(sample.CommandId))
-            .GroupBy(sample => sample.CommandId, StringComparer.Ordinal)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
-            .ToHashSet(StringComparer.Ordinal);
+        ArgumentNullException.ThrowIfNull(samples);
+        var commandCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var sample in samples)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (sample is not null && !string.IsNullOrWhiteSpace(sample.CommandId))
+            {
+                commandCounts.TryGetValue(sample.CommandId, out var count);
+                commandCounts[sample.CommandId] = count + 1;
+            }
+        }
+
+        ct.ThrowIfCancellationRequested();
         var lastByCard = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
         var valid = new List<ReviewSample>();
+        var latestSchedulableInstant = DateTimeOffset.MaxValue.AddDays(-1);
         foreach (var sample in samples)
         {
             ct.ThrowIfCancellationRequested();
@@ -272,13 +351,14 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
                 || sample.IsInverse
                 || sample.Kind != ReviewSampleKind.Rating
                 || sample.RatingValue is not (1 or 2 or 3)
-                || duplicateCommands.Contains(sample.CommandId))
+                || commandCounts[sample.CommandId] > 1)
             {
                 continue;
             }
 
             var at = sample.ReviewedAt.ToUniversalTime();
-            if (lastByCard.TryGetValue(sample.CardId, out var previous) && at <= previous)
+            if (at > latestSchedulableInstant
+                || (lastByCard.TryGetValue(sample.CardId, out var previous) && at <= previous))
             {
                 continue;
             }
@@ -287,15 +367,25 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
             valid.Add(sample with { ReviewedAt = at });
         }
 
-        return valid.OrderBy(x => x.ReviewedAt).ToArray();
+        ct.ThrowIfCancellationRequested();
+        valid.Sort(CompareSamples);
+        ct.ThrowIfCancellationRequested();
+        return valid;
     }
 
-    private static FsrsParameters Perturb(FsrsParameters baseline, int index, int direction, int round)
+    public static FsrsParameters Perturb(FsrsParameters baseline, int index, int direction, int round)
     {
+        ArgumentNullException.ThrowIfNull(baseline);
+        if (index < 0 || index >= baseline.Values.Count || direction is not (-1 or 1) || round < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
         var values = baseline.Values.ToArray();
         var relativeStep = 0.08 / (round + 1.0);
-        var proposed = values[index] * Math.Exp(direction * relativeStep);
-        values[index] = proposed;
+        values[index] = values[index] == 0.0
+            ? direction * (0.36 / (round + 1.0))
+            : values[index] * Math.Exp(direction * relativeStep);
         try
         {
             return new(values);
@@ -306,11 +396,105 @@ public sealed class FsrsParameterOptimizer : IFsrsParameterOptimizer
         }
     }
 
-    private static void EnsureUsableLoss(LossEvaluation evaluation)
+    private static bool TryEvaluate(
+        IReadOnlyList<ReviewSample> samples,
+        FsrsParameters parameters,
+        Func<IReadOnlyList<ReviewSample>, FsrsParameters, CancellationToken, LossEvaluation> evaluator,
+        CancellationToken ct,
+        out LossEvaluation evaluation,
+        out string? error)
     {
-        if (evaluation.ObservationCount <= 0 || !double.IsFinite(evaluation.Loss))
+        try
         {
-            throw new InvalidOperationException("FSRS optimization produced a non-finite or empty objective.");
+            evaluation = evaluator(samples, parameters, ct);
+            error = null;
+            return true;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArithmeticException
+            or ArgumentException
+            or InvalidOperationException)
+        {
+            evaluation = new(double.NaN, 0, Array.Empty<double>());
+            error = $"{exception.GetType().Name}: {exception.Message}";
+            return false;
+        }
+    }
+
+    private static bool IsUsable(LossEvaluation evaluation) =>
+        evaluation.ObservationCount > 0 && double.IsFinite(evaluation.Loss);
+
+    private static OptimizationResult EmptyResult(
+        OptimizationStatus status,
+        FsrsParameters baseline,
+        int inputCount,
+        int validCount,
+        string reason) => new(
+            status,
+            baseline,
+            validCount,
+            0,
+            0,
+            double.NaN,
+            double.NaN,
+            double.NaN,
+            double.NaN,
+            baseline,
+            double.NaN,
+            double.NaN,
+            inputCount,
+            validCount,
+            inputCount - validCount,
+            0,
+            0,
+            0,
+            0,
+            reason);
+
+    private static OptimizationResult Result(
+        OptimizationStatus status,
+        FsrsParameters applied,
+        FsrsParameters candidate,
+        int inputCount,
+        int validCount,
+        EvaluationPartition partition,
+        LossEvaluation baselineTraining,
+        LossEvaluation baselineValidation,
+        LossEvaluation candidateTraining,
+        LossEvaluation candidateValidation,
+        string? rejectionReason) => new(
+            status,
+            applied,
+            validCount,
+            partition.Training.Count,
+            partition.Validation.Count,
+            status == OptimizationStatus.Accepted ? candidateTraining.Loss : baselineTraining.Loss,
+            status == OptimizationStatus.Accepted ? candidateValidation.Loss : baselineValidation.Loss,
+            baselineTraining.Loss,
+            baselineValidation.Loss,
+            candidate,
+            candidateTraining.Loss,
+            candidateValidation.Loss,
+            inputCount,
+            validCount,
+            inputCount - validCount,
+            partition.Training.Count,
+            partition.Validation.Count,
+            baselineTraining.ObservationCount,
+            baselineValidation.ObservationCount,
+            rejectionReason);
+
+    private static int CompareSamples(ReviewSample? left, ReviewSample? right)
+    {
+        if (ReferenceEquals(left, right)) return 0;
+        if (left is null) return -1;
+        if (right is null) return 1;
+        var byTime = left.ReviewedAt.ToUniversalTime().CompareTo(right.ReviewedAt.ToUniversalTime());
+        if (byTime != 0) return byTime;
+        var byCommand = string.CompareOrdinal(left.CommandId, right.CommandId);
+        return byCommand != 0 ? byCommand : string.CompareOrdinal(left.CardId, right.CardId);
     }
 }

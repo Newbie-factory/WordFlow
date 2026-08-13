@@ -10,6 +10,7 @@ public static class FsrsParameterOptimizerContract
 public enum OptimizationStatus
 {
     NotEligible,
+    InvalidData,
     Accepted,
     BaselineRetained,
 }
@@ -32,7 +33,15 @@ public sealed record OptimizationResult(
     double BaselineValidationLoss,
     FsrsParameters CandidateParameters,
     double CandidateTrainingLoss,
-    double CandidateValidationLoss);
+    double CandidateValidationLoss,
+    int InputEventCount,
+    int ValidEventCount,
+    int FilteredEventCount,
+    int TrainingEventCount,
+    int ValidationEventCount,
+    int TrainingObservationCount,
+    int ValidationObservationCount,
+    string? RejectionReason);
 
 public interface IFsrsParameterOptimizer
 {

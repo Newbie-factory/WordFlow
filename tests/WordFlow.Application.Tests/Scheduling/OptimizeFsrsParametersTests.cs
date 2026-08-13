@@ -23,6 +23,10 @@ public sealed class OptimizeFsrsParametersTests
         Assert.Equal(FsrsParameters.Default.Values, snapshot.SourceParameters.Values);
         Assert.Equal(candidate.Values, snapshot.CandidateParameters.Values);
         Assert.Equal(400, snapshot.SampleCount);
+        Assert.Equal(OptimizationStatus.Accepted, snapshot.OptimizationStatus);
+        Assert.Equal(400, snapshot.ValidEventCount);
+        Assert.Equal(320, snapshot.TrainingEventCount);
+        Assert.Equal(300, snapshot.TrainingObservationCount);
         Assert.Equal(Day(5), snapshot.CreatedAt);
         Assert.Equal(OptimizationSnapshotStatus.ReadyForActivation, snapshot.Status);
         Assert.Single(output.DueDatePreview);
@@ -62,16 +66,90 @@ public sealed class OptimizeFsrsParametersTests
             new FakeClock(Day(5)));
         var optimized = useCase.Execute([], CancellationToken.None).Snapshot;
         useCase.Activate(optimized.Id);
-        var defaults = store.AppendSnapshot(OptimizationSnapshot.RestoredSource(
-            Guid.NewGuid(), FsrsParameters.Default, Day(6)));
+        var originalActivation = store.SeedTrustedInitial(FsrsParameters.Default, Day(1));
 
-        useCase.Restore(defaults.Id);
+        useCase.Restore(originalActivation.Id);
 
-        Assert.Equal(2, store.ActivationEvents.Count);
+        Assert.Equal(3, store.ActivationEvents.Count);
         Assert.Equal(ActivationReason.Restored, store.ActivationEvents[^1].Reason);
+        Assert.Equal(originalActivation.Id, store.ActivationEvents[^1].SourceActivationId);
         Assert.Equal(FsrsParameters.Default.Values, store.ActiveParameters.Values);
         Assert.Equal(0, store.RewriteHistoryCalls);
         Assert.Equal(0, store.MassRescheduleCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Preview_failure_or_cancellation_leaves_snapshot_nonactivatable(bool cancelled)
+    {
+        var store = new FakeStore(FsrsParameters.Default);
+        Exception exception = cancelled
+            ? new OperationCanceledException("preview cancelled")
+            : new InvalidOperationException("preview failed");
+        var previewer = new ThrowingPreviewer(exception);
+        var useCase = new OptimizeFsrsParameters(
+            new FakeOptimizer(Accepted(PerturbedDefaults())), store, previewer, new FakeClock(Day(5)));
+
+        var thrown = Assert.ThrowsAny<Exception>(() => useCase.Execute([], default));
+
+        Assert.IsType(exception.GetType(), thrown);
+        var snapshot = Assert.Single(store.Snapshots);
+        Assert.Equal(OptimizationSnapshotStatus.PreviewFailed, snapshot.Status);
+        Assert.Throws<InvalidOperationException>(() => useCase.Activate(snapshot.Id));
+    }
+
+    [Fact]
+    public void Store_failure_during_ready_transition_never_leaves_activatable_snapshot()
+    {
+        var store = new FakeStore(FsrsParameters.Default) { ThrowOnReadyTransition = true };
+        var useCase = new OptimizeFsrsParameters(
+            new FakeOptimizer(Accepted(PerturbedDefaults())), store, new FakePreviewer([]), new FakeClock(Day(5)));
+
+        Assert.Throws<InvalidOperationException>(() => useCase.Execute([], default));
+        Assert.Equal(OptimizationSnapshotStatus.PendingPreview, Assert.Single(store.Snapshots).Status);
+        Assert.Empty(store.ActivationEvents);
+    }
+
+    [Fact]
+    public void Restore_rejects_forged_or_never_activated_snapshot()
+    {
+        var store = new FakeStore(FsrsParameters.Default);
+        var useCase = new OptimizeFsrsParameters(
+            new FakeOptimizer(Accepted(PerturbedDefaults())), store, new FakePreviewer([]), new FakeClock(Day(5)));
+        var ready = useCase.Execute([], default).Snapshot;
+
+        Assert.Throws<KeyNotFoundException>(() => useCase.Restore(Guid.NewGuid()));
+        Assert.Throws<InvalidOperationException>(() => useCase.Restore(ready.Id));
+    }
+
+    [Fact]
+    public void Audit_preserves_exact_optimizer_status_counts_and_rejection_reason()
+    {
+        var result = Accepted(PerturbedDefaults()) with
+        {
+            Status = OptimizationStatus.NotEligible,
+            InputEventCount = 450,
+            ValidEventCount = 400,
+            FilteredEventCount = 50,
+            TrainingEventCount = 300,
+            ValidationEventCount = 100,
+            TrainingObservationCount = 0,
+            ValidationObservationCount = 0,
+            RejectionReason = "No replayable observations",
+        };
+        var store = new FakeStore(FsrsParameters.Default);
+        var output = new OptimizeFsrsParameters(
+            new FakeOptimizer(result), store, new FakePreviewer([]), new FakeClock(Day(5))).Execute([], default);
+
+        Assert.Equal(OptimizationStatus.NotEligible, output.Snapshot.OptimizationStatus);
+        Assert.Equal(450, output.Snapshot.InputEventCount);
+        Assert.Equal(400, output.Snapshot.ValidEventCount);
+        Assert.Equal(50, output.Snapshot.FilteredEventCount);
+        Assert.Equal(300, output.Snapshot.TrainingEventCount);
+        Assert.Equal(100, output.Snapshot.ValidationEventCount);
+        Assert.Equal(0, output.Snapshot.TrainingObservationCount);
+        Assert.Equal("No replayable observations", output.Snapshot.RejectionReason);
     }
 
     [Fact]
@@ -112,7 +190,15 @@ public sealed class OptimizeFsrsParametersTests
         BaselineValidationLoss: .52,
         CandidateParameters: candidate,
         CandidateTrainingLoss: .4,
-        CandidateValidationLoss: .42);
+        CandidateValidationLoss: .42,
+        InputEventCount: 400,
+        ValidEventCount: 400,
+        FilteredEventCount: 0,
+        TrainingEventCount: 320,
+        ValidationEventCount: 80,
+        TrainingObservationCount: 300,
+        ValidationObservationCount: 75,
+        RejectionReason: null);
 
     private static FsrsParameters PerturbedDefaults()
     {
@@ -135,7 +221,12 @@ public sealed class OptimizeFsrsParametersTests
 
     private sealed class FakePreviewer(IReadOnlyList<DueDatePreview> preview) : IFsrsDueDatePreviewer
     {
-        public IReadOnlyList<DueDatePreview> Preview(FsrsParameters source, FsrsParameters candidate) => preview;
+        public IReadOnlyList<DueDatePreview> Preview(FsrsParameters source, FsrsParameters candidate, CancellationToken ct) => preview;
+    }
+
+    private sealed class ThrowingPreviewer(Exception exception) : IFsrsDueDatePreviewer
+    {
+        public IReadOnlyList<DueDatePreview> Preview(FsrsParameters source, FsrsParameters candidate, CancellationToken ct) => throw exception;
     }
 
     private sealed class FakeClock(DateTimeOffset utcNow) : IOptimizationClock
@@ -150,6 +241,7 @@ public sealed class OptimizeFsrsParametersTests
         public List<FsrsParametersActivated> ActivationEvents { get; } = [];
         public int RewriteHistoryCalls { get; private set; }
         public int MassRescheduleCalls { get; private set; }
+        public bool ThrowOnReadyTransition { get; init; }
 
         public OptimizationSnapshot AppendSnapshot(OptimizationSnapshot snapshot)
         {
@@ -158,6 +250,28 @@ public sealed class OptimizeFsrsParametersTests
         }
 
         public OptimizationSnapshot? FindSnapshot(Guid id) => Snapshots.SingleOrDefault(x => x.Id == id);
+
+        public OptimizationSnapshot UpdateSnapshot(OptimizationSnapshot snapshot)
+        {
+            if (ThrowOnReadyTransition && snapshot.Status == OptimizationSnapshotStatus.ReadyForActivation)
+            {
+                throw new InvalidOperationException("store transition failed");
+            }
+            var index = Snapshots.FindIndex(x => x.Id == snapshot.Id);
+            Snapshots[index] = snapshot;
+            return snapshot;
+        }
+
+        public FsrsParametersActivated? FindActivation(Guid id) => ActivationEvents.SingleOrDefault(x => x.Id == id);
+
+        public FsrsParametersActivated SeedTrustedInitial(FsrsParameters parameters, DateTimeOffset at)
+        {
+            var snapshot = OptimizationSnapshot.TrustedInitial(Guid.NewGuid(), parameters, at);
+            AppendSnapshot(snapshot);
+            var activation = new FsrsParametersActivated(Guid.NewGuid(), snapshot.Id, at, ActivationReason.Initial, null);
+            AppendActivation(activation);
+            return activation;
+        }
 
         public void AppendActivation(FsrsParametersActivated activation)
         {

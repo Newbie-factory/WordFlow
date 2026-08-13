@@ -143,6 +143,130 @@ public sealed class FsrsParameterOptimizerTests
             .Optimize(SyntheticSamples(480), FsrsParameters.Default, source.Token, progress));
     }
 
+    [Fact]
+    public void Four_hundred_singleton_cards_return_not_eligible_with_zero_observations()
+    {
+        var start = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var samples = Enumerable.Range(0, 400)
+            .Select(i => new ReviewSample($"single-{i}", $"single-card-{i}", start.AddMinutes(i), 3))
+            .ToArray();
+
+        var result = new FsrsParameterOptimizer().Optimize(samples, FsrsParameters.Default, default);
+
+        Assert.Equal(OptimizationStatus.NotEligible, result.Status);
+        Assert.Equal(400, result.ValidEventCount);
+        Assert.Equal(0, result.FilteredEventCount);
+        Assert.Equal(0, result.TrainingObservationCount + result.ValidationObservationCount);
+        Assert.Contains("observation", result.RejectionReason!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Boundary_spanning_cards_return_not_eligible_with_accurate_partition_counts()
+    {
+        var start = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var samples = Enumerable.Range(0, 200)
+            .SelectMany(i => new[]
+            {
+                new ReviewSample($"span-{i}-a", $"span-{i}", start.AddMinutes(i), 3),
+                new ReviewSample($"span-{i}-b", $"span-{i}", start.AddYears(1).AddMinutes(i), 3),
+            }).OrderBy(x => x.ReviewedAt).ToArray();
+
+        var result = new FsrsParameterOptimizer().Optimize(samples, FsrsParameters.Default, default);
+
+        Assert.Equal(OptimizationStatus.NotEligible, result.Status);
+        Assert.Equal(400, result.ValidEventCount);
+        Assert.Equal(240, result.TrainingEventCount);
+        Assert.Equal(0, result.ValidationEventCount);
+        Assert.Equal(120, result.TrainingObservationCount);
+        Assert.Equal(0, result.ValidationObservationCount);
+    }
+
+    [Fact]
+    public void Schedule_impossible_instant_is_filtered_without_aborting_run()
+    {
+        var samples = SyntheticSamples(400).Append(
+            new ReviewSample("max-time", "corrupt-time", DateTimeOffset.MaxValue, 3)).ToArray();
+
+        var result = new FsrsParameterOptimizer(searchRounds: 1)
+            .Optimize(samples, FsrsParameters.Default, default);
+
+        Assert.NotEqual(OptimizationStatus.InvalidData, result.Status);
+        Assert.Equal(401, result.InputEventCount);
+        Assert.Equal(400, result.ValidEventCount);
+        Assert.Equal(1, result.FilteredEventCount);
+    }
+
+    [Fact]
+    public void Unusable_candidate_is_rejected_and_baseline_retained_with_reason()
+    {
+        var samples = SyntheticSamples(480).Append(new ReviewSample(
+            "near-limit", "near-limit-card", DateTimeOffset.MaxValue.AddDays(-2), 3)).ToArray();
+        var values = new[]
+        {
+            100d, 100d, 100d, 100d, 10d, 4d, 4d, .75d, 4.5d, .8d, 3.5d,
+            5d, .25d, .9d, 4d, 1d, 6d, 2d, 2d, .8d, .8d,
+        };
+        var result = new FsrsParameterOptimizer(new FsrsOptimizerOptions
+        {
+            SearchRounds = 0,
+            FixedCandidate = new FsrsParameters(values),
+        }).Optimize(samples, FsrsParameters.Default, default);
+
+        Assert.Equal(OptimizationStatus.BaselineRetained, result.Status);
+        Assert.Equal(FsrsParameters.Default.Values, result.Parameters.Values);
+        Assert.Contains("rejected", result.RejectionReason!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ArgumentOutOfRange", result.RejectionReason!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Unusable_baseline_returns_invalid_data_instead_of_candidate_rejection()
+    {
+        var samples = SyntheticSamples(480).Append(new ReviewSample(
+            "near-limit", "near-limit-card", DateTimeOffset.MaxValue.AddDays(-2), 3)).ToArray();
+        var values = new[]
+        {
+            100d, 100d, 100d, 100d, 10d, 4d, 4d, .75d, 4.5d, .8d, 3.5d,
+            5d, .25d, .9d, 4d, 1d, 6d, 2d, 2d, .8d, .8d,
+        };
+        var result = new FsrsParameterOptimizer().Optimize(samples, new FsrsParameters(values), default);
+
+        Assert.Equal(OptimizationStatus.InvalidData, result.Status);
+        Assert.Contains("baseline", result.RejectionReason!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Cancellation_is_checked_in_duplicate_discovery_and_partitioning()
+    {
+        var samples = SyntheticSamples(480);
+        using var first = new CancellationTokenSource();
+        first.Cancel();
+        Assert.Throws<OperationCanceledException>(() => FsrsParameterOptimizer.FilterValidSamples(samples, first.Token));
+
+        using var second = new CancellationTokenSource();
+        second.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            FsrsParameterOptimizer.CreateEvaluationPartition(samples, .2, second.Token));
+    }
+
+    [Fact]
+    public void Zero_bound_coordinate_can_move_deterministically_within_official_bounds()
+    {
+        var values = FsrsParameters.Default.Values.ToArray();
+        values[14] = 0;
+        var source = new FsrsParameters(values);
+
+        var first = FsrsParameterOptimizer.Perturb(source, 14, 1, 0);
+        var second = FsrsParameterOptimizer.Perturb(source, 14, 1, 0);
+
+        Assert.Equal(first.Values, second.Values);
+        Assert.True(first.Values[14] > 0);
+        _ = new FsrsParameters(first.Values);
+
+        var optimized = new FsrsParameterOptimizer(seed: 1776, searchRounds: 2)
+            .Optimize(SyntheticSamples(480), source, default);
+        Assert.True(optimized.CandidateParameters.Values[14] > 0);
+    }
+
     private static IReadOnlyList<ReviewSample> SyntheticSamples(int count)
     {
         var start = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);

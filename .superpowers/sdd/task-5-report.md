@@ -88,3 +88,37 @@ The Application use case stores a snapshot containing algorithm version, source 
 - The bounded coordinate search is conservative and deterministic, not a global optimizer. Held-out validation protects activation from a worse candidate; future algorithms can increment the version while preserving snapshots.
 - `IProgress<T>` itself may capture a synchronization context if a caller chooses `Progress<T>`; the optimizer has no UI dependency and never blocks or invokes a dispatcher. Callers needing worker-thread callbacks can provide a synchronous/custom progress sink as the tests do.
 - The focused store is an Application port plus test fake only. Durable activation semantics still require the explicitly deferred Task 7 SQLite adapter.
+
+## Independent-review remediation
+
+The independent review reported six Important and two Minor findings. All were addressed with test-first changes.
+
+### Explicit ineligibility and complete counts (I1, I6)
+
+`OptimizationResult` and the persisted snapshot now carry the exact optimizer status (`NotEligible`, `InvalidData`, `Accepted`, or `BaselineRetained`), input/valid/filtered event counts, training/validation event counts, training/validation supervised observation counts, and a rejection reason. The legacy sample fields remain populated consistently for compatibility. Four hundred singleton cards now return `NotEligible` with 400 valid events and zero observations instead of throwing. A boundary-spanning fixture reports 400 valid events, 240 training events/120 observations, and zero validation events/observations, then returns `NotEligible`.
+
+### Corrupt instants and numerical failure containment (I2, I3)
+
+Filtering rejects instants after `DateTimeOffset.MaxValue - 1 day`, which cannot honor Task 4's minimum one-day due interval; such events increment the filtered count and no longer abort an otherwise eligible run. Every trial and final candidate evaluation is isolated from arithmetic/domain/representability exceptions. Unusable trials are skipped; an unusable final candidate retains the usable baseline with its candidate and exception reason audited. A baseline that cannot replay is classified `InvalidData`, never mislabeled as a candidate rejection. Tests exercise these paths through the real Task 4 scheduler with near-maximum instants and extreme but officially bounded parameter sets—there are no test-only evaluator hooks in production.
+
+### Preview safety and restore provenance (I4, I5)
+
+Accepted optimizer results are appended as `PendingPreview`. Preview success is required before the store transitions the snapshot to `ReadyForActivation`; preview exception or cancellation transitions it to `PreviewFailed`. If the ready transition itself fails, the durable snapshot remains pending and nonactivatable. Tests cover ordinary preview exceptions, preview cancellation, and ready-transition store failure.
+
+Activation events now have their own IDs. `Restore` accepts only a prior activation-event ID returned by the store, resolves its snapshot, and appends a new activation carrying `SourceActivationId`. Snapshot IDs—including ready but never activated snapshots—and unknown/forged IDs are rejected. Trusted initial settings are represented by a trusted snapshot plus an initial activation event in the fake, not by a caller-constructible `RestoredSource` shortcut.
+
+### Cancellation and zero-bound coordinates (M1, M2)
+
+Explicit cancellation checks now cover duplicate counting, the filtering pass, pre/post sort, partition history construction, grouping, final partition sorts, replay, and candidate loops. Named tests cover cancellation before duplicate discovery and partitioning. Coordinates at zero now receive a deterministic positive additive step; all other coordinates retain decreasing multiplicative steps. A real optimization from parameter 14 at zero moves it positive, remains deterministic, and passes the unchanged official `FsrsParameters` bounds.
+
+### Remediation verification
+
+- `dotnet test tests\WordFlow.Infrastructure.Tests -c Release --filter FullyQualifiedName~Scheduling --no-restore`: 15/15 passed.
+- `dotnet test tests\WordFlow.Application.Tests -c Release --filter FullyQualifiedName~Scheduling --no-restore`: 9/9 passed.
+- `dotnet test WordFlow.sln -c Release --no-restore`: Domain 107/107, Infrastructure 15/15, Application 9/9; 131 tests passed total (App test assembly still has no tests).
+- `dotnet build WordFlow.sln -c Release --no-restore`: 0 warnings, 0 errors.
+- `python -m unittest discover -s tools\vocabulary\tests`: 54/54 passed.
+- Pinned optimizer fixture regeneration: exact content match.
+- `git diff --check`: clean except informational Windows line-ending warnings.
+
+Remediation concern: the Task 5 port/fake proves state-machine intent but not durable transactional semantics. A Task 7 store must atomically enforce snapshot transitions and activation-event provenance; no SQLite adapter was added here.
