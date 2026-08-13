@@ -6,9 +6,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$PinnedSha256 = '7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51'
-$Uri = 'https://en-word.net/downloads/english-wordnet-2025-json.zip'
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+$RegistryPath = Join-Path $RepositoryRoot 'data\curated\source_registry.json'
+$Policy = (Get-Content -LiteralPath $RegistryPath -Raw | ConvertFrom-Json).sources.oewn_2025
+$PinnedSha256 = [string]$Policy.sha256
+$PinnedBytes = [int64]$Policy.bytes
+$Uri = [string]$Policy.url
+if ($Policy.name -ne 'Open English WordNet 2025 core JSON edition' -or
+    $Policy.url -ne 'https://en-word.net/downloads/english-wordnet-2025-json.zip' -or
+    $Policy.edition -ne '2025 core (without Namenet)' -or
+    $Policy.role -ne 'Sense, POS, synset, antonym and derivational evidence for published lexical relations' -or
+    $Policy.license -ne 'CC BY 4.0 with underlying Princeton WordNet license; see data/licenses/OEWN-2025-LICENSE.md and data/licenses/WORDNET-LICENSE.txt' -or
+    $PinnedSha256 -ne '7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51' -or
+    $PinnedBytes -ne 9986555) {
+    throw 'Repository OEWN registry policy is invalid'
+}
 $DestinationDirectory = Join-Path $RepositoryRoot 'data\sources\oewn'
 $Destination = Join-Path $DestinationDirectory 'english-wordnet-2025-json.zip'
 $Partial = "$Destination.partial"
@@ -21,6 +33,9 @@ New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 try {
     Invoke-WebRequest -Uri $Uri -OutFile $Partial
+    if ((Get-Item -LiteralPath $Partial).Length -ne $PinnedBytes) {
+        throw "OEWN byte count mismatch: expected $PinnedBytes"
+    }
     $ActualSha256 = (Get-FileHash -LiteralPath $Partial -Algorithm SHA256).Hash
     if ($ActualSha256 -ne $PinnedSha256) {
         throw "OEWN hash mismatch: expected $PinnedSha256, got $ActualSha256"

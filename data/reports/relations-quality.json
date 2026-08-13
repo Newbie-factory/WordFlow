@@ -1,15 +1,39 @@
 {
-  "build_version": "wordflow-relations-v1",
+  "build_version": "wordflow-relations-v2",
   "counts": {
-    "candidates": 19520,
-    "filtered": 141182,
+    "algorithmic_candidates": 19520,
     "lexical_senses": 43947,
     "missing_definitions": 0,
     "missing_phonetics": 481,
-    "published": 47754,
-    "relations": 67274,
-    "reviewed": 78,
-    "verified_semantic": 47676
+    "out_of_corpus_senses": 141182,
+    "published_relations": 47934,
+    "reviewed_relations": 78,
+    "verified_semantic": 47856
+  },
+  "coverage": {
+    "candidate_confirmation_denominator": 19536,
+    "candidate_confirmation_rate": 0.000819000819000819,
+    "candidate_confirmed": 16,
+    "reviewed_coverage_rate": 1.0,
+    "reviewed_expected": 78,
+    "reviewed_present": 78
+  },
+  "filter_reasons": {
+    "candidate": {
+      "bucket_oversize_filtered_pairs": 145755,
+      "bucket_pairs_considered": 226238,
+      "degree_cap_filtered_pairs": 13453,
+      "edit_distance_filtered_pairs": 203017,
+      "retained_directed_candidates": 19536,
+      "reviewed_overlap_filtered_directed": 16,
+      "shared_edge_filtered_pairs": 0
+    },
+    "semantic": {
+      "missing_relation_target": 14369,
+      "out_of_corpus_sense": 141182,
+      "pos_mismatch": 0,
+      "self_relation": 14304
+    }
   },
   "fixed_groups": {
     "bidirectionally_reachable": 18,
@@ -18,23 +42,10 @@
   "inputs": {
     "curated_sha256": "45701DAB4271C3ACC508BB0ECA4C2D6E9ADD4C57793B56512B65521F25C7FA8B",
     "misspellings_sha256": "59953E8B4514DE0A0DAF39E62E83C918A7A0383450FD444A9884FB955BA57454",
+    "oewn_bytes": 9986555,
     "oewn_sha256": "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51",
+    "source_registry_sha256": "605331956BA691DECD17C43B6D3494F0607531800120A10B55ABA307EB258DB1",
     "vocabulary_sha256": "7B0D2ED0161EC0BC1F4B238A84DFD9D20AAB0A413C412A64501EAD4E52FA1BB9"
   },
-  "schema_version": 1,
-  "verification": {
-    "candidate_count": 19520,
-    "duplicate_relations": 0,
-    "missing_misspellings": 0,
-    "missing_reverse_curated": 0,
-    "missing_targets": 0,
-    "passed": true,
-    "published_candidates": 0,
-    "published_count": 47754,
-    "relation_count": 67274,
-    "self_links": 0,
-    "sense_count": 43947,
-    "sqlite_integrity": "ok",
-    "unbound_published_synonyms": 0
-  }
+  "schema_version": 2
 }

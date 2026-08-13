@@ -1,20 +1,24 @@
 {
   "artifacts": {
-    "relations-quality.json": "5C22EEC8118C04372BA8D7BC3A2F2736841BC690A9BF6B30F869E60FAC583BB9",
-    "relations.sqlite3": "223EA1FD35D52F30597F4D4044D192EF8F79566F77D332CFCC2F6C38913F3FB7"
+    "relations-quality.json": "0159FDFF4BA3B917215147EC07DE4FB1D76254DC0CF36BDD5141DF9B5B174222",
+    "relations.sqlite3": "A6ACD3A73A2354929B083D81C06EB5B5B39FA28F4CD428FA1F3F9840B25851D3"
   },
-  "build_version": "wordflow-relations-v1",
+  "build_version": "wordflow-relations-v2",
   "inputs": {
     "curated_sha256": "45701DAB4271C3ACC508BB0ECA4C2D6E9ADD4C57793B56512B65521F25C7FA8B",
     "misspellings_sha256": "59953E8B4514DE0A0DAF39E62E83C918A7A0383450FD444A9884FB955BA57454",
+    "oewn_bytes": 9986555,
     "oewn_sha256": "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51",
+    "source_registry_sha256": "605331956BA691DECD17C43B6D3494F0607531800120A10B55ABA307EB258DB1",
     "vocabulary_sha256": "7B0D2ED0161EC0BC1F4B238A84DFD9D20AAB0A413C412A64501EAD4E52FA1BB9"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "source": {
-    "edition": "2025",
-    "license": "CC BY 4.0 + underlying Princeton WordNet license",
-    "name": "Open English WordNet",
+    "bytes": 9986555,
+    "edition": "2025 core (without Namenet)",
+    "key": "oewn_2025",
+    "license": "CC BY 4.0 with underlying Princeton WordNet license; see data/licenses/OEWN-2025-LICENSE.md and data/licenses/WORDNET-LICENSE.txt",
+    "name": "Open English WordNet 2025 core JSON edition",
     "sha256": "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51",
     "url": "https://en-word.net/downloads/english-wordnet-2025-json.zip"
   }
