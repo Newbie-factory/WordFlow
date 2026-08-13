@@ -62,7 +62,11 @@ public interface IRelationRepository
 {
     Task<Page<WordRelation>> GetRelationsAsync(Guid sourceWordId, PageRequest page, CancellationToken ct);
 
+    Task<ExhaustionProbe> ProbeRelationsEndAsync(Guid sourceWordId, int offset, string snapshotId, CancellationToken ct);
+
     Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct);
+
+    Task<ExhaustionProbe> ProbeMisspellingsEndAsync(Guid targetWordId, int offset, string snapshotId, CancellationToken ct);
 
     Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct);
 }

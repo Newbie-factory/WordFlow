@@ -11,6 +11,7 @@ namespace WordFlow.Infrastructure.Data;
 public enum LearningCommitStage
 {
     EventWritten,
+    CardPageRowsRead,
 }
 
 public sealed class SqliteLearningStore : ILearningStore
@@ -29,7 +30,10 @@ public sealed class SqliteLearningStore : ILearningStore
         this.faultInjector = faultInjector;
     }
 
-    public async Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct)
+    public Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct) =>
+        TranslateAsync(() => ApplyCoreAsync(command, ct));
+
+    private async Task<CommitResult> ApplyCoreAsync(LearningCommand command, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(command);
         ValidateEvent(command.Event);
@@ -45,8 +49,8 @@ public sealed class SqliteLearningStore : ILearningStore
                 return existing;
             }
 
-            var current = await ReadCardAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
-            EnsureExpectedSnapshot(current, command.Event);
+            var current = await ReadCardProjectionAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
+            EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision ?? current?.Revision ?? CardProjection.InitialRevision);
 
             await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
             faultInjector?.Invoke(LearningCommitStage.EventWritten);
@@ -54,12 +58,10 @@ public sealed class SqliteLearningStore : ILearningStore
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return new CommitResult(true, command.Event.EventId, command.Event.After);
         }
-        catch (Exception exception)
+        catch
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
             catch { /* Preserve the originating failure; disposal will close the connection. */ }
-            if (exception is SqliteException sqlite && IsTransient(sqlite))
-                throw new TransientStorageException("The learning store is temporarily unavailable.", sqlite);
             throw;
         }
     }
@@ -77,8 +79,8 @@ public sealed class SqliteLearningStore : ILearningStore
             foreach (var command in commands)
             {
                 if (await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false) is not null) continue;
-                var current = await ReadCardAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
-                EnsureExpectedSnapshot(current, command.Event);
+                var current = await ReadCardProjectionAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
+                EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision ?? current?.Revision ?? CardProjection.InitialRevision);
                 await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
                 await UpsertSnapshotAsync(connection, transaction, command.Event, ct).ConfigureAwait(false);
             }
@@ -91,41 +93,90 @@ public sealed class SqliteLearningStore : ILearningStore
         }
     }
 
-    public async Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct)
+    public Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct) =>
+        TranslateAsync(() => GetCardCoreAsync(cardId, ct));
+
+    private async Task<CardState?> GetCardCoreAsync(Guid cardId, CancellationToken ct)
     {
         if (cardId == Guid.Empty) throw new ArgumentException("A card ID cannot be empty.", nameof(cardId));
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
         return await ReadCardAsync(connection, null, cardId, ct).ConfigureAwait(false);
     }
 
-    public async Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct)
+    public async Task<CardProjection?> GetCardProjectionAsync(Guid cardId, CancellationToken ct)
+    {
+        if (cardId == Guid.Empty) throw new ArgumentException("A card ID cannot be empty.", nameof(cardId));
+        return await TranslateAsync(async () =>
+        {
+            await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+            return await ReadCardProjectionAsync(connection, null, cardId, ct).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    public Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct) =>
+        TranslateAsync(() => GetCommitCoreAsync(commandId, ct));
+
+    private async Task<CommitResult?> GetCommitCoreAsync(Guid commandId, CancellationToken ct)
     {
         if (commandId == Guid.Empty) throw new ArgumentException("A command ID cannot be empty.", nameof(commandId));
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
         return await FindCommandAsync(connection, null, commandId, ct).ConfigureAwait(false);
     }
 
-    public async Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct)
+    public Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct) =>
+        TranslateAsync(() => GetCardsCoreAsync(page, ct));
+
+    private async Task<Page<CardState>> GetCardsCoreAsync(PageRequest page, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(page);
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        await using var transaction = connection.BeginTransaction(deferred: true);
         await using var count = connection.CreateCommand();
+        count.Transaction = transaction;
         count.CommandText = "SELECT COUNT(*) FROM card_state";
         var total = Convert.ToInt32(await count.ExecuteScalarAsync(ct).ConfigureAwait(false));
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "SELECT card_id,difficulty,stability_days,last_review_at_utc,due_at_utc,is_slashed,slashed_at_utc,restored_at_utc,same_day_failure_count,failure_day_utc,hard_word_protected_until_utc FROM card_state ORDER BY card_id LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         var cards = new List<CardState>();
         while (await reader.ReadAsync(ct).ConfigureAwait(false)) cards.Add(ReadCard(reader));
+        await reader.DisposeAsync().ConfigureAwait(false);
+        faultInjector?.Invoke(LearningCommitStage.CardPageRowsRead);
         await using var version = connection.CreateCommand();
+        version.Transaction = transaction;
         version.CommandText = "SELECT COALESCE(MAX(rowid),0) || ':' || COUNT(*) FROM review_event";
         var snapshotId = Convert.ToString(await version.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture)!;
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new Page<CardState>(cards, total, page.Offset + cards.Count < total, $"cards:{snapshotId}");
     }
 
-    public async Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct)
+    public Task<ExhaustionProbe> ProbeCardsEndAsync(int offset, string snapshotId, CancellationToken ct) =>
+        TranslateAsync(() => ProbeCardsEndCoreAsync(offset, snapshotId, ct));
+
+    private async Task<ExhaustionProbe> ProbeCardsEndCoreAsync(int offset, string snapshotId, CancellationToken ct)
+    {
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        await using var transaction = connection.BeginTransaction(deferred: true);
+        await using var version = connection.CreateCommand();
+        version.Transaction = transaction;
+        version.CommandText = "SELECT COALESCE(MAX(rowid),0) || ':' || COUNT(*) FROM review_event";
+        var actual = $"cards:{Convert.ToString(await version.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture)}";
+        await using var probe = connection.CreateCommand();
+        probe.Transaction = transaction;
+        probe.CommandText = "SELECT EXISTS(SELECT 1 FROM card_state ORDER BY card_id LIMIT 1 OFFSET $offset)";
+        probe.Parameters.AddWithValue("$offset", offset);
+        var exhausted = Convert.ToInt32(await probe.ExecuteScalarAsync(ct).ConfigureAwait(false)) == 0;
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        return new ExhaustionProbe(exhausted, actual);
+    }
+
+    public Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct) =>
+        TranslateAsync(() => GetLatestUndoableEventCoreAsync(ct));
+
+    private async Task<ReviewEvent?> GetLatestUndoableEventCoreAsync(CancellationToken ct)
     {
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
@@ -156,7 +207,10 @@ public sealed class SqliteLearningStore : ILearningStore
         }
     }
 
-    public async Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct)
+    public Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct) =>
+        TranslateAsync(() => UndoLatestCoreAsync(command, ct));
+
+    private async Task<CommitResult> UndoLatestCoreAsync(UndoLearningCommand command, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(command);
         await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
@@ -173,8 +227,8 @@ public sealed class SqliteLearningStore : ILearningStore
 
             var original = await ReadLatestUndoableEventAsync(connection, transaction, ct).ConfigureAwait(false)
                 ?? throw new LearningNotFoundException("There is no action to undo.");
-            var current = await ReadCardAsync(connection, transaction, original.CardId, ct).ConfigureAwait(false);
-            EnsureExpectedSnapshot(current, original with { Before = original.After });
+            var current = await ReadCardProjectionAsync(connection, transaction, original.CardId, ct).ConfigureAwait(false);
+            EnsureExpectedSnapshot(current, original with { Before = original.After }, original.EventId);
             var undo = new ReviewEvent(
                 command.EventId, original.CardId, command.OccurredAt, LearningAction.Undo,
                 original.After, original.Before, original.EventId);
@@ -185,11 +239,9 @@ public sealed class SqliteLearningStore : ILearningStore
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return new CommitResult(true, undo.EventId, undo.After);
         }
-        catch (Exception exception)
+        catch
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
-            if (exception is SqliteException sqlite && IsTransient(sqlite))
-                throw new TransientStorageException("The learning store is temporarily unavailable.", sqlite);
             throw;
         }
     }
@@ -221,10 +273,10 @@ public sealed class SqliteLearningStore : ILearningStore
         if (@event.Action != LearningAction.Undo && @event.CompensatesEventId is not null) throw new ArgumentException("Only undo can compensate an event.", nameof(@event));
     }
 
-    private static void EnsureExpectedSnapshot(CardState? current, ReviewEvent @event)
+    private static void EnsureExpectedSnapshot(CardProjection? current, ReviewEvent @event, Guid expectedRevision)
     {
-        if (current is null && @event.Before.MemoryState is not null) throw new LearningConcurrencyException(@event.CardId);
-        if (current is not null && current != @event.Before) throw new LearningConcurrencyException(@event.CardId);
+        if (current is null && (@event.Before.MemoryState is not null || expectedRevision != CardProjection.InitialRevision)) throw new LearningConcurrencyException(@event.CardId);
+        if (current is not null && (current.Card != @event.Before || current.Revision != expectedRevision)) throw new LearningConcurrencyException(@event.CardId);
     }
 
     private static async Task<CommitResult?> FindCommandAsync(SqliteConnection connection, SqliteTransaction? transaction, Guid commandId, CancellationToken ct)
@@ -320,6 +372,24 @@ public sealed class SqliteLearningStore : ILearningStore
         {
             throw new InvalidDataException($"Card {cardId:D} contains corrupt persisted data.", exception);
         }
+    }
+
+    private static async Task<CardProjection?> ReadCardProjectionAsync(SqliteConnection connection, SqliteTransaction? transaction, Guid cardId, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT card_id,difficulty,stability_days,last_review_at_utc,due_at_utc,is_slashed,slashed_at_utc,restored_at_utc,same_day_failure_count,failure_day_utc,hard_word_protected_until_utc,last_event_id FROM card_state WHERE card_id=$cardId";
+        command.Parameters.AddWithValue("$cardId", IdText(cardId));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        return new CardProjection(ReadCard(reader), ParseId(reader.GetString(11)));
+    }
+
+    private static async Task<T> TranslateAsync<T>(Func<Task<T>> operation)
+    {
+        try { return await operation().ConfigureAwait(false); }
+        catch (SqliteException exception) when (IsTransient(exception))
+        { throw new TransientStorageException("The learning store is temporarily unavailable.", exception); }
     }
 
     private static CardState ReadCard(SqliteDataReader reader)

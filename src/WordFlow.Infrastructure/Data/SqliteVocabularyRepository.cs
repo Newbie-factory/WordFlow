@@ -5,6 +5,8 @@ namespace WordFlow.Infrastructure.Data;
 
 public sealed class SqliteVocabularyRepository : IVocabularyRepository
 {
+    // Promoted corpus databases are immutable for the repository lifetime; the
+    // count-based vocabulary/sense snapshot identities rely on that deployment invariant.
     private readonly SqliteConnectionFactory factory;
 
     public SqliteVocabularyRepository(SqliteConnectionFactory factory) =>
@@ -26,6 +28,16 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
             items.Add(new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
         return new Page<VocabularyWord>(items, total, page.Offset + items.Count < total, $"vocabulary:{total}");
+    }
+
+    public async Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct)
+    {
+        await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
+        var total = await CountAsync(connection, "SELECT COUNT(*) FROM vocabulary", ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM vocabulary ORDER BY frequency_rank IS NULL,frequency_rank,word COLLATE NOCASE,stable_id LIMIT 1 OFFSET $offset)";
+        command.Parameters.AddWithValue("$offset", offset);
+        return new(Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false)) == 0, $"vocabulary:{total}");
     }
 
     public async Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct)
@@ -61,6 +73,17 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
             items.Add(new VocabularySense(senseId, ParseId(reader.GetString(1)), reader.GetString(2), reader.GetString(3)));
         }
         return new Page<VocabularySense>(items, total, page.Offset + items.Count < total, $"senses:{wordId:D}:{total}");
+    }
+
+    public async Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct)
+    {
+        await using var connection = await factory.OpenRelationsAsync(ct).ConfigureAwait(false);
+        var total = await CountAsync(connection, "SELECT COUNT(*) FROM lexical_sense WHERE entry_id=$wordId", ct, wordId.ToString("D")).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM lexical_sense WHERE entry_id=$wordId ORDER BY sense_id LIMIT 1 OFFSET $offset)";
+        command.Parameters.AddWithValue("$wordId", wordId.ToString("D"));
+        command.Parameters.AddWithValue("$offset", offset);
+        return new(Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false)) == 0, $"senses:{wordId:D}:{total}");
     }
 
     private static async Task<int> CountAsync(SqliteConnection connection, string sql, CancellationToken ct, string? wordId = null)

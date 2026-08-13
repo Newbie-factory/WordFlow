@@ -34,14 +34,16 @@ public sealed class GetSynonyms
             if (await vocabulary.GetWordAsync(request.WordId, ct).ConfigureAwait(false) is null)
                 return new NotFound<IReadOnlyList<SynonymGroup>>($"Word {request.WordId:D} was not found.");
             var allRelations = await PagedReads.AllAsync(
-                (page, token) => relations.GetRelationsAsync(request.WordId, page, token), ct).ConfigureAwait(false);
+                (page, token) => relations.GetRelationsAsync(request.WordId, page, token),
+                (offset, snapshot, token) => relations.ProbeRelationsEndAsync(request.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
             var synonyms = allRelations.Where(relation => relation.RelationType == RelationKinds.Synonym).ToArray();
             if (synonyms.Length == 0) return new Success<IReadOnlyList<SynonymGroup>>([]);
             if (synonyms.Any(x => string.IsNullOrWhiteSpace(x.SourceSenseId) || string.IsNullOrWhiteSpace(x.TargetSenseId) || string.IsNullOrWhiteSpace(x.PartOfSpeech)))
                 throw new InvalidDataException("A verified synonym is missing its sense/POS evidence.");
 
             var senses = await PagedReads.AllAsync(
-                (page, token) => vocabulary.GetSensesAsync(request.WordId, page, token), ct).ConfigureAwait(false);
+                (page, token) => vocabulary.GetSensesAsync(request.WordId, page, token),
+                (offset, snapshot, token) => vocabulary.ProbeSensesEndAsync(request.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
             var senseById = senses.ToDictionary(x => x.SenseId, StringComparer.Ordinal);
             var targetWords = new Dictionary<Guid, VocabularyWord>();
             foreach (var id in synonyms.Select(x => x.TargetWordId).Distinct())

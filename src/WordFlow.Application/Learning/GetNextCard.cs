@@ -5,7 +5,7 @@ namespace WordFlow.Application.Learning;
 
 public sealed record GetNextCardRequest(DailyPlan Plan);
 
-public sealed record NextCard(CardState Card, VocabularyWord Word);
+public sealed record NextCard(CardState Card, Guid Revision, VocabularyWord Word);
 
 public sealed class GetNextCard
 {
@@ -38,13 +38,23 @@ public sealed class GetNextCard
             : null;
     }
 
+    internal async Task<CardProjection?> ResolveProjectionAsync(Guid cardId, CancellationToken ct)
+    {
+        var persisted = await store.GetCardProjectionAsync(cardId, ct).ConfigureAwait(false);
+        if (persisted is not null) return persisted;
+        var word = await vocabulary.GetWordAsync(cardId, ct).ConfigureAwait(false);
+        return word is { IsLearningHeadword: true }
+            ? new CardProjection(new CardState(cardId, null, timeProvider.GetUtcNow()), CardProjection.InitialRevision)
+            : null;
+    }
+
     public async Task<UseCaseResult<NextCard?>> HandleAsync(GetNextCardRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         try
         {
-            var cards = await PagedReads.AllAsync(store.GetCardsAsync, ct).ConfigureAwait(false);
-            var words = await PagedReads.AllAsync(vocabulary.GetWordsAsync, ct).ConfigureAwait(false);
+            var cards = await PagedReads.AllAsync(store.GetCardsAsync, store.ProbeCardsEndAsync, ct).ConfigureAwait(false);
+            var words = await PagedReads.AllAsync(vocabulary.GetWordsAsync, vocabulary.ProbeWordsEndAsync, ct).ConfigureAwait(false);
             var headwords = words.Where(word => word.IsLearningHeadword).ToDictionary(word => word.WordId);
             var knownCards = cards.Select(card => card.Id).ToHashSet();
             var newCandidates = headwords.Keys.Where(id => !knownCards.Contains(id));
@@ -58,7 +68,9 @@ public sealed class GetNextCard
             }
             var card = cards.SingleOrDefault(candidate => candidate.Id == id)
                 ?? new CardState(id, null, timeProvider.GetUtcNow());
-            return new Success<NextCard?>(new NextCard(card, word));
+            var projection = await ResolveProjectionAsync(id, ct).ConfigureAwait(false)
+                ?? throw new InvalidDataException($"Queue card {id:D} has no projection.");
+            return new Success<NextCard?>(new NextCard(projection.Card, projection.Revision, word));
         }
         catch (TransientStorageException exception)
         {

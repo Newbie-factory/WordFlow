@@ -4,7 +4,7 @@ namespace WordFlow.Application.Ports;
 
 public sealed record LearningCommand
 {
-    public LearningCommand(Guid commandId, ReviewEvent @event)
+    public LearningCommand(Guid commandId, ReviewEvent @event, Guid? expectedRevision = null)
     {
         if (commandId == Guid.Empty)
         {
@@ -13,14 +13,21 @@ public sealed record LearningCommand
 
         CommandId = commandId;
         Event = @event ?? throw new ArgumentNullException(nameof(@event));
+        ExpectedRevision = expectedRevision;
     }
 
     public Guid CommandId { get; }
 
     public ReviewEvent Event { get; }
+    public Guid? ExpectedRevision { get; }
 }
 
 public sealed record CommitResult(bool Applied, Guid EventId, CardState Card);
+
+public sealed record CardProjection(CardState Card, Guid Revision)
+{
+    public static Guid InitialRevision { get; } = Guid.Empty;
+}
 
 public sealed record UndoLearningCommand(Guid CommandId, Guid EventId, DateTimeOffset OccurredAt);
 
@@ -32,7 +39,11 @@ public interface ILearningStore
 
     Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct);
 
+    Task<CardProjection?> GetCardProjectionAsync(Guid cardId, CancellationToken ct);
+
     Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct);
+
+    Task<ExhaustionProbe> ProbeCardsEndAsync(int offset, string snapshotId, CancellationToken ct);
 
     Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct);
 

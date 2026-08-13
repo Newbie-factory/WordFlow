@@ -21,6 +21,8 @@ public sealed record Page<T>(
     bool? HasMore = null,
     string? SnapshotId = null);
 
+public sealed record ExhaustionProbe(bool IsExhausted, string SnapshotId);
+
 public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank, bool IsLearningHeadword = true);
 
 public sealed record VocabularySense(string SenseId, Guid WordId, string Definition, string? PartOfSpeech = null);
@@ -29,7 +31,11 @@ public interface IVocabularyRepository
 {
     Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct);
 
+    Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct);
+
     Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct);
 
     Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct);
+
+    Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct);
 }

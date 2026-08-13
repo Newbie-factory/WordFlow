@@ -6,6 +6,7 @@ internal static class PagedReads
 
     public static async Task<IReadOnlyList<T>> AllAsync<T>(
         Func<PageRequest, CancellationToken, Task<Page<T>>> read,
+        Func<int, string, CancellationToken, Task<ExhaustionProbe>> probeEnd,
         CancellationToken ct)
     {
         var items = new List<T>();
@@ -27,6 +28,9 @@ internal static class PagedReads
             if (page.Items.Count == 0)
             {
                 if (items.Count != total) throw new InvalidDataException("A repository returned an empty page before its declared total.");
+                var probe = await probeEnd(items.Count, snapshotId!, ct).ConfigureAwait(false);
+                if (probe.SnapshotId != snapshotId || !probe.IsExhausted)
+                    throw new InvalidDataException("A repository could not prove complete exhaustion for its snapshot.");
                 break;
             }
             var moreExpected = items.Count + page.Items.Count < total;
@@ -38,7 +42,13 @@ internal static class PagedReads
                 items.Add(item);
             }
             if (items.Count > total) throw new InvalidDataException("A repository underreported its total count.");
-            if (items.Count == total) break;
+            if (items.Count == total)
+            {
+                var probe = await probeEnd(items.Count, snapshotId!, ct).ConfigureAwait(false);
+                if (probe.SnapshotId != snapshotId || !probe.IsExhausted)
+                    throw new InvalidDataException("A repository could not prove complete exhaustion for its snapshot.");
+                break;
+            }
         }
         return items;
     }

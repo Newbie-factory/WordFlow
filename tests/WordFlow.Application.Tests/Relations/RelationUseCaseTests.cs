@@ -92,6 +92,9 @@ public sealed class RelationUseCaseTests
     [InlineData(PagingFault.IgnoredOffset)]
     [InlineData(PagingFault.Overfull)]
     [InlineData(PagingFault.ConcurrentMutation)]
+    [InlineData(PagingFault.TerminalUnderreportFull)]
+    [InlineData(PagingFault.TerminalUnderreportShort)]
+    [InlineData(PagingFault.TerminalUnderreportEmpty)]
     public async Task Malformed_pages_propagate_as_corrupt_data(PagingFault fault)
     {
         var source = Word(1, "source");
@@ -173,12 +176,14 @@ public sealed class RelationUseCaseTests
             if (Failure is not null) throw Failure;
             return Task.FromResult(allWords.SingleOrDefault(x => x.WordId == wordId));
         }
+        public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= allWords.Length, "words:v1"));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct)
         {
             var matches = allSenses.Where(x => x.WordId == wordId).ToArray();
             var items = matches.Skip(page.Offset).Take(page.Limit).ToArray();
             return Task.FromResult(new Page<VocabularySense>(items, matches.Length, page.Offset + items.Length < matches.Length, "senses:v1"));
         }
+        public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= allSenses.Count(x => x.WordId == wordId), "senses:v1"));
     }
 
     private sealed class FakeRelations(IEnumerable<WordRelation> builtIn, IEnumerable<MisspellingRelation>? misspellings = null) : IRelationRepository
@@ -199,6 +204,7 @@ public sealed class RelationUseCaseTests
             var items = all.Skip(page.Offset).Take(page.Limit).ToArray();
             return Task.FromResult(new Page<WordRelation>(items, all.Length, page.Offset + items.Length < all.Length, "relations:v1"));
         }
+        public async Task<ExhaustionProbe> ProbeRelationsEndAsync(Guid sourceWordId, int offset, string snapshotId, CancellationToken ct) => new((await GetRelationsAsync(sourceWordId, new PageRequest(offset, 1), ct)).Items.Count == 0, "relations:v1");
 
         public Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
         {
@@ -206,6 +212,7 @@ public sealed class RelationUseCaseTests
             var items = all.Skip(page.Offset).Take(page.Limit).ToArray();
             return Task.FromResult(new Page<MisspellingRelation>(items, all.Length, page.Offset + items.Length < all.Length, "misspellings:v1"));
         }
+        public async Task<ExhaustionProbe> ProbeMisspellingsEndAsync(Guid targetWordId, int offset, string snapshotId, CancellationToken ct) => new((await GetMisspellingsAsync(targetWordId, new PageRequest(offset, 1), ct)).Items.Count == 0, "misspellings:v1");
 
         public Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct)
         {
@@ -215,7 +222,7 @@ public sealed class RelationUseCaseTests
         }
     }
 
-    public enum PagingFault { UnderreportedTotal, ChangingTotal, PrematureEmpty, IgnoredOffset, Overfull, ConcurrentMutation }
+    public enum PagingFault { UnderreportedTotal, ChangingTotal, PrematureEmpty, IgnoredOffset, Overfull, ConcurrentMutation, TerminalUnderreportFull, TerminalUnderreportShort, TerminalUnderreportEmpty }
 
     private sealed class FaultyRelations(WordRelation[] rows, PagingFault fault) : IRelationRepository
     {
@@ -226,13 +233,22 @@ public sealed class RelationUseCaseTests
             if (fault == PagingFault.PrematureEmpty && calls == 2) return Task.FromResult(new Page<WordRelation>([], rows.Length, true, "fault:v1"));
             var offset = fault == PagingFault.IgnoredOffset ? 0 : page.Offset;
             var take = fault == PagingFault.Overfull ? page.Limit + 1 : page.Limit;
-            var total = fault == PagingFault.UnderreportedTotal ? 500 : fault == PagingFault.ChangingTotal && calls > 1 ? rows.Length + 1 : rows.Length;
+            var terminal = fault is PagingFault.TerminalUnderreportFull or PagingFault.TerminalUnderreportShort or PagingFault.TerminalUnderreportEmpty;
+            var reported = fault switch
+            {
+                PagingFault.TerminalUnderreportShort => 200,
+                PagingFault.TerminalUnderreportEmpty => 0,
+                _ => 500
+            };
+            var total = fault == PagingFault.UnderreportedTotal || terminal ? reported : fault == PagingFault.ChangingTotal && calls > 1 ? rows.Length + 1 : rows.Length;
             var hasMore = fault == PagingFault.UnderreportedTotal ? true : (bool?)null;
-            var items = rows.Skip(offset).Take(take).ToArray();
+            var items = rows.Skip(offset).Take(terminal ? reported : take).ToArray();
             var snapshot = fault == PagingFault.ConcurrentMutation && calls > 1 ? "fault:v2" : "fault:v1";
-            return Task.FromResult(new Page<WordRelation>(items, total, hasMore ?? offset + items.Length < total, snapshot));
+            return Task.FromResult(new Page<WordRelation>(items, total, terminal ? false : hasMore ?? offset + items.Length < total, snapshot));
         }
         public Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct) => Task.FromResult(new Page<MisspellingRelation>([], 0, false, "misspellings:v1"));
+        public Task<ExhaustionProbe> ProbeRelationsEndAsync(Guid sourceWordId, int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= rows.Length, "fault:v1"));
+        public Task<ExhaustionProbe> ProbeMisspellingsEndAsync(Guid targetWordId, int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(true, "misspellings:v1"));
         public Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct) => Task.CompletedTask;
     }
 }

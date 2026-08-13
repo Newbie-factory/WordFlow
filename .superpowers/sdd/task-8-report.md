@@ -86,3 +86,32 @@ Final remediation verification:
 - `git diff --check`: clean apart from informational Windows line-ending notices.
 
 No new blocking concern. Snapshot identity computation for relation pages is intentionally exhaustive because complete-read correctness is prioritized and current per-source relation sets are small.
+
+## Final re-review remediation
+
+The final re-review reported four remaining edge conditions and one integration-test gap. All are covered by focused RED/GREEN cycles and real SQLite regressions.
+
+- Immutable displayed revision: `CardProjection` exposes the persisted `last_event_id`, with `Guid.Empty` as the explicit initial-card sentinel. `NextCard`, rating requests, and slash requests carry that revision through to `LearningCommand`; the SQLite write transaction compares both value and revision. Real A-to-B-to-A undo tests prove stale rating and slash fail without appending, while handler tests prove `Conflict` and zero queue-page reads.
+- Complete transient boundary: every public learning-store operation translates only SQLite primary codes 5, 6, 10, 13, 14, and 15 across open/configuration, transaction begin, reads/writes, and commit. Lock and cannot-open tests prove expected storage translation. Cancellation and real SQLite schema error 1, identity constraint error 19, and corrupt-database errors remain unmasked.
+- Independently proved exhaustion: complete paging now requires a repository end probe tied to the same snapshot identity. It rejects internally consistent terminal underreports at 500, 200, and zero rows, as well as all earlier malformed-page cases, without arbitrary iteration caps or non-progress loops.
+- Coherent mutable pages: card count, ordered rows, and review-event snapshot identity are read in one deferred SQLite transaction. A deterministic hook commits another card after the rows are materialized but before token lookup; the first page retains the old rows/token and a later page sees the complete new state.
+- Real undo/application interleavings: simultaneous retries of the same atomic undo command produce exactly one applied and one idempotent result with one compensation event. Application ABA tests return `Conflict` and never invoke `GetCardsAsync`.
+- Corpus invariant: promoted vocabulary, sense, and misspelling databases are explicitly immutable for a repository lifetime, which makes their count-based snapshot identities coherent. Mutable user-relation overrides use a complete merged-evidence identity.
+
+Additional RED evidence:
+
+- The wished-for `CardProjection`/revision request shape initially failed compilation because the contracts did not exist.
+- Terminal `500/false` and `200/false` underreport tests initially returned success instead of `InvalidDataException`.
+- The later zero-row hidden-data regression likewise failed with `Assert.Throws` reporting no exception; after the empty-terminal path was made to probe exhaustion, all nine malformed paging theories pass.
+
+Final verification after this remediation:
+
+- Domain Release: 129/129 passed.
+- Application Release: 42/42 passed.
+- Infrastructure Release: 67/67 passed.
+- Full Release solution: 238 discoverable tests passed; the existing App test assembly remains empty.
+- Release build: 0 warnings, 0 errors.
+- Python vocabulary suite: 54/54 passed.
+- `git diff --check`: no whitespace errors; only informational Windows LF-to-CRLF notices.
+
+Self-review found no progress-ledger edits, WPF dependencies, arbitrary paging caps, swallowed cancellation, or broad SQLite exception mapping. The existing full-corpus queue scan remains the only documented non-blocking scale concern.

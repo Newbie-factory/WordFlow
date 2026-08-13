@@ -28,7 +28,8 @@ public sealed class GetConfusables
             if (await vocabulary.GetWordAsync(request.WordId, ct).ConfigureAwait(false) is null)
                 return new NotFound<IReadOnlyList<ConfusableItem>>($"Word {request.WordId:D} was not found.");
             var all = await PagedReads.AllAsync(
-                (page, token) => relations.GetRelationsAsync(request.WordId, page, token), ct).ConfigureAwait(false);
+                (page, token) => relations.GetRelationsAsync(request.WordId, page, token),
+                (offset, snapshot, token) => relations.ProbeRelationsEndAsync(request.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
             var items = new List<ConfusableItem>();
             foreach (var relation in all.Where(x => RelationKinds.Confusable.Contains(x.RelationType)))
             {
@@ -38,7 +39,8 @@ public sealed class GetConfusables
                 items.Add(new ConfusableItem(target.WordId, target.Lemma, relation.RelationType));
             }
             var misspellings = await PagedReads.AllAsync(
-                (page, token) => relations.GetMisspellingsAsync(request.WordId, page, token), ct).ConfigureAwait(false);
+                (page, token) => relations.GetMisspellingsAsync(request.WordId, page, token),
+                (offset, snapshot, token) => relations.ProbeMisspellingsEndAsync(request.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
             items.AddRange(misspellings.Select(x => new ConfusableItem(null, x.Spelling, RelationKinds.Misspelling)));
             var ordered = items.OrderBy(x => x.RelationType, StringComparer.Ordinal)
                 .ThenBy(x => x.Spelling, StringComparer.Ordinal)

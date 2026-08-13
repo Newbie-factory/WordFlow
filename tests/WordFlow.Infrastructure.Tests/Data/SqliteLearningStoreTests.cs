@@ -193,6 +193,112 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Corrupt_database_propagates_as_sqlite_error()
+    {
+        var database = Database("corrupt.db");
+        await File.WriteAllBytesAsync(database, "not a sqlite database"u8.ToArray());
+        var store = new SqliteLearningStore(new SqliteConnectionFactory(database));
+
+        var exception = await Assert.ThrowsAsync<SqliteException>(() => store.GetCommitAsync(Id(181), default));
+
+        Assert.DoesNotContain(exception.SqliteErrorCode, new[] { 5, 6, 10, 13, 14, 15 });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ABA_display_revision_rejects_stale_rating_and_slash(bool slash)
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("aba.db"));
+        var store = new SqliteLearningStore(factory);
+        var displayed = new CardProjection(InitialCard(), CardProjection.InitialRevision);
+        var learned = Review(Id(80), displayed.Card, Rating.Good);
+        await store.ApplyAsync(new LearningCommand(Id(180), learned, displayed.Revision), default);
+        await store.UndoLatestAsync(new UndoLearningCommand(Id(181), Id(81), Now.AddMinutes(1)), default);
+        var stale = slash
+            ? new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(2))).Slash(Id(82), displayed.Card)
+            : Review(Id(82), displayed.Card, Rating.Hard);
+
+        await Assert.ThrowsAsync<LearningConcurrencyException>(() =>
+            store.ApplyAsync(new LearningCommand(Id(182), stale, displayed.Revision), default));
+
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+    }
+
+    [Fact]
+    public async Task Locked_writer_is_translated_across_begin_stage_and_retry_remains_idempotent()
+    {
+        var database = Database("locked.db");
+        var factory = await CreateMigratedFactoryAsync(database);
+        var store = new SqliteLearningStore(new SqliteConnectionFactory(database, busyTimeoutMilliseconds: 1));
+        var command = new LearningCommand(Id(190), Review(Id(90), InitialCard(), Rating.Good));
+        await using var blocker = await factory.OpenUserAsync(default);
+        await using var transaction = blocker.BeginTransaction(deferred: false);
+        await Assert.ThrowsAsync<TransientStorageException>(() => store.ApplyAsync(command, default));
+        await transaction.RollbackAsync();
+        var applied = await store.ApplyAsync(command, default);
+        var retry = await store.ApplyAsync(command, default);
+
+        Assert.True(applied.Applied);
+        Assert.False(retry.Applied);
+    }
+
+    [Fact]
+    public async Task Cannot_open_read_is_translated_but_cancellation_still_propagates()
+    {
+        var directoryPath = Path.Combine(directory, "not-a-database");
+        Directory.CreateDirectory(directoryPath);
+        var store = new SqliteLearningStore(new SqliteConnectionFactory(directoryPath));
+
+        await Assert.ThrowsAsync<TransientStorageException>(() => store.GetCommitAsync(Id(191), default));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.GetCommitAsync(Id(191), cancelled.Token));
+    }
+
+    [Fact]
+    public async Task Concurrent_atomic_undo_retry_is_idempotent()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("undo-retry.db"));
+        var store = new SqliteLearningStore(factory);
+        await store.ApplyAsync(new LearningCommand(Id(200), Review(Id(100), InitialCard(), Rating.Good)), default);
+        var command = new UndoLearningCommand(Id(201), Id(101), Now.AddMinutes(1));
+
+        var results = await Task.WhenAll(store.UndoLatestAsync(command, default), store.UndoLatestAsync(command, default));
+
+        Assert.Single(results, x => x.Applied);
+        Assert.Single(results, x => !x.Applied);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+    }
+
+    [Fact]
+    public async Task Card_page_rows_and_snapshot_token_share_one_read_transaction()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("coherent-read.db"));
+        var seed = new SqliteLearningStore(factory);
+        await seed.ApplyAsync(new LearningCommand(Id(210), Review(Id(110), InitialCard(), Rating.Good)), default);
+        var injected = false;
+        var store = new SqliteLearningStore(factory, stage =>
+        {
+            if (stage != LearningCommitStage.CardPageRowsRead || injected) return;
+            injected = true;
+            var other = new CardState(Id(2), null, Now);
+            var review = Review(Id(111), other, Rating.Good);
+            new SqliteLearningStore(factory).ApplyAsync(new LearningCommand(Id(211), review), default).GetAwaiter().GetResult();
+        });
+
+        var first = await store.GetCardsAsync(new PageRequest(0, 500), default);
+        var second = await seed.GetCardsAsync(new PageRequest(0, 500), default);
+
+        Assert.Single(first.Items);
+        Assert.Equal("cards:1:1", first.SnapshotId);
+        Assert.Equal(2, second.Items.Count);
+        Assert.Equal("cards:2:2", second.SnapshotId);
+    }
+
+    [Fact]
     public async Task Stale_command_is_rejected_and_does_not_append_an_event()
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));
