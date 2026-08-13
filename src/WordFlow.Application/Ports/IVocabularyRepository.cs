@@ -17,13 +17,15 @@ public sealed record PageRequest
 
 public sealed record Page<T>(IReadOnlyList<T> Items, int TotalCount);
 
-public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank);
+public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank, bool IsLearningHeadword = true);
 
-public sealed record VocabularySense(string SenseId, Guid WordId, string Definition);
+public sealed record VocabularySense(string SenseId, Guid WordId, string Definition, string? PartOfSpeech = null);
 
 public interface IVocabularyRepository
 {
     Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct);
+
+    Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct);
 
     Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct);
 }

@@ -15,17 +15,17 @@ public sealed class SqliteRelationRepository : IRelationRepository
         if (sourceWordId == Guid.Empty) throw new ArgumentException("A source word ID cannot be empty.", nameof(sourceWordId));
         ArgumentNullException.ThrowIfNull(page);
         var source = sourceWordId.ToString("D");
-        var merged = new Dictionary<(Guid Target, string Type), WordRelation>();
+        var merged = new Dictionary<(Guid Target, string Type, string? SourceSense, string? TargetSense, string? Pos), WordRelation>();
 
         await using (var corpus = await factory.OpenRelationsAsync(ct).ConfigureAwait(false))
         {
             await using var command = corpus.CreateCommand();
             command.CommandText = """
-                SELECT target_entry_id, kind, direction
+                SELECT target_entry_id, kind, direction, source_sense_id, target_sense_id, pos
                 FROM published_word_relation
                 WHERE source_entry_id=$source
                 UNION ALL
-                SELECT source_entry_id, kind, direction
+                SELECT source_entry_id, kind, direction, target_sense_id, source_sense_id, pos
                 FROM published_word_relation
                 WHERE target_entry_id=$source AND direction='bidirectional' AND source_entry_id IS NOT NULL
                 ORDER BY kind, target_entry_id
@@ -42,7 +42,11 @@ public sealed class SqliteRelationRepository : IRelationRepository
                     "bidirectional" => RelationDirection.Bidirectional,
                     var value => throw new InvalidDataException($"Unknown relation direction '{value}'."),
                 };
-                merged[(target, type)] = new WordRelation(sourceWordId, target, type, direction);
+                var sourceSense = reader.IsDBNull(3) ? null : reader.GetString(3);
+                var targetSense = reader.IsDBNull(4) ? null : reader.GetString(4);
+                var pos = reader.IsDBNull(5) ? null : reader.GetString(5);
+                merged[(target, type, sourceSense, targetSense, pos)] = new WordRelation(
+                    sourceWordId, target, type, direction, sourceSense, targetSense, pos);
             }
         }
 
@@ -56,14 +60,42 @@ public sealed class SqliteRelationRepository : IRelationRepository
             {
                 var target = ParseId(reader.GetString(0));
                 var type = reader.GetString(1);
-                if (reader.GetInt64(2) == 0) merged.Remove((target, type));
-                else merged[(target, type)] = new WordRelation(sourceWordId, target, type, RelationDirection.Forward);
+                if (reader.GetInt64(2) == 0)
+                {
+                    foreach (var key in merged.Keys.Where(key => key.Target == target && key.Type == type).ToArray()) merged.Remove(key);
+                }
+                else merged[(target, type, null, null, null)] = new WordRelation(sourceWordId, target, type, RelationDirection.Forward);
             }
         }
 
         var ordered = merged.Values.OrderBy(relation => relation.RelationType, StringComparer.Ordinal)
             .ThenBy(relation => relation.TargetWordId).ToArray();
         return new Page<WordRelation>(ordered.Skip(page.Offset).Take(page.Limit).ToArray(), ordered.Length);
+    }
+
+    public async Task<Page<MisspellingRelation>> GetMisspellingsAsync(Guid targetWordId, PageRequest page, CancellationToken ct)
+    {
+        if (targetWordId == Guid.Empty) throw new ArgumentException("A target word ID cannot be empty.", nameof(targetWordId));
+        ArgumentNullException.ThrowIfNull(page);
+        await using var connection = await factory.OpenRelationsAsync(ct).ConfigureAwait(false);
+        await using var count = connection.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM published_word_relation WHERE target_entry_id=$target AND kind='misspelling'";
+        count.Parameters.AddWithValue("$target", targetWordId.ToString("D"));
+        var total = Convert.ToInt32(await count.ExecuteScalarAsync(ct).ConfigureAwait(false));
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_spelling,target_entry_id FROM published_word_relation WHERE target_entry_id=$target AND kind='misspelling' ORDER BY source_spelling LIMIT $limit OFFSET $offset";
+        command.Parameters.AddWithValue("$target", targetWordId.ToString("D"));
+        command.Parameters.AddWithValue("$limit", page.Limit);
+        command.Parameters.AddWithValue("$offset", page.Offset);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        var items = new List<MisspellingRelation>();
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            var spelling = reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(spelling)) throw new InvalidDataException("A misspelling source cannot be blank.");
+            items.Add(new MisspellingRelation(spelling, ParseId(reader.GetString(1))));
+        }
+        return new Page<MisspellingRelation>(items, total);
     }
 
     public async Task SetOverrideAsync(UserRelationOverride relationOverride, CancellationToken ct)
@@ -80,7 +112,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
         command.Parameters.AddWithValue("$target", relationOverride.TargetWordId.ToString("D"));
         command.Parameters.AddWithValue("$type", relationOverride.RelationType);
         command.Parameters.AddWithValue("$enabled", relationOverride.IsEnabled ? 1 : 0);
-        command.Parameters.AddWithValue("$updated", MigrationRunner.UtcText(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("$updated", MigrationRunner.UtcText(relationOverride.UpdatedAt));
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 

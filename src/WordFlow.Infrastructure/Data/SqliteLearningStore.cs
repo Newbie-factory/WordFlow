@@ -96,6 +96,61 @@ public sealed class SqliteLearningStore : ILearningStore
         return await ReadCardAsync(connection, null, cardId, ct).ConfigureAwait(false);
     }
 
+    public async Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct)
+    {
+        if (commandId == Guid.Empty) throw new ArgumentException("A command ID cannot be empty.", nameof(commandId));
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        return await FindCommandAsync(connection, null, commandId, ct).ConfigureAwait(false);
+    }
+
+    public async Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        await using var count = connection.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM card_state";
+        var total = Convert.ToInt32(await count.ExecuteScalarAsync(ct).ConfigureAwait(false));
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT card_id,difficulty,stability_days,last_review_at_utc,due_at_utc,is_slashed,slashed_at_utc,restored_at_utc,same_day_failure_count,failure_day_utc,hard_word_protected_until_utc FROM card_state ORDER BY card_id LIMIT $limit OFFSET $offset";
+        command.Parameters.AddWithValue("$limit", page.Limit);
+        command.Parameters.AddWithValue("$offset", page.Offset);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        var cards = new List<CardState>();
+        while (await reader.ReadAsync(ct).ConfigureAwait(false)) cards.Add(ReadCard(reader));
+        return new Page<CardState>(cards, total);
+    }
+
+    public async Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct)
+    {
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT r.event_id,r.card_id,r.occurred_at_utc,r.action,r.before_json,r.after_json,r.compensates_event_id
+            FROM review_event r
+            WHERE r.action <> 'Undo'
+              AND NOT EXISTS (SELECT 1 FROM review_event u WHERE u.compensates_event_id=r.event_id)
+            ORDER BY r.occurred_at_utc DESC,r.rowid DESC
+            LIMIT 1
+            """;
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        try
+        {
+            return new ReviewEvent(
+                ParseId(reader.GetString(0)),
+                ParseId(reader.GetString(1)),
+                ParseUtc(reader.GetString(2)),
+                Enum.Parse<LearningAction>(reader.GetString(3), ignoreCase: false),
+                DeserializeCard(reader.GetString(4)),
+                DeserializeCard(reader.GetString(5)),
+                reader.IsDBNull(6) ? null : ParseId(reader.GetString(6)));
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException or ArgumentException or InvalidOperationException)
+        {
+            throw new InvalidDataException("The latest learning event contains corrupt persisted data.", exception);
+        }
+    }
+
     private static void ValidateEvent(ReviewEvent @event)
     {
         ArgumentNullException.ThrowIfNull(@event);
@@ -111,7 +166,7 @@ public sealed class SqliteLearningStore : ILearningStore
         if (current is not null && current != @event.Before) throw new LearningConcurrencyException(@event.CardId);
     }
 
-    private static async Task<CommitResult?> FindCommandAsync(SqliteConnection connection, SqliteTransaction transaction, Guid commandId, CancellationToken ct)
+    private static async Task<CommitResult?> FindCommandAsync(SqliteConnection connection, SqliteTransaction? transaction, Guid commandId, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -198,19 +253,24 @@ public sealed class SqliteLearningStore : ILearningStore
         if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
         try
         {
-            MemoryState? memory = reader.IsDBNull(1) ? null : new MemoryState(reader.GetDouble(1), reader.GetDouble(2), ParseUtc(reader.GetString(3)));
-            return new CardState(Guid.Parse(reader.GetString(0)), memory, ParseUtc(reader.GetString(4)))
-            {
-                Slash = new SlashState(reader.GetInt64(5) != 0, NullableUtc(reader, 6), NullableUtc(reader, 7)),
-                SameDayFailureCount = reader.GetInt32(8),
-                FailureDayUtc = reader.IsDBNull(9) ? null : DateOnly.ParseExact(reader.GetString(9), "yyyy-MM-dd", CultureInfo.InvariantCulture),
-                HardWordProtectedUntil = NullableUtc(reader, 10),
-            };
+            return ReadCard(reader);
         }
         catch (Exception exception) when (exception is FormatException or JsonException or InvalidOperationException)
         {
             throw new InvalidDataException($"Card {cardId:D} contains corrupt persisted data.", exception);
         }
+    }
+
+    private static CardState ReadCard(SqliteDataReader reader)
+    {
+        MemoryState? memory = reader.IsDBNull(1) ? null : new MemoryState(reader.GetDouble(1), reader.GetDouble(2), ParseUtc(reader.GetString(3)));
+        return new CardState(ParseId(reader.GetString(0)), memory, ParseUtc(reader.GetString(4)))
+        {
+            Slash = new SlashState(reader.GetInt64(5) != 0, NullableUtc(reader, 6), NullableUtc(reader, 7)),
+            SameDayFailureCount = reader.GetInt32(8),
+            FailureDayUtc = reader.IsDBNull(9) ? null : DateOnly.ParseExact(reader.GetString(9), "yyyy-MM-dd", CultureInfo.InvariantCulture),
+            HardWordProtectedUntil = NullableUtc(reader, 10),
+        };
     }
 
     private static DateTimeOffset? NullableUtc(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : ParseUtc(reader.GetString(ordinal));
@@ -227,6 +287,11 @@ public sealed class SqliteLearningStore : ILearningStore
     private static CardState DeserializeCard(string json) => JsonSerializer.Deserialize<CardState>(json, JsonOptions) ?? throw new InvalidDataException("Persisted card JSON is null.");
 
     private static string IdText(Guid id) => id.ToString("D");
+
+    private static Guid ParseId(string value) =>
+        Guid.TryParseExact(value, "D", out var id) && id != Guid.Empty
+            ? id
+            : throw new FormatException($"'{value}' is not a canonical non-empty GUID.");
 
     private sealed class CanonicalUtcConverter : JsonConverter<DateTimeOffset>
     {

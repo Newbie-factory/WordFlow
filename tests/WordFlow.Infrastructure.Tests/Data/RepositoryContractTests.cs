@@ -21,10 +21,13 @@ public sealed class RepositoryContractTests : IDisposable
         var nullRank = words.Items.FirstOrDefault(word => word.FrequencyRank is null)
             ?? (await FindNullRankPageAsync(repository));
         var senses = await repository.GetSensesAsync(nullRank.WordId, new PageRequest(0, 500), default);
+        var exact = await repository.GetWordAsync(nullRank.WordId, default);
 
         Assert.True(words.TotalCount >= 10_000);
         Assert.Null(nullRank.FrequencyRank);
+        Assert.Equal(nullRank, exact);
         Assert.All(senses.Items, sense => Assert.Equal(nullRank.WordId, sense.WordId));
+        Assert.All(senses.Items, sense => Assert.Contains(sense.PartOfSpeech, new[] { "n", "v", "a", "r", "s" }));
         Assert.Throws<ArgumentOutOfRangeException>(() => new PageRequest(-1, 10));
         Assert.Throws<ArgumentOutOfRangeException>(() => new PageRequest(0, 0));
     }
@@ -46,6 +49,16 @@ public sealed class RepositoryContractTests : IDisposable
             relation => relation.TargetWordId == forwardSource && relation.RelationType == forwardKind && relation.Direction == RelationDirection.Bidirectional);
         Assert.Contains((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
             relation => relation.TargetWordId == biSource && relation.RelationType == biKind && relation.Direction == RelationDirection.Bidirectional);
+
+        var synonym = await SemanticRelationRowAsync(relations);
+        var synonymResult = (await repository.GetRelationsAsync(synonym.Source, new PageRequest(0, 500), default)).Items
+            .Single(relation => relation.TargetWordId == synonym.Target && relation.RelationType == RelationKinds.Synonym
+                && relation.SourceSenseId == synonym.SourceSense && relation.TargetSenseId == synonym.TargetSense);
+        Assert.Equal(synonym.Pos, synonymResult.PartOfSpeech);
+
+        var correction = await MisspellingRowAsync(relations);
+        Assert.Contains((await repository.GetMisspellingsAsync(correction.Target, new PageRequest(0, 500), default)).Items,
+            item => item.Spelling == correction.Spelling);
 
         await repository.SetOverrideAsync(new UserRelationOverride(biTarget, biSource, biKind, false), default);
         Assert.DoesNotContain((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
@@ -119,6 +132,28 @@ public sealed class RepositoryContractTests : IDisposable
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         return (Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetString(2));
+    }
+
+    private static async Task<(Guid Source, Guid Target, string SourceSense, string TargetSense, string Pos)> SemanticRelationRowAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_entry_id,target_entry_id,source_sense_id,target_sense_id,pos FROM published_word_relation WHERE kind='synonym' LIMIT 1";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+    }
+
+    private static async Task<(string Spelling, Guid Target)> MisspellingRowAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_spelling,target_entry_id FROM published_word_relation WHERE kind='misspelling' LIMIT 1";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (reader.GetString(0), Guid.Parse(reader.GetString(1)));
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)

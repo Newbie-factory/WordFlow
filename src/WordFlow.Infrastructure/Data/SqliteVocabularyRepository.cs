@@ -28,6 +28,18 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return new Page<VocabularyWord>(items, total);
     }
 
+    public async Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct)
+    {
+        if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
+        await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT stable_id,word,frequency_rank FROM vocabulary WHERE stable_id=$wordId";
+        command.Parameters.AddWithValue("$wordId", wordId.ToString("D"));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        return new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2));
+    }
+
     public async Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct)
     {
         if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
@@ -36,7 +48,7 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         var id = wordId.ToString("D");
         var total = await CountAsync(connection, "SELECT COUNT(*) FROM lexical_sense WHERE entry_id=$wordId", ct, id).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT sense_id, entry_id, definition_en FROM lexical_sense WHERE entry_id=$wordId ORDER BY sense_id LIMIT $limit OFFSET $offset";
+        command.CommandText = "SELECT sense_id, entry_id, definition_en, pos FROM lexical_sense WHERE entry_id=$wordId ORDER BY sense_id LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$wordId", id);
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
@@ -46,7 +58,7 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         {
             var senseId = reader.GetString(0);
             if (string.IsNullOrWhiteSpace(senseId)) throw new InvalidDataException("Corpus sense ID is blank.");
-            items.Add(new VocabularySense(senseId, ParseId(reader.GetString(1)), reader.GetString(2)));
+            items.Add(new VocabularySense(senseId, ParseId(reader.GetString(1)), reader.GetString(2), reader.GetString(3)));
         }
         return new Page<VocabularySense>(items, total);
     }

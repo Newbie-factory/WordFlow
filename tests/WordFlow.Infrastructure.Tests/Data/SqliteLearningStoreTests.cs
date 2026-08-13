@@ -95,6 +95,29 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Application_reads_expose_idempotent_commit_card_pages_and_latest_undoable_event()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("user.db"));
+        var store = new SqliteLearningStore(factory);
+        var commandId = Id(140);
+        var review = Review(Id(40), InitialCard(), Rating.Good);
+        await store.ApplyAsync(new LearningCommand(commandId, review), default);
+
+        var commit = await store.GetCommitAsync(commandId, default);
+        var cards = await store.GetCardsAsync(new PageRequest(0, 500), default);
+        var latest = await store.GetLatestUndoableEventAsync(default);
+
+        Assert.False(commit!.Applied);
+        Assert.Equal(review.EventId, commit.EventId);
+        Assert.Equal(review.After, Assert.Single(cards.Items));
+        Assert.Equal(review, latest);
+
+        var undo = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(1))).Undo(Id(41), review);
+        await store.ApplyAsync(new LearningCommand(Id(141), undo), default);
+        Assert.Null(await store.GetLatestUndoableEventAsync(default));
+    }
+
+    [Fact]
     public async Task Stale_command_is_rejected_and_does_not_append_an_event()
     {
         var factory = await CreateMigratedFactoryAsync(Database("user.db"));

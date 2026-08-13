@@ -26,7 +26,13 @@ public interface ILearningStore
 {
     Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct);
 
+    Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct);
+
     Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct);
+
+    Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct);
+
+    Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct);
 }
 
 public sealed class LearningConcurrencyException : InvalidOperationException
