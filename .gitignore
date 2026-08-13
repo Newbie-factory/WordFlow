@@ -30,7 +30,9 @@ data/ielts/ielts_7000plus.csv
 
 # Large local source corpus and reproducible generated vocabulary artifacts
 data/sources/ecdict/ecdict.csv
+data/sources/oewn/english-wordnet-2025-json.zip
 data/ielts/ielts_8000.csv
 data/ielts/ielts_vocabulary.sqlite3
 data/ielts/vocabulary.csv
 data/ielts/vocabulary.sqlite3
+data/ielts/relations.sqlite3

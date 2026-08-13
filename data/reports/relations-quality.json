@@ -1,0 +1,40 @@
+{
+  "build_version": "wordflow-relations-v1",
+  "counts": {
+    "candidates": 19520,
+    "filtered": 141182,
+    "lexical_senses": 43947,
+    "missing_definitions": 0,
+    "missing_phonetics": 481,
+    "published": 47754,
+    "relations": 67274,
+    "reviewed": 78,
+    "verified_semantic": 47676
+  },
+  "fixed_groups": {
+    "bidirectionally_reachable": 18,
+    "expected": 18
+  },
+  "inputs": {
+    "curated_sha256": "45701DAB4271C3ACC508BB0ECA4C2D6E9ADD4C57793B56512B65521F25C7FA8B",
+    "misspellings_sha256": "59953E8B4514DE0A0DAF39E62E83C918A7A0383450FD444A9884FB955BA57454",
+    "oewn_sha256": "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51",
+    "vocabulary_sha256": "7B0D2ED0161EC0BC1F4B238A84DFD9D20AAB0A413C412A64501EAD4E52FA1BB9"
+  },
+  "schema_version": 1,
+  "verification": {
+    "candidate_count": 19520,
+    "duplicate_relations": 0,
+    "missing_misspellings": 0,
+    "missing_reverse_curated": 0,
+    "missing_targets": 0,
+    "passed": true,
+    "published_candidates": 0,
+    "published_count": 47754,
+    "relation_count": 67274,
+    "self_links": 0,
+    "sense_count": 43947,
+    "sqlite_integrity": "ok",
+    "unbound_published_synonyms": 0
+  }
+}

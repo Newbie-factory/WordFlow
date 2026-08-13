@@ -2,19 +2,13 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Set
-import uuid
 
-from tools.vocabulary.models import SelectedEntry, SelectionResult, SourceEntry
+from tools.vocabulary.models import SelectedEntry, SelectionResult, SourceEntry, stable_word_id
 from tools.vocabulary.normalization import normalize_word
 
 
-WORD_ID_NAMESPACE = uuid.UUID("85e2bd5f-cb11-5f2e-a068-51ccf3ec6123")
 MINIMUM_ORDINARY_SCORE = 75
 KNOWN_MISSPELLINGS = frozenset({"stimuate", "dissimuate"})
-
-
-def stable_word_id(word: str) -> str:
-    return str(uuid.uuid5(WORD_ID_NAMESPACE, normalize_word(word)))
 
 
 def _tokens(tags: str) -> set[str]:

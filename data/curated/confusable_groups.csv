@@ -1,0 +1,46 @@
+group_id,word,relation_kind,contrast_zh_cn,collocation,source_key,review_state
+g01,degenerate,root_confusable,degenerate 指退化或堕落；degrade 侧重降低质量或地位,degenerate into chaos,curated_relations,reviewed
+g01,degrade,root_confusable,degrade 指使降级或恶化；degenerate 强调逐渐退化,degrade the environment,curated_relations,reviewed
+g02,herbivorous,antonym_confusable,herbivorous 指食草的；与食肉的 carnivorous 对照,herbivorous animals,curated_relations,reviewed
+g02,carnivorous,antonym_confusable,carnivorous 指食肉的；与食草的 herbivorous 对照,carnivorous plants,curated_relations,reviewed
+g03,generation,root_confusable,generation 指一代人或产生过程；勿与概括和慷慨混淆,future generations,curated_relations,reviewed
+g03,generalization,root_confusable,generalization 指概括或泛化；不是 generation 的一代人,make a generalization,curated_relations,reviewed
+g03,generosity,root_confusable,generosity 指慷慨大方；不是 generation 或 generalization,show great generosity,curated_relations,reviewed
+g04,strategy,spelling_similar,strategy 指策略；tragedy 指悲剧,develop a strategy,curated_relations,reviewed
+g04,tragedy,spelling_similar,tragedy 指悲剧；strategy 指策略,a human tragedy,curated_relations,reviewed
+g05,pistol,spelling_similar,pistol 指手枪；piston 是活塞；postal 与邮政有关,fire a pistol,curated_relations,reviewed
+g05,piston,spelling_similar,piston 指活塞；pistol 指手枪；postal 与邮政有关,piston engine,curated_relations,reviewed
+g05,postal,spelling_similar,postal 指邮政的；pistol 是手枪；piston 是活塞,postal service,curated_relations,reviewed
+g06,extent,root_confusable,extent 是名词“程度或范围”；extend 是动词“延伸”,to a large extent,curated_relations,reviewed
+g06,extend,root_confusable,extend 是动词“延伸或延长”；extent 是名词“范围”,extend the deadline,curated_relations,reviewed
+g07,static,root_confusable,static 指静态的；statistic 是统计数字；statue 是雕像；status 是状态,static electricity,curated_relations,reviewed
+g07,statistic,root_confusable,statistic 指一项统计数字；勿与静态、雕像或状态混淆,a key statistic,curated_relations,reviewed
+g07,statue,root_confusable,statue 指雕像；勿与 static 或 status 混淆,a bronze statue,curated_relations,reviewed
+g07,status,root_confusable,status 指状态或地位；勿与 static、statistic 或 statue 混淆,current status,curated_relations,reviewed
+g08,summit,spelling_similar,summit 指峰顶或峰会；submit 指提交或屈服,climate summit,curated_relations,reviewed
+g08,submit,spelling_similar,submit 指提交或屈服；summit 指峰顶或峰会,submit an application,curated_relations,reviewed
+g09,stimulate,spelling_similar,stimulate 指刺激或促进；stipulate 指规定；dissimulate 指掩饰,stimulate economic growth,curated_relations,reviewed
+g09,stipulate,spelling_similar,stipulate 指明确规定；不是 stimulate 的促进或 dissimulate 的掩饰,stipulate a condition,curated_relations,reviewed
+g09,dissimulate,spelling_similar,dissimulate 指掩饰真实感受或意图；勿误拼为 dissimuate,dissimulate one's feelings,curated_relations,reviewed
+g10,colleague,spelling_similar,colleague 指同事；college 指学院或大学,a former colleague,curated_relations,reviewed
+g10,college,spelling_similar,college 指学院或大学；colleague 指同事,attend college,curated_relations,reviewed
+g11,flock,pronunciation_similar,flock 指鸟群或人群；block 指街区或阻挡,a flock of birds,curated_relations,reviewed
+g11,block,pronunciation_similar,block 指块、街区或阻挡；flock 指鸟群,a block of flats,curated_relations,reviewed
+g12,perceptible,root_confusable,perceptible 指可察觉的；susceptible 指易受影响的,a perceptible change,curated_relations,reviewed
+g12,susceptible,root_confusable,susceptible 指易受影响或感染的；perceptible 指可察觉的,susceptible to disease,curated_relations,reviewed
+g13,trumpet,spelling_similar,trumpet 指小号；triumph 指胜利,play the trumpet,curated_relations,reviewed
+g13,triumph,spelling_similar,triumph 指胜利或成功；trumpet 指小号,a major triumph,curated_relations,reviewed
+g14,vacation,pronunciation_similar,vacation 指假期；vocation 指职业或使命,on vacation,curated_relations,reviewed
+g14,vocation,pronunciation_similar,vocation 指职业或使命；vacation 指假期,choose a vocation,curated_relations,reviewed
+g15,inhabit,spelling_similar,inhabit 指居住于；inhibit 指抑制；inherit 指继承；inherent 指内在的,inhabit an island,curated_relations,reviewed
+g15,inhibit,spelling_similar,inhibit 指抑制或阻碍；勿与居住、继承或内在混淆,inhibit growth,curated_relations,reviewed
+g15,inherit,spelling_similar,inherit 指继承；勿与 inhabit、inhibit 或 inherent 混淆,inherit a fortune,curated_relations,reviewed
+g15,inherent,spelling_similar,inherent 指内在固有的；inherit 是动词“继承”,inherent risk,curated_relations,reviewed
+g16,desperate,spelling_similar,desperate 指绝望的或不顾一切的；disparate 指迥异的,a desperate attempt,curated_relations,reviewed
+g16,disparate,spelling_similar,disparate 指迥然不同的；desperate 指绝望的,disparate groups,curated_relations,reviewed
+g17,devaluation,spelling_similar,devaluation 指贬值；deviation 指偏离；devastation 指毁灭,currency devaluation,curated_relations,reviewed
+g17,deviation,spelling_similar,deviation 指偏差或偏离；勿与贬值或毁灭混淆,standard deviation,curated_relations,reviewed
+g17,devastation,spelling_similar,devastation 指毁灭或严重破坏；不是 devaluation 或 deviation,widespread devastation,curated_relations,reviewed
+g18,conserve,root_confusable,conserve 指保护或节约；converse 指交谈或相反的；observe 指观察,conserve energy,curated_relations,reviewed
+g18,converse,root_confusable,converse 可指交谈或相反事物；勿与 conserve 和 observe 混淆,converse with friends,curated_relations,reviewed
+g18,observe,root_confusable,observe 指观察或遵守；conserve 指节约；converse 指交谈,observe the rules,curated_relations,reviewed

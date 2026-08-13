@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import uuid
 
 from tools.vocabulary.normalization import normalize_word
+
+
+WORD_ID_NAMESPACE = uuid.UUID("85e2bd5f-cb11-5f2e-a068-51ccf3ec6123")
+
+
+def stable_word_id(word: str) -> str:
+    return str(uuid.uuid5(WORD_ID_NAMESPACE, normalize_word(word)))
 
 
 @dataclass(frozen=True, slots=True)

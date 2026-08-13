@@ -18,6 +18,28 @@
       "path": "docs/superpowers/specs/2026-08-13-wordflow-windows-design.md",
       "license": "Project-authored requirements",
       "role": "User-approved confusable-closure membership; entry content remains from ECDICT"
+    },
+    "oewn_2025": {
+      "name": "Open English WordNet 2025 core JSON edition",
+      "url": "https://en-word.net/downloads/english-wordnet-2025-json.zip",
+      "license": "CC BY 4.0 with underlying Princeton WordNet license; see data/licenses/OEWN-2025-LICENSE.md and data/licenses/WORDNET-LICENSE.txt",
+      "role": "Sense, POS, synset, antonym and derivational evidence for published lexical relations",
+      "edition": "2025 core (without Namenet)",
+      "downloaded_utc": "2026-08-13",
+      "bytes": 9986555,
+      "sha256": "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51"
+    },
+    "curated_relations": {
+      "name": "WordFlow reviewed confusable groups",
+      "path": "data/curated/confusable_groups.csv",
+      "license": "Project-authored reviewed metadata",
+      "role": "Reviewed classifications, Chinese contrast notes and collocations for design section 8.2"
+    },
+    "wordflow_spelling_v1": {
+      "name": "WordFlow spelling-candidate algorithm version 1",
+      "path": "tools/vocabulary/confusable.py",
+      "license": "Project source code license",
+      "role": "Unpublished algorithmic spelling candidates for later human review"
     }
   }
 }

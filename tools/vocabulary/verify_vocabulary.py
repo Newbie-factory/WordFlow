@@ -244,6 +244,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-registry", type=Path, required=True)
     parser.add_argument("--report-root", type=Path)
     parser.add_argument("--minimum-total", type=int, default=10_000)
+    parser.add_argument("--relations", action="store_true")
+    parser.add_argument("--relations-path", type=Path)
+    parser.add_argument("--relations-curated", type=Path, default=Path("data/curated/confusable_groups.csv"))
+    parser.add_argument("--misspellings", type=Path, default=Path("data/curated/misspellings.csv"))
+    parser.add_argument("--relations-quality", type=Path)
+    parser.add_argument("--relations-manifest", type=Path)
     args = parser.parse_args(argv)
     report = verify(
         args.artifact_dir,
@@ -252,8 +258,26 @@ def main(argv: list[str] | None = None) -> int:
         report_root=args.report_root,
         minimum_total=args.minimum_total,
     )
-    print(json.dumps(asdict(report), ensure_ascii=False, indent=2))
-    return 0 if report.passed else 1
+    payload: dict[str, object] = {"vocabulary": asdict(report)} if args.relations else asdict(report)
+    relations_passed = True
+    if args.relations:
+        from tools.vocabulary.build_relations import verify_relation_artifacts
+
+        relations_path = args.relations_path or (args.artifact_dir / "relations.sqlite3")
+        quality_path = args.relations_quality or (args.artifact_dir / "relations-quality.json")
+        manifest_path = args.relations_manifest or (args.artifact_dir / "relations-manifest.json")
+        relation_report = verify_relation_artifacts(
+            relations_path,
+            vocabulary=args.artifact_dir / "vocabulary.sqlite3",
+            curated=args.relations_curated,
+            misspellings=args.misspellings,
+            quality=quality_path,
+            manifest=manifest_path,
+        )
+        payload["relations"] = asdict(relation_report)
+        relations_passed = relation_report.passed
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if report.passed and relations_passed else 1
 
 
 if __name__ == "__main__":
