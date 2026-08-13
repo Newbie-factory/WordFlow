@@ -12,6 +12,15 @@ from tools.vocabulary.models import BuildConfig, BuildReport
 from tools.vocabulary.verify_vocabulary import resolve_artifact_path, verify
 
 
+def evidence_record(name: str, *, project_path: str) -> dict[str, str]:
+    return {
+        "name": name,
+        "role": "Test evidence",
+        "license": "Test fixture use",
+        "path": project_path,
+    }
+
+
 class BuildTests(unittest.TestCase):
     def test_manifest_does_not_depend_on_input_file_mtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -34,8 +43,8 @@ class BuildTests(unittest.TestCase):
                 json.dumps(
                     {
                         "sources": {
-                            "ecdict": {"name": "ECDICT"},
-                            "user_approved": {"name": "Approved"},
+                            "ecdict": evidence_record("ECDICT", project_path="source.csv"),
+                            "user_approved": evidence_record("Approved", project_path="spec.md"),
                         }
                     }
                 ),
@@ -63,9 +72,14 @@ class BuildTests(unittest.TestCase):
         artifact_dir = Path("data/ielts")
         manifest = {"artifacts": {"quality_report": {"path": "../reports/vocabulary-quality.json"}}}
 
-        result = resolve_artifact_path(artifact_dir, manifest, "quality_report")
+        result = resolve_artifact_path(
+            artifact_dir,
+            manifest,
+            "quality_report",
+            allowed_root=Path("data/reports"),
+        )
 
-        self.assertEqual(result, Path("data/reports/vocabulary-quality.json"))
+        self.assertEqual(result, Path("data/reports/vocabulary-quality.json").resolve())
 
     def test_slotted_build_report_has_json_safe_payload(self) -> None:
         report = BuildReport(
@@ -145,7 +159,14 @@ class BuildTests(unittest.TestCase):
                 encoding="utf-8",
             )
             registry.write_text(
-                json.dumps({"sources": {"ecdict": {"name": "ECDICT"}, "user_approved": {"name": "Approved"}}}),
+                json.dumps(
+                    {
+                        "sources": {
+                            "ecdict": evidence_record("ECDICT", project_path="source.csv"),
+                            "user_approved": evidence_record("Approved", project_path="spec.md"),
+                        }
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -159,7 +180,12 @@ class BuildTests(unittest.TestCase):
                     soft_max=1,
                 )
             )
-            verification = verify(output, minimum_total=1)
+            verification = verify(
+                output,
+                curated=curated,
+                source_registry=registry,
+                minimum_total=1,
+            )
 
             self.assertEqual(report.total, 2)
             self.assertEqual(report.required_present, 1)

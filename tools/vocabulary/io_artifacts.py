@@ -7,8 +7,10 @@ from pathlib import Path
 import sqlite3
 import sys
 from typing import Any
+from urllib.parse import urlparse
 
 from tools.vocabulary.models import SelectedEntry, SourceEntry
+from tools.vocabulary.normalization import normalize_word
 
 
 CSV_FIELDS = (
@@ -30,6 +32,8 @@ CSV_FIELDS = (
     "source_key",
     "selection_score",
 )
+CURATED_FIELDS = ("word", "reason", "source_key", "review_status")
+SUPPORTED_CURATED_REASONS = frozenset({"ielts_topic_family", "user_confusable"})
 
 
 def positive_integer(value: str | None) -> int | None:
@@ -72,19 +76,53 @@ def load_source(path: Path, source_key: str = "ecdict") -> list[SourceEntry]:
 
 def load_curated(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
-        rows = [{key: (value or "").strip() for key, value in row.items()} for row in csv.DictReader(stream)]
-    expected = {"word", "reason", "source_key", "review_status"}
-    if not rows and path.read_text(encoding="utf-8-sig").strip():
+        reader = csv.DictReader(stream)
+        if tuple(reader.fieldnames or ()) != CURATED_FIELDS:
+            raise ValueError(f"curated vocabulary must have exact header {CURATED_FIELDS}")
+        rows = []
+        for row_number, raw in enumerate(reader, start=2):
+            if None in raw:
+                raise ValueError(f"curated row {row_number} must contain exactly four columns")
+            rows.append({key: (value or "").strip() for key, value in raw.items()})
+    if not rows:
         raise ValueError("curated vocabulary has no data rows")
-    if rows and set(rows[0]) != expected:
-        raise ValueError(f"curated vocabulary columns must be {sorted(expected)}")
+    for row_number, row in enumerate(rows, start=2):
+        blank_fields = [field for field in CURATED_FIELDS if not row[field]]
+        if blank_fields:
+            raise ValueError(f"curated row {row_number} has blank fields: {blank_fields}")
+        if row["reason"] not in SUPPORTED_CURATED_REASONS:
+            raise ValueError(
+                f"curated row {row_number} reason must be a supported reason: "
+                f"{sorted(SUPPORTED_CURATED_REASONS)}"
+            )
+        if row["review_status"] != "reviewed":
+            raise ValueError(f"curated row {row_number} review_status must be reviewed")
+    normalized_words = [normalize_word(row["word"]) for row in rows]
+    duplicates = sorted({word for word in normalized_words if normalized_words.count(word) > 1})
+    if duplicates:
+        raise ValueError(f"curated vocabulary contains duplicate normalized words: {duplicates}")
+    misspellings = sorted(set(normalized_words) & {"stimuate", "dissimuate"})
+    if misspellings:
+        raise ValueError(f"curated vocabulary contains forbidden misspellings: {misspellings}")
     return rows
 
 
 def load_registry(path: Path) -> dict[str, Any]:
     registry = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(registry.get("sources"), dict):
-        raise ValueError("source registry must contain a sources object")
+    sources = registry.get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("source registry must contain a nonempty sources object")
+    for source_key, record in sources.items():
+        if not isinstance(source_key, str) or not source_key.strip() or not isinstance(record, dict):
+            raise ValueError("source registry keys must map to evidence objects")
+        for field in ("name", "role", "license"):
+            if not isinstance(record.get(field), str) or not record[field].strip():
+                raise ValueError(f"source {source_key!r} requires nonblank {field}")
+        locations = [field for field in ("url", "path") if isinstance(record.get(field), str) and record[field].strip()]
+        if not locations:
+            raise ValueError(f"source {source_key!r} requires a nonblank url or path")
+        if "url" in locations and urlparse(record["url"]).scheme not in {"http", "https"}:
+            raise ValueError(f"source {source_key!r} url must use http or https")
     return registry
 
 

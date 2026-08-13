@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tools.vocabulary.normalization import normalize_word
+
 
 @dataclass(frozen=True, slots=True)
 class SourceEntry:
@@ -57,9 +59,9 @@ class SelectionResult:
         return len(self.entries) > self.soft_max
 
     def reason_for(self, word: str) -> str | None:
-        key = word.strip().casefold()
+        key = normalize_word(word)
         return next(
-            (entry.selection_reason for entry in self.entries if entry.word.casefold() == key),
+            (entry.selection_reason for entry in self.entries if normalize_word(entry.word) == key),
             None,
         )
 

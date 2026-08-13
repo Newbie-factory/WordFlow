@@ -52,6 +52,16 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(stable_word_id("  INHABIT  "), stable_word_id("inhabit"))
         self.assertEqual(stable_word_id("cafe\u0301"), stable_word_id("caf\u00e9"))
 
+    def test_reason_for_uses_nfc_normalization(self) -> None:
+        result = select_entries(
+            [entry("caf\u00e9")],
+            required={"caf\u00e9": "user_confusable"},
+            soft_min=1,
+            soft_max=1,
+        )
+
+        self.assertEqual(result.reason_for("cafe\u0301"), "user_confusable_closure")
+
     def test_empty_chinese_definition_is_rejected_even_when_tagged(self) -> None:
         result = select_entries(
             [entry("valid"), entry("empty", translation="")],

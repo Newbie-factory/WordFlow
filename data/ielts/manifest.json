@@ -31,11 +31,11 @@
   "dataset_name": "WordFlow Quality-Gated IELTS and Academic Vocabulary",
   "inputs": {
     "curated_vocabulary": {
-      "path": "data/curated/required_vocabulary.csv",
+      "path": "../curated/required_vocabulary.csv",
       "sha256": "EC5922B9E94B22F08402612064FC00E08457E6AB567C7447CF01F6B51F555310"
     },
     "source_registry": {
-      "path": "data/curated/source_registry.json",
+      "path": "../curated/source_registry.json",
       "sha256": "C109604A497310430886A05850A93155E08D448708FF42702308AC612A7B93F6"
     }
   },
@@ -52,6 +52,7 @@
     "key": "ecdict",
     "license": "MIT",
     "name": "ECDICT",
+    "path": "../../../../data/sources/ecdict/ecdict.csv",
     "source_sha256": "1A6947E04785DB63613A92E14903CDAE7954F7E84860B10E68E5C7CBB3F9C3CF",
     "url": "https://github.com/skywind3000/ECDICT"
   }
