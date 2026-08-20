@@ -13,9 +13,11 @@ public sealed record WordRelation(
     RelationDirection Direction,
     string? SourceSenseId = null,
     string? TargetSenseId = null,
-    string? PartOfSpeech = null);
+    string? PartOfSpeech = null,
+    string Contrast = "",
+    string Collocation = "");
 
-public sealed record MisspellingRelation(string Spelling, Guid TargetWordId);
+public sealed record MisspellingRelation(string Spelling, Guid TargetWordId, string Contrast = "");
 
 public static class RelationKinds
 {

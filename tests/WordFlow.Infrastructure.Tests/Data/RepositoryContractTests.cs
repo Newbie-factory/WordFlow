@@ -18,14 +18,18 @@ public sealed class RepositoryContractTests : IDisposable
         var repository = new SqliteVocabularyRepository(Factory(vocabulary, relations));
 
         var words = await repository.GetWordsAsync(new PageRequest(0, 500), default);
+        var displayWord = words.Items.First(word => !string.IsNullOrWhiteSpace(word.Phonetic) && !string.IsNullOrWhiteSpace(word.Chinese));
         var nullRank = words.Items.FirstOrDefault(word => word.FrequencyRank is null)
             ?? (await FindNullRankPageAsync(repository));
         var senses = await repository.GetSensesAsync(nullRank.WordId, new PageRequest(0, 500), default);
         var exact = await repository.GetWordAsync(nullRank.WordId, default);
+        var exactDisplay = await repository.GetWordAsync(displayWord.WordId, default);
 
         Assert.True(words.TotalCount >= 10_000);
         Assert.Null(nullRank.FrequencyRank);
         Assert.Equal(nullRank, exact);
+        Assert.Equal(displayWord.Phonetic, exactDisplay!.Phonetic);
+        Assert.Equal(displayWord.Chinese, exactDisplay.Chinese);
         Assert.All(senses.Items, sense => Assert.Equal(nullRank.WordId, sense.WordId));
         Assert.All(senses.Items, sense => Assert.Contains(sense.PartOfSpeech, new[] { "n", "v", "a", "r", "s" }));
         Assert.Throws<ArgumentOutOfRangeException>(() => new PageRequest(-1, 10));
@@ -60,9 +64,15 @@ public sealed class RepositoryContractTests : IDisposable
                 && relation.SourceSenseId == synonym.TargetSense && relation.TargetSenseId == synonym.SourceSense);
         Assert.Equal(synonym.Pos, reverse.PartOfSpeech);
 
+        var curatedRow = await CuratedRelationRowAsync(relations);
+        var curated = (await repository.GetRelationsAsync(curatedRow.Source, new PageRequest(0, 500), default)).Items
+            .First(relation => relation.TargetWordId == curatedRow.Target && relation.RelationType == curatedRow.Kind);
+        Assert.False(string.IsNullOrWhiteSpace(curated.Contrast));
+        Assert.False(string.IsNullOrWhiteSpace(curated.Collocation));
+
         var correction = await MisspellingRowAsync(relations);
         Assert.Contains((await repository.GetMisspellingsAsync(correction.Target, new PageRequest(0, 500), default)).Items,
-            item => item.Spelling == correction.Spelling);
+            item => item.Spelling == correction.Spelling && !string.IsNullOrWhiteSpace(item.Contrast));
 
         await repository.SetOverrideAsync(new UserRelationOverride(biTarget, biSource, biKind, false), default);
         Assert.DoesNotContain((await repository.GetRelationsAsync(biTarget, new PageRequest(0, 500), default)).Items,
@@ -222,6 +232,17 @@ public sealed class RepositoryContractTests : IDisposable
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         return (Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+    }
+
+    private static async Task<(Guid Source, Guid Target, string Kind)> CuratedRelationRowAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT source_entry_id,target_entry_id,kind FROM published_word_relation WHERE source_entry_id IS NOT NULL AND contrast_zh_cn<>'' AND collocation<>'' LIMIT 1";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        return (Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetString(2));
     }
 
     private static async Task<(string Spelling, Guid Target)> MisspellingRowAsync(string path)

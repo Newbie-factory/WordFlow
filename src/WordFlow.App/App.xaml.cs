@@ -3,7 +3,10 @@ using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
 using WordFlow.App.ViewModels;
+using WordFlow.App.Views;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
+using WordFlow.Application.Relations;
 using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Windows;
 
@@ -19,13 +22,18 @@ public partial class App : System.Windows.Application
     private LocalLifecycleLog? lifecycleLog;
     private ApplicationExitCoordinator? exitCoordinator;
     private Task? coordinatorMonitor;
-    private MainWindow? card;
+    private FloatingCardWindow? card;
     private IShortcutService? shortcutService;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (e.Args.Contains("--ui-smoke", StringComparer.OrdinalIgnoreCase))
+        {
+            StartUiSmoke();
+            return;
+        }
         exitCoordinator = CreateExitCoordinator();
         try
         {
@@ -73,6 +81,15 @@ public partial class App : System.Windows.Application
         }
     }
 
+    private void StartUiSmoke()
+    {
+        ShutdownMode = ShutdownMode.OnMainWindowClose;
+        var placementPath = Path.Combine(Path.GetTempPath(), $"wordflow-ui-smoke-{Environment.ProcessId}.json");
+        card = new FloatingCardWindow(UiSmokeCardFactory.CreateViewModel(), new WindowPlacementService(placementPath));
+        MainWindow = card;
+        card.Show();
+    }
+
     private void CreateCardAndTray()
     {
         shortcutService = services?.GetRequiredService<IShortcutService>()
@@ -80,7 +97,20 @@ public partial class App : System.Windows.Application
         var shortcutFaults = new ShortcutCallbackFaultHub();
         shortcutFaults.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
-        card = new MainWindow(shortcutService, shortcutFaults);
+        var viewModel = FloatingCardComposition.Create(
+            services.GetRequiredService<GetNextCard>(),
+            services.GetRequiredService<SubmitRating>(),
+            services.GetRequiredService<SlashWord>(),
+            services.GetRequiredService<UndoLastAction>(),
+            services.GetRequiredService<GetSynonyms>(),
+            services.GetRequiredService<GetConfusables>(),
+            new ShortcutLabelMap(shortcutService));
+        var paths = services.GetRequiredService<AppPaths>();
+        card = new FloatingCardWindow(
+            viewModel,
+            shortcutService,
+            new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
+            shortcutFaults);
         card.Closing += (_, args) =>
         {
             if (exiting) return;
@@ -110,7 +140,6 @@ public partial class App : System.Windows.Application
         if (card.WindowState == WindowState.Minimized) card.WindowState = WindowState.Normal;
         card.Activate();
         card.Topmost = true;
-        card.Topmost = false;
         card.Focus();
     }
 

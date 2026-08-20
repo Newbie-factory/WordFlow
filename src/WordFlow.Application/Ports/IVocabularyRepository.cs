@@ -23,7 +23,13 @@ public sealed record Page<T>(
 
 public sealed record ExhaustionProbe(bool IsExhausted, string SnapshotId);
 
-public sealed record VocabularyWord(Guid WordId, string Lemma, int? FrequencyRank, bool IsLearningHeadword = true);
+public sealed record VocabularyWord(
+    Guid WordId,
+    string Lemma,
+    int? FrequencyRank,
+    bool IsLearningHeadword = true,
+    string Phonetic = "",
+    string Chinese = "");
 
 public sealed record VocabularySense(string SenseId, Guid WordId, string Definition, string? PartOfSpeech = null);
 

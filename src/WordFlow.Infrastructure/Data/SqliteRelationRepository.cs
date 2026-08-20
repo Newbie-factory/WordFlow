@@ -26,11 +26,11 @@ public sealed class SqliteRelationRepository : IRelationRepository
         {
             await using var command = corpus.CreateCommand();
             command.CommandText = """
-                SELECT target_entry_id, kind, direction, source_sense_id, target_sense_id, pos
+                SELECT target_entry_id, kind, direction, source_sense_id, target_sense_id, pos, contrast_zh_cn, collocation
                 FROM published_word_relation
                 WHERE source_entry_id=$source
                 UNION ALL
-                SELECT source_entry_id, kind, direction, target_sense_id, source_sense_id, pos
+                SELECT source_entry_id, kind, direction, target_sense_id, source_sense_id, pos, contrast_zh_cn, collocation
                 FROM published_word_relation
                 WHERE target_entry_id=$source AND direction='bidirectional' AND source_entry_id IS NOT NULL
                 ORDER BY kind, target_entry_id
@@ -50,8 +50,10 @@ public sealed class SqliteRelationRepository : IRelationRepository
                 var sourceSense = reader.IsDBNull(3) ? null : reader.GetString(3);
                 var targetSense = reader.IsDBNull(4) ? null : reader.GetString(4);
                 var pos = reader.IsDBNull(5) ? null : reader.GetString(5);
+                var contrast = reader.GetString(6);
+                var collocation = reader.GetString(7);
                 merged[(target, type, sourceSense, targetSense, pos)] = new WordRelation(
-                    sourceWordId, target, type, direction, sourceSense, targetSense, pos);
+                    sourceWordId, target, type, direction, sourceSense, targetSense, pos, contrast, collocation);
             }
         }
 
@@ -76,7 +78,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
         var ordered = merged.Values.OrderBy(relation => relation.RelationType, StringComparer.Ordinal)
             .ThenBy(relation => relation.TargetWordId).ToArray();
         var items = ordered.Skip(page.Offset).Take(page.Limit).ToArray();
-        var snapshot = string.Join('|', ordered.Select(x => $"{x.TargetWordId:D}:{x.RelationType}:{x.SourceSenseId}:{x.TargetSenseId}:{x.PartOfSpeech}"));
+        var snapshot = string.Join('|', ordered.Select(x => $"{x.TargetWordId:D}:{x.RelationType}:{x.SourceSenseId}:{x.TargetSenseId}:{x.PartOfSpeech}:{x.Contrast}:{x.Collocation}"));
         return new Page<WordRelation>(items, ordered.Length, page.Offset + items.Length < ordered.Length, snapshot.Length == 0 ? "relations:empty" : snapshot);
     }
 
@@ -102,7 +104,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
         count.Parameters.AddWithValue("$target", targetWordId.ToString("D"));
         var total = Convert.ToInt32(await count.ExecuteScalarAsync(ct).ConfigureAwait(false));
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT source_spelling,target_entry_id FROM published_word_relation WHERE target_entry_id=$target AND kind='misspelling' ORDER BY source_spelling LIMIT $limit OFFSET $offset";
+        command.CommandText = "SELECT source_spelling,target_entry_id,contrast_zh_cn FROM published_word_relation WHERE target_entry_id=$target AND kind='misspelling' ORDER BY source_spelling LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$target", targetWordId.ToString("D"));
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
@@ -112,7 +114,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
         {
             var spelling = reader.GetString(0);
             if (string.IsNullOrWhiteSpace(spelling)) throw new InvalidDataException("A misspelling source cannot be blank.");
-            items.Add(new MisspellingRelation(spelling, ParseId(reader.GetString(1))));
+            items.Add(new MisspellingRelation(spelling, ParseId(reader.GetString(1)), reader.GetString(2)));
         }
         return new Page<MisspellingRelation>(items, total, page.Offset + items.Count < total, $"misspellings:{targetWordId:D}:{total}");
     }

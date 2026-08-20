@@ -4,7 +4,14 @@ namespace WordFlow.Application.Relations;
 
 public sealed record GetConfusablesRequest(Guid WordId);
 
-public sealed record ConfusableItem(Guid? WordId, string Spelling, string RelationType);
+public sealed record ConfusableItem(
+    Guid? WordId,
+    string Spelling,
+    string RelationType,
+    string Phonetic = "",
+    string Chinese = "",
+    string Contrast = "",
+    string Collocation = "");
 
 public sealed class GetConfusables
 {
@@ -25,7 +32,8 @@ public sealed class GetConfusables
         _ = timeProvider.GetUtcNow();
         try
         {
-            if (await vocabulary.GetWordAsync(request.WordId, ct).ConfigureAwait(false) is null)
+            var source = await vocabulary.GetWordAsync(request.WordId, ct).ConfigureAwait(false);
+            if (source is null)
                 return new NotFound<IReadOnlyList<ConfusableItem>>($"Word {request.WordId:D} was not found.");
             var all = await PagedReads.AllAsync(
                 (page, token) => relations.GetRelationsAsync(request.WordId, page, token),
@@ -36,12 +44,14 @@ public sealed class GetConfusables
                 var target = await vocabulary.GetWordAsync(relation.TargetWordId, ct).ConfigureAwait(false)
                     ?? throw new InvalidDataException($"Relation target {relation.TargetWordId:D} is missing from vocabulary.");
                 if (!target.IsLearningHeadword) throw new InvalidDataException("A confusable relation targets a non-headword.");
-                items.Add(new ConfusableItem(target.WordId, target.Lemma, relation.RelationType));
+                items.Add(new ConfusableItem(target.WordId, target.Lemma, relation.RelationType,
+                    target.Phonetic, target.Chinese, relation.Contrast, relation.Collocation));
             }
             var misspellings = await PagedReads.AllAsync(
                 (page, token) => relations.GetMisspellingsAsync(request.WordId, page, token),
                 (offset, snapshot, token) => relations.ProbeMisspellingsEndAsync(request.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
-            items.AddRange(misspellings.Select(x => new ConfusableItem(null, x.Spelling, RelationKinds.Misspelling)));
+            items.AddRange(misspellings.Select(x => new ConfusableItem(null, $"{x.Spelling} → {source.Lemma}", RelationKinds.Misspelling,
+                Chinese: "拼写纠正", Contrast: x.Contrast)));
             var ordered = items.OrderBy(x => x.RelationType, StringComparer.Ordinal)
                 .ThenBy(x => x.Spelling, StringComparer.Ordinal)
                 .ThenBy(x => x.WordId).ToArray();

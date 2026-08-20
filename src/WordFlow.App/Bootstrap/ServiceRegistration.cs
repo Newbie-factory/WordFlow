@@ -1,5 +1,9 @@
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.Application.Ports;
+using WordFlow.Application.Learning;
+using WordFlow.Application.Relations;
+using WordFlow.Domain.Learning;
+using WordFlow.Domain.Scheduling;
 using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Windows;
 
@@ -19,6 +23,15 @@ public static class ServiceRegistration
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IFsrsScheduler, Fsrs6Scheduler>();
+        services.AddSingleton<QueuePolicy>();
+        services.AddSingleton<GetNextCard>();
+        services.AddSingleton<SubmitRating>();
+        services.AddSingleton<SlashWord>();
+        services.AddSingleton<UndoLastAction>();
+        services.AddSingleton<GetSynonyms>();
+        services.AddSingleton<GetConfusables>();
         services.AddSingleton(shortcutDispatcher ?? new OwnerThreadShortcutDispatcher());
         services.AddSingleton<IShortcutService>(provider =>
             new GlobalShortcutService(provider.GetRequiredService<SqliteConnectionFactory>(),

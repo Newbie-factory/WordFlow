@@ -63,7 +63,7 @@ public sealed class RelationUseCaseTests
 
         var items = Assert.IsType<Success<IReadOnlyList<ConfusableItem>>>(result).Value;
         Assert.Collection(items,
-            item => { Assert.Equal(RelationKinds.Misspelling, item.RelationType); Assert.Equal("stimuate", item.Spelling); },
+            item => { Assert.Equal(RelationKinds.Misspelling, item.RelationType); Assert.Equal("stimuate → stimulate", item.Spelling); },
             item => { Assert.Equal(RelationKinds.SpellingSimilar, item.RelationType); Assert.Equal(target.WordId, item.WordId); });
     }
 

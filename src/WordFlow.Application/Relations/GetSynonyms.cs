@@ -4,7 +4,13 @@ namespace WordFlow.Application.Relations;
 
 public sealed record GetSynonymsRequest(Guid WordId);
 
-public sealed record RelationWord(Guid WordId, string Lemma);
+public sealed record RelationWord(
+    Guid WordId,
+    string Lemma,
+    string Phonetic,
+    string Chinese,
+    string Contrast,
+    string Collocation);
 
 public sealed record SynonymGroup(
     string SourceSenseId,
@@ -64,11 +70,15 @@ public sealed class GetSynonyms
                         group.Key.Item1,
                         group.Key.Item2,
                         sense.Definition,
-                        group.Select(x => targetWords[x.TargetWordId])
-                            .DistinctBy(x => x.WordId)
-                            .OrderBy(x => x.Lemma, StringComparer.Ordinal)
-                            .ThenBy(x => x.WordId)
-                            .Select(x => new RelationWord(x.WordId, x.Lemma)).ToArray());
+                        group.GroupBy(x => x.TargetWordId)
+                            .Select(x => x.First())
+                            .OrderBy(x => targetWords[x.TargetWordId].Lemma, StringComparer.Ordinal)
+                            .ThenBy(x => x.TargetWordId)
+                            .Select(x =>
+                            {
+                                var word = targetWords[x.TargetWordId];
+                                return new RelationWord(word.WordId, word.Lemma, word.Phonetic, word.Chinese, x.Contrast, x.Collocation);
+                            }).ToArray());
                 }).ToArray();
             return new Success<IReadOnlyList<SynonymGroup>>(groups);
         }

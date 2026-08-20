@@ -21,14 +21,14 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
         var total = await CountAsync(connection, "SELECT COUNT(*) FROM vocabulary", ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT stable_id, word, frequency_rank FROM vocabulary ORDER BY frequency_rank IS NULL, frequency_rank, word COLLATE NOCASE, stable_id LIMIT $limit OFFSET $offset";
+        command.CommandText = "SELECT stable_id,word,frequency_rank,phonetic,translation_zh_cn FROM vocabulary ORDER BY frequency_rank IS NULL, frequency_rank, word COLLATE NOCASE, stable_id LIMIT $limit OFFSET $offset";
         command.Parameters.AddWithValue("$limit", page.Limit);
         command.Parameters.AddWithValue("$offset", page.Offset);
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         var items = new List<VocabularyWord>();
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
-            items.Add(new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
+            items.Add(ReadWord(reader));
         }
         return new Page<VocabularyWord>(items, total, page.Offset + items.Count < total, $"vocabulary:{total}");
     }
@@ -54,11 +54,11 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
         await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT stable_id,word,frequency_rank FROM vocabulary WHERE stable_id=$wordId";
+        command.CommandText = "SELECT stable_id,word,frequency_rank,phonetic,translation_zh_cn FROM vocabulary WHERE stable_id=$wordId";
         command.Parameters.AddWithValue("$wordId", wordId.ToString("D"));
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
-        return new VocabularyWord(ParseId(reader.GetString(0)), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2));
+        return ReadWord(reader);
     }
 
     public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
@@ -114,4 +114,12 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         if (!Guid.TryParseExact(value, "D", out var id) || id == Guid.Empty) throw new InvalidDataException($"Corpus ID '{value}' is not a canonical non-empty GUID.");
         return id;
     }
+
+    private static VocabularyWord ReadWord(SqliteDataReader reader) => new(
+        ParseId(reader.GetString(0)),
+        reader.GetString(1),
+        reader.IsDBNull(2) ? null : reader.GetInt32(2),
+        true,
+        reader.GetString(3),
+        reader.GetString(4));
 }
