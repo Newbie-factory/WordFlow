@@ -115,6 +115,62 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Partial_conflict_preserves_a_quarantined_voice_id_and_later_clean_inventory_recovers_it()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "dup",
+            [PronunciationSettingsViewModel.RateKey] = "broken",
+        }, default);
+        using var conflictedService = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false,
+            [
+                new("safe", "Safe", "en-US", true),
+                new("dup", "First", "en-US", true),
+                new("dup", "Second", "en-GB", true),
+            ])));
+        var conflicted = new PronunciationSettingsViewModel(conflictedService, store);
+
+        await conflicted.RestoreAsync();
+        var afterConflict = await store.GetManyAsync([PronunciationSettingsViewModel.VoiceKey], default);
+
+        Assert.Equal("dup", conflicted.SelectedVoiceId);
+        Assert.Equal("dup", afterConflict[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.Contains("冲突", conflicted.SettingsIssue);
+
+        using var recoveredService = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false, [new("dup", "Recovered", "en-GB", true)])));
+        var recovered = new PronunciationSettingsViewModel(recoveredService, store);
+        await recovered.RestoreAsync();
+        Assert.Equal("dup", recovered.SelectedVoiceId);
+    }
+
+    [Fact]
+    public async Task Partial_conflict_still_sanitizes_an_absent_nonquarantined_voice_id()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "removed",
+        }, default);
+        using var service = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false,
+            [
+                new("safe", "Safe", "en-US", true),
+                new("dup", "First", "en-US", true),
+                new("dup", "Second", "en-GB", true),
+            ])));
+        var settings = new PronunciationSettingsViewModel(service, store);
+
+        await settings.RestoreAsync();
+        var persisted = await store.GetManyAsync([PronunciationSettingsViewModel.VoiceKey], default);
+
+        Assert.Null(settings.SelectedVoiceId);
+        Assert.Equal("", persisted[PronunciationSettingsViewModel.VoiceKey]);
+    }
+
+    [Fact]
     public async Task Click_supersedes_pending_autoplay_and_failures_are_observed_as_feedback()
     {
         var store = await StoreAsync();
@@ -171,6 +227,36 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         Assert.Empty(service.SpokenWords);
     }
 
+    [Theory]
+    [InlineData("click")]
+    [InlineData("pause")]
+    [InlineData("disable")]
+    [InlineData("switch")]
+    [InlineData("dispose")]
+    public async Task Newer_transition_prevents_autoplay_blocked_at_the_publication_boundary(string transition)
+    {
+        var service = new FakePronunciationService();
+        service.BlockNextPublication();
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync()) { Autoplay = true };
+
+        settings.OnCardChanged(Guid.NewGuid(), "automatic", isPaused: false);
+        await service.WaitForBlockedPublicationAsync();
+
+        switch (transition)
+        {
+            case "click": settings.Execute(Guid.NewGuid(), "clicked"); break;
+            case "pause": settings.SetPaused(true); break;
+            case "disable": settings.Autoplay = false; break;
+            case "switch": settings.OnCardChanged(Guid.NewGuid(), "switched", isPaused: false); break;
+            case "dispose": settings.Dispose(); break;
+        }
+
+        service.ReleaseBlockedPublication();
+        await service.WaitForBlockedPublicationCompletionAsync();
+
+        Assert.DoesNotContain("automatic", service.SpokenWords);
+    }
+
     [Fact]
     public async Task Restore_applies_all_notifications_on_owner_context_and_contains_observers()
     {
@@ -191,6 +277,31 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         Assert.NotEmpty(notificationThreads);
         Assert.All(notificationThreads, id => Assert.Equal(owner.ThreadId, id));
         Assert.Contains("已修复", settings.SettingsIssue);
+    }
+
+    [Fact]
+    public async Task Cancellation_after_owner_post_prevents_late_restore_apply_and_notifications()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VolumeKey] = "55",
+        }, default);
+        var owner = new ControlledSynchronizationContext();
+        var settings = new PronunciationSettingsViewModel(new FakePronunciationService(), store, owner);
+        var notifications = new ConcurrentQueue<string?>();
+        settings.PropertyChanged += (_, args) => notifications.Enqueue(args.PropertyName);
+        using var cancellation = new CancellationTokenSource();
+
+        var restore = settings.RestoreAsync(cancellation.Token);
+        await owner.WaitForPostAsync();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => restore);
+        owner.RunPostedCallbacks();
+
+        Assert.Equal(100, settings.Volume);
+        Assert.Empty(notifications);
     }
 
     [Fact]
@@ -255,21 +366,37 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         ];
         public PronunciationAvailability Availability { get; set; } =
             new(true, "可用", PronunciationInventoryState.AuthoritativeAvailable);
-        public List<string> SpokenWords { get; } = [];
+        public ConcurrentQueue<string> SpokenWords { get; } = [];
         public int CancelCalls { get; private set; }
         public bool DelayCompletion { get; set; }
         public bool DelayNextCancel { get; set; }
         private TaskCompletionSource<bool>? delayedCancel;
+        private int blockNextPublication;
+        private TaskCompletionSource<bool>? publicationEntered;
+        private TaskCompletionSource<bool>? publicationRelease;
+        private TaskCompletionSource<bool>? publicationCompleted;
         public PronunciationVoice? SelectVoice(string? voiceId, PronunciationAccent preference) =>
             Voices.FirstOrDefault(voice => voice.Id == voiceId) ?? Voices[0];
-        public Task<PronunciationPlaybackResult> SpeakAsync(string text, string voiceId, int rate, int volume, CancellationToken ct)
+        public async Task<PronunciationPlaybackResult> SpeakAsync(string text, string voiceId, int rate, int volume, CancellationToken ct)
         {
-            SpokenWords.Add(text);
+            bool wasBlocked = Interlocked.Exchange(ref blockNextPublication, 0) == 1;
+            if (wasBlocked)
+            {
+                publicationEntered!.TrySetResult(true);
+                await publicationRelease!.Task;
+                if (ct.IsCancellationRequested)
+                {
+                    publicationCompleted!.TrySetResult(true);
+                    return PronunciationPlaybackResult.Cancelled();
+                }
+            }
+            SpokenWords.Enqueue(text);
             calls.Release();
-            if (!DelayCompletion) return Task.FromResult(PronunciationPlaybackResult.Completed(text));
+            if (wasBlocked) publicationCompleted!.TrySetResult(true);
+            if (!DelayCompletion) return PronunciationPlaybackResult.Completed(text);
             var completion = new TaskCompletionSource<PronunciationPlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending.Add(completion);
-            return completion.Task;
+            return await completion.Task;
         }
         public Task CancelAsync()
         {
@@ -280,6 +407,16 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
             return delayedCancel.Task;
         }
         public void ReleaseDelayedCancel() => delayedCancel?.TrySetResult(true);
+        public void BlockNextPublication()
+        {
+            publicationEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            publicationRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            publicationCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Interlocked.Exchange(ref blockNextPublication, 1);
+        }
+        public Task WaitForBlockedPublicationAsync() => publicationEntered!.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        public void ReleaseBlockedPublication() => publicationRelease!.TrySetResult(true);
+        public Task WaitForBlockedPublicationCompletionAsync() => publicationCompleted!.Task.WaitAsync(TimeSpan.FromSeconds(2));
         public async Task WaitForCallsAsync(int count)
         {
             while (SpokenWords.Count < count) await calls.WaitAsync(TimeSpan.FromSeconds(2));
@@ -298,11 +435,13 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         public IOfflineSpeechEngine Create() => engine;
     }
 
-    private sealed class TestSpeechEngine(bool throwOnInventory) : IOfflineSpeechEngine
+    private sealed class TestSpeechEngine(
+        bool throwOnInventory,
+        IReadOnlyList<SpeechEngineVoice>? installedVoices = null) : IOfflineSpeechEngine
     {
         public IReadOnlyList<SpeechEngineVoice> GetInstalledVoices() => throwOnInventory
             ? throw new InvalidOperationException("enumeration fault")
-            : [new("us", "US", "en-US", true)];
+            : installedVoices ?? [new("us", "US", "en-US", true)];
         public event EventHandler<SpeechEngineCompletedEventArgs>? SpeakCompleted { add { } remove { } }
         public void SpeakAsync(Guid requestId, string text, string voiceId, int rate, int volume) { }
         public void CancelAll() { }
@@ -338,6 +477,25 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
             SetSynchronizationContext(this);
             ready.Set();
             foreach (var work in queue.GetConsumingEnumerable()) work.Callback(work.State);
+        }
+    }
+
+    private sealed class ControlledSynchronizationContext : SynchronizationContext
+    {
+        private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> callbacks = [];
+        private readonly SemaphoreSlim posted = new(0);
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            callbacks.Enqueue((d, state));
+            posted.Release();
+        }
+
+        public Task WaitForPostAsync() => posted.WaitAsync(TimeSpan.FromSeconds(2));
+
+        public void RunPostedCallbacks()
+        {
+            while (callbacks.TryDequeue(out var work)) work.Callback(work.State);
         }
     }
 }

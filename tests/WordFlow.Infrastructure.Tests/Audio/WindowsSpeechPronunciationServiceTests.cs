@@ -84,6 +84,25 @@ public sealed class WindowsSpeechPronunciationServiceTests
         Assert.Equal("Canonical", voice.Name);
         Assert.Equal("en-US", voice.CultureName);
         Assert.Equal(PronunciationInventoryState.AuthoritativeAvailable, service.Availability.InventoryState);
+        Assert.Equal(["dup-id", "name-a", "name-b"], service.Availability.QuarantinedVoiceIds);
+    }
+
+    [Fact]
+    public void All_conflicting_enabled_English_voices_are_an_unavailable_conflict_not_an_empty_inventory()
+    {
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(
+            new FakeSpeechEngine(
+            [
+                new("dup", "First", "en-US", true),
+                new("dup", "Second", "en-GB", true),
+            ])));
+
+        Assert.Empty(service.Voices);
+        Assert.False(service.Availability.IsAvailable);
+        Assert.Equal(PronunciationInventoryState.UnavailableConflict, service.Availability.InventoryState);
+        Assert.Equal(["dup"], service.Availability.QuarantinedVoiceIds);
+        Assert.Contains("冲突", service.Availability.Message);
+        Assert.DoesNotContain("安装", service.Availability.Message);
     }
 
     [Theory]

@@ -33,6 +33,8 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
         "未检测到可用的英文语音。请在 Windows“语言和区域”的“语音”选项中安装离线英语语音包。";
     public const string SpeechSubsystemUnavailableMessage =
         "Windows 本机离线语音暂时不可用，请稍后重试；学习功能可继续使用。";
+    public const string SpeechInventoryConflictMessage =
+        "检测到 Windows 本机英语语音配置冲突，离线发音暂时不可用；学习功能可继续使用。";
 
     private readonly BlockingCollection<Action> queue = [];
     private readonly IOfflineSpeechEngineFactory factory;
@@ -148,10 +150,21 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
             {
                 engine = factory.Create();
                 engine.SpeakCompleted += OnSpeakCompleted;
-                voices = NormalizeInventory(engine.GetInstalledVoices());
+                var inventory = NormalizeInventory(engine.GetInstalledVoices());
+                voices = inventory.Voices;
                 availability = voices.Count > 0
-                    ? new(true, "Windows 本机离线英语语音可用", PronunciationInventoryState.AuthoritativeAvailable)
-                    : new(false, NoEnglishVoiceMessage, PronunciationInventoryState.AuthoritativeEmpty);
+                    ? new(
+                        true,
+                        "Windows 本机离线英语语音可用",
+                        PronunciationInventoryState.AuthoritativeAvailable,
+                        quarantinedVoiceIds: inventory.QuarantinedVoiceIds)
+                    : inventory.EligibleEnglishCount == 0
+                        ? new(false, NoEnglishVoiceMessage, PronunciationInventoryState.AuthoritativeEmpty)
+                        : new(
+                            false,
+                            SpeechInventoryConflictMessage,
+                            PronunciationInventoryState.UnavailableConflict,
+                            quarantinedVoiceIds: inventory.QuarantinedVoiceIds);
             }
             catch (Exception exception)
             {
@@ -271,7 +284,7 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
         catch (CultureNotFoundException) { return false; }
     }
 
-    private static IReadOnlyList<PronunciationVoice> NormalizeInventory(IReadOnlyList<SpeechEngineVoice> installed)
+    private static NormalizedVoiceInventory NormalizeInventory(IReadOnlyList<SpeechEngineVoice> installed)
     {
         var candidates = new List<PronunciationVoice>();
         foreach (var voice in installed)
@@ -284,16 +297,33 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
             candidates.Add(new(voice.Id, voice.Name, cultureName, AccentFor(cultureName)));
         }
 
-        var unambiguousIds = candidates.GroupBy(voice => voice.Id, StringComparer.Ordinal)
-            .Where(group => group.Select(voice => (voice.Name, voice.CultureName, voice.Accent)).Distinct().Count() == 1)
-            .Select(group => group.First())
-            .ToArray();
-        return unambiguousIds.GroupBy(voice => voice.Name, StringComparer.OrdinalIgnoreCase)
-            .Where(group => group.Select(voice => voice.Id).Distinct(StringComparer.Ordinal).Count() == 1)
-            .Select(group => group.First())
+        var quarantinedIds = new HashSet<string>(StringComparer.Ordinal);
+        var unambiguousIds = new List<PronunciationVoice>();
+        foreach (var group in candidates.GroupBy(voice => voice.Id, StringComparer.Ordinal))
+        {
+            if (group.Select(voice => (voice.Name, voice.CultureName, voice.Accent)).Distinct().Count() == 1)
+                unambiguousIds.Add(group.First());
+            else
+                quarantinedIds.Add(group.Key);
+        }
+
+        var selectable = new List<PronunciationVoice>();
+        foreach (var group in unambiguousIds.GroupBy(voice => voice.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (group.Select(voice => voice.Id).Distinct(StringComparer.Ordinal).Count() == 1)
+                selectable.Add(group.First());
+            else
+                foreach (var voice in group) quarantinedIds.Add(voice.Id);
+        }
+
+        var normalized = selectable
             .OrderBy(voice => voice.CultureName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(voice => voice.Id, StringComparer.Ordinal)
             .ToArray();
+        return new(
+            normalized,
+            quarantinedIds.OrderBy(id => id, StringComparer.Ordinal).ToArray(),
+            candidates.Count);
     }
 
     private static PronunciationAccent AccentFor(string cultureName) => cultureName.ToUpperInvariant() switch
@@ -323,6 +353,11 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public CancellationTokenRegistration Cancellation { get; set; }
     }
+
+    private sealed record NormalizedVoiceInventory(
+        IReadOnlyList<PronunciationVoice> Voices,
+        IReadOnlyList<string> QuarantinedVoiceIds,
+        int EligibleEnglishCount);
 }
 
 internal enum SpeechOutputPolicy { DefaultAudioDevice, Null }

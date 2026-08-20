@@ -16,6 +16,7 @@ public interface ICardPronunciationPlayback
 
 public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICapabilityAwareFloatingCardActionPort, ICardPronunciationPlayback, IDisposable
 {
+    private const string PreservedConflictIssue = "检测到本机语音清单冲突，已保留原语音选择";
     public const string VoiceKey = "pronunciation.voice_id";
     public const string AccentKey = "pronunciation.accent";
     public const string RateKey = "pronunciation.rate";
@@ -34,6 +35,9 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     private string? settingsIssue;
     private readonly object operationGate = new();
     private readonly HashSet<Task> operations = [];
+    private readonly object playbackActorGate = new();
+    private Task playbackActorTail = Task.CompletedTask;
+    private PlaybackOperation? currentPlayback;
     private long playbackGeneration;
     private bool paused;
     private bool disposed;
@@ -63,9 +67,10 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         get => autoplay;
         set
         {
-            if (!SetField(ref autoplay, value)) return;
-            Interlocked.Increment(ref playbackGeneration);
-            if (!value) Track(ObserveCancelAsync());
+            if (autoplay == value) return;
+            autoplay = value;
+            EnqueuePlayback(value ? NoPlaybackWorkAsync : CancelPlaybackAsync);
+            RaisePropertyChanged(nameof(Autoplay));
         }
     }
     public string? SettingsIssue { get => settingsIssue; private set => SetField(ref settingsIssue, value); }
@@ -97,10 +102,17 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         var issues = new List<string>();
 
         string? rawVoice = values[VoiceKey];
-        string? restoredVoice = string.IsNullOrWhiteSpace(rawVoice) ? null
-            : service.Availability.InventoryState == PronunciationInventoryState.UnavailableFault ? rawVoice
-            : service.Voices.Any(voice => string.Equals(voice.Id, rawVoice, StringComparison.Ordinal)) ? rawVoice
-            : AddIssue<string?>(issues, "已移除不可用的语音", null);
+        string? restoredVoice;
+        if (string.IsNullOrWhiteSpace(rawVoice)) restoredVoice = null;
+        else if (service.Availability.InventoryState == PronunciationInventoryState.UnavailableFault ||
+                 service.Voices.Any(voice => string.Equals(voice.Id, rawVoice, StringComparison.Ordinal)))
+            restoredVoice = rawVoice;
+        else if (service.Availability.QuarantinedVoiceIds.Contains(rawVoice, StringComparer.Ordinal))
+        {
+            restoredVoice = rawVoice;
+            issues.Add(PreservedConflictIssue);
+        }
+        else restoredVoice = AddIssue<string?>(issues, "已移除不可用的语音", null);
 
         string? rawAccent = values[AccentKey];
         var restoredAccent = rawAccent is null ? PronunciationAccent.Automatic
@@ -122,7 +134,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             restoredVolume,
             restoredAutoplay,
             issues.Count == 0 ? null : string.Join("；", issues.Distinct(StringComparer.Ordinal)),
-            issues.Count > 0);
+            issues.Any(issue => !string.Equals(issue, PreservedConflictIssue, StringComparison.Ordinal)));
     }
 
     private void ApplyRestoredSnapshot(RestoredSettingsSnapshot snapshot)
@@ -136,8 +148,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         settingsIssue = snapshot.Issue;
         if (autoplayChanged)
         {
-            Interlocked.Increment(ref playbackGeneration);
-            if (!autoplay) Track(ObserveCancelAsync());
+            EnqueuePlayback(autoplay ? NoPlaybackWorkAsync : CancelPlaybackAsync);
         }
         NotifyAll();
         RaisePropertyChanged(nameof(SettingsIssue));
@@ -169,91 +180,201 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
 
     private Task ApplyOnOwnerAsync(Action apply, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (feedbackContext is null || ReferenceEquals(SynchronizationContext.Current, feedbackContext))
         {
             apply();
             return Task.CompletedTask;
         }
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        feedbackContext.Post(_ =>
+        int outcome = 0;
+        var cancellation = ct.Register(() =>
         {
-            try { apply(); completion.TrySetResult(true); }
-            catch (Exception exception) { completion.TrySetException(exception); }
-        }, null);
-        return completion.Task.WaitAsync(ct);
+            if (Interlocked.CompareExchange(ref outcome, 2, 0) == 0)
+                completion.TrySetCanceled(ct);
+        });
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            feedbackContext.Post(_ =>
+            {
+                if (Interlocked.CompareExchange(ref outcome, 1, 0) != 0) return;
+                try { apply(); completion.TrySetResult(true); }
+                catch (Exception exception) { completion.TrySetException(exception); }
+            }, null);
+        }
+        catch
+        {
+            cancellation.Dispose();
+            throw;
+        }
+        return AwaitOwnerApplyAsync(completion.Task, cancellation);
+    }
+
+    private static async Task AwaitOwnerApplyAsync(Task completion, CancellationTokenRegistration cancellation)
+    {
+        try { await completion.ConfigureAwait(false); }
+        finally { cancellation.Dispose(); }
     }
 
     public FloatingCardActionResult Execute(Guid wordId, string word)
     {
         if (disposed || !service.Availability.IsAvailable || ResolveVoice() is null)
             return FloatingCardActionResult.Unavailable(service.Availability.Message);
-        long generation = Interlocked.Increment(ref playbackGeneration);
-        Track(PlayAsync(generation, word));
+        EnqueuePlayback(operation => PublishSpeechAsync(operation, word));
         return FloatingCardActionResult.Completed($"正在播放 {word} 的离线发音");
     }
 
     public void OnCardChanged(Guid? wordId, string? word, bool isPaused)
     {
         if (disposed) return;
-        paused = isPaused;
-        long generation = Interlocked.Increment(ref playbackGeneration);
         bool shouldAutoplay = Autoplay;
-        Track(ChangeCardAsync(generation, word, shouldAutoplay));
+        EnqueuePlayback(
+            operation => ChangeCardAsync(operation, word, shouldAutoplay),
+            () => paused = isPaused);
     }
 
     public void SetPaused(bool value)
     {
         if (disposed) return;
-        paused = value;
-        if (value) Stop();
+        EnqueuePlayback(
+            value ? CancelPlaybackAsync : NoPlaybackWorkAsync,
+            () => paused = value);
     }
 
     public void Stop()
     {
         if (disposed) return;
-        Interlocked.Increment(ref playbackGeneration);
-        Track(ObserveCancelAsync());
+        EnqueuePlayback(CancelPlaybackAsync);
     }
 
     public void Dispose()
     {
-        if (disposed) return;
-        Interlocked.Increment(ref playbackGeneration);
-        paused = true;
-        Track(ObserveCancelAsync());
-        disposed = true;
+        Task queued;
+        lock (playbackActorGate)
+        {
+            if (disposed) return;
+            disposed = true;
+            paused = true;
+            queued = EnqueuePlaybackLocked(CancelPlaybackAsync);
+        }
+        Track(queued);
     }
 
-    private async Task ChangeCardAsync(long generation, string? word, bool shouldAutoplay)
+    private async Task ChangeCardAsync(PlaybackOperation operation, string? word, bool shouldAutoplay)
     {
         try { await service.CancelAsync().ConfigureAwait(false); }
         catch (Exception exception)
         {
-            PublishIfCurrent(generation, PronunciationPlaybackResult.Failed(exception.Message));
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Failed(exception.Message));
             return;
         }
-        if (!IsCurrent(generation) || paused || !shouldAutoplay || string.IsNullOrWhiteSpace(word)) return;
-        await PlayAsync(generation, word).ConfigureAwait(false);
+        if (operation.Cancellation.IsCancellationRequested ||
+            !IsCurrent(operation.Generation) || paused || !shouldAutoplay || string.IsNullOrWhiteSpace(word)) return;
+        await PublishSpeechAsync(operation, word).ConfigureAwait(false);
     }
 
-    private async Task PlayAsync(long generation, string word)
+    private Task PublishSpeechAsync(PlaybackOperation operation, string word)
     {
+        if (operation.Cancellation.IsCancellationRequested || !IsCurrent(operation.Generation))
+            return Task.CompletedTask;
         var voice = ResolveVoice();
         if (voice is null)
         {
-            PublishIfCurrent(generation, PronunciationPlaybackResult.Unavailable(service.Availability.Message));
-            return;
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Unavailable(service.Availability.Message));
+            return Task.CompletedTask;
         }
-        PronunciationPlaybackResult result;
-        try { result = await service.SpeakAsync(word, voice.Id, Rate, Volume, default).ConfigureAwait(false); }
-        catch (Exception exception) { result = PronunciationPlaybackResult.Failed(exception.Message); }
-        if (result.Status != PronunciationPlaybackStatus.Cancelled) PublishIfCurrent(generation, result);
+
+        try
+        {
+            operation.PublicationOwned = true;
+            var completion = service.SpeakAsync(word, voice.Id, Rate, Volume, operation.Cancellation.Token);
+            Track(ObservePlaybackAsync(operation, completion));
+        }
+        catch (Exception exception)
+        {
+            operation.PublicationOwned = false;
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Failed(exception.Message));
+        }
+        return Task.CompletedTask;
     }
 
-    private async Task ObserveCancelAsync()
+    private async Task ObservePlaybackAsync(
+        PlaybackOperation operation,
+        Task<PronunciationPlaybackResult> completion)
+    {
+        try
+        {
+            var result = await completion.ConfigureAwait(false);
+            if (result.Status != PronunciationPlaybackStatus.Cancelled)
+                PublishIfCurrent(operation.Generation, result);
+        }
+        catch (Exception exception)
+        {
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Failed(exception.Message));
+        }
+        finally { CompletePlaybackOperation(operation); }
+    }
+
+    private async Task CancelPlaybackAsync(PlaybackOperation operation)
     {
         try { await service.CancelAsync().ConfigureAwait(false); }
         catch { }
+    }
+
+    private static Task NoPlaybackWorkAsync(PlaybackOperation operation) => Task.CompletedTask;
+
+    private void EnqueuePlayback(
+        Func<PlaybackOperation, Task> command,
+        Action? transition = null)
+    {
+        Task queued;
+        lock (playbackActorGate)
+        {
+            if (disposed) return;
+            transition?.Invoke();
+            queued = EnqueuePlaybackLocked(command);
+        }
+        Track(queued);
+    }
+
+    private Task EnqueuePlaybackLocked(Func<PlaybackOperation, Task> command)
+    {
+        try { currentPlayback?.Cancellation.Cancel(); }
+        catch { }
+        var operation = new PlaybackOperation(++playbackGeneration);
+        currentPlayback = operation;
+        var predecessor = playbackActorTail;
+        var queued = RunPlaybackCommandAsync(predecessor, operation, command);
+        playbackActorTail = queued;
+        return queued;
+    }
+
+    private async Task RunPlaybackCommandAsync(
+        Task predecessor,
+        PlaybackOperation operation,
+        Func<PlaybackOperation, Task> command)
+    {
+        await Task.Yield();
+        try { await predecessor.ConfigureAwait(false); }
+        catch { }
+        try
+        {
+            await command(operation).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!operation.PublicationOwned) CompletePlaybackOperation(operation);
+        }
+    }
+
+    private void CompletePlaybackOperation(PlaybackOperation operation)
+    {
+        lock (playbackActorGate)
+        {
+            if (ReferenceEquals(currentPlayback, operation)) currentPlayback = null;
+        }
+        operation.Cancellation.Dispose();
     }
 
     private PronunciationVoice? ResolveVoice() => service.SelectVoice(SelectedVoiceId, AccentPreference);
@@ -348,5 +469,12 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
             [AutoplayKey] = Autoplay.ToString(),
         };
+    }
+
+    private sealed class PlaybackOperation(long generation)
+    {
+        public long Generation { get; } = generation;
+        public CancellationTokenSource Cancellation { get; } = new();
+        public bool PublicationOwned { get; set; }
     }
 }

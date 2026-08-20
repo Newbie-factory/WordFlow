@@ -26,6 +26,7 @@ public partial class App : System.Windows.Application
     private FloatingCardWindow? card;
     private IShortcutService? shortcutService;
     private IFloatingCardActionHost? cardActionHost;
+    private PronunciationSettingsViewModel? pronunciationSettings;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -63,6 +64,7 @@ public partial class App : System.Windows.Application
                 },
                 ct => CorpusIntegrityVerifier.VerifyAsync(paths, ct),
                 ct => services.GetRequiredService<MigrationRunner>().MigrateAsync(ct),
+                RestorePronunciationSettingsAsync,
                 CreateCardAndTrayAsync,
                 lifetime.Token);
         }
@@ -101,6 +103,23 @@ public partial class App : System.Windows.Application
         card.PrepareUiSmokeFocus();
     }
 
+    private async Task RestorePronunciationSettingsAsync(CancellationToken cancellationToken)
+    {
+        pronunciationSettings = services?.GetRequiredService<PronunciationSettingsViewModel>()
+            ?? throw new InvalidOperationException("Primary services are not available.");
+        try
+        {
+            await pronunciationSettings.RestoreAsync(cancellationToken);
+            if (pronunciationSettings.SettingsIssue is not null)
+                WriteLifecycle("pronunciation-settings-sanitized");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            WriteLifecycle($"pronunciation-setting-read-fault type={exception.GetType().Name}");
+        }
+    }
+
     private async Task CreateCardAndTrayAsync(CancellationToken cancellationToken)
     {
         shortcutService = services?.GetRequiredService<IShortcutService>()
@@ -108,17 +127,8 @@ public partial class App : System.Windows.Application
         var shortcutFaults = new ShortcutCallbackFaultHub();
         shortcutFaults.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
-        var pronunciation = services.GetRequiredService<PronunciationSettingsViewModel>();
-        try
-        {
-            await pronunciation.RestoreAsync(cancellationToken);
-            if (pronunciation.SettingsIssue is not null)
-                WriteLifecycle("pronunciation-settings-sanitized");
-        }
-        catch (Exception exception)
-        {
-            WriteLifecycle($"pronunciation-setting-read-fault type={exception.GetType().Name}");
-        }
+        var pronunciation = pronunciationSettings
+            ?? throw new InvalidOperationException("Pronunciation settings were not prepared.");
         cardActionHost = new FloatingCardActionHost(offlineSpeech: pronunciation);
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
@@ -138,6 +148,7 @@ public partial class App : System.Windows.Application
             shortcutFaults);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
         try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception)
         {
             card.SuppressTopmostForFullscreen = true;

@@ -6,17 +6,20 @@ public static class BootstrapSequence
         Action initializeDirectories,
         Func<CancellationToken, Task> verifyCorpus,
         Func<CancellationToken, Task> migrateUserDatabase,
+        Func<CancellationToken, Task> prepareCard,
         Func<CancellationToken, Task> createCard,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(initializeDirectories);
         ArgumentNullException.ThrowIfNull(verifyCorpus);
         ArgumentNullException.ThrowIfNull(migrateUserDatabase);
+        ArgumentNullException.ThrowIfNull(prepareCard);
         ArgumentNullException.ThrowIfNull(createCard);
         cancellationToken.ThrowIfCancellationRequested();
         initializeDirectories();
         await verifyCorpus(cancellationToken).ConfigureAwait(true);
         await migrateUserDatabase(cancellationToken).ConfigureAwait(true);
+        await prepareCard(cancellationToken).ConfigureAwait(true);
         cancellationToken.ThrowIfCancellationRequested();
         await createCard(cancellationToken).ConfigureAwait(true);
     }

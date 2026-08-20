@@ -14,14 +14,32 @@ public enum PronunciationInventoryState
 {
     AuthoritativeAvailable,
     AuthoritativeEmpty,
+    UnavailableConflict,
     UnavailableFault,
 }
 
-public sealed record PronunciationAvailability(
-    bool IsAvailable,
-    string Message,
-    PronunciationInventoryState InventoryState,
-    string? FaultInfo = null);
+public sealed record PronunciationAvailability
+{
+    public PronunciationAvailability(
+        bool isAvailable,
+        string message,
+        PronunciationInventoryState inventoryState,
+        string? faultInfo = null,
+        IReadOnlyList<string>? quarantinedVoiceIds = null)
+    {
+        IsAvailable = isAvailable;
+        Message = message;
+        InventoryState = inventoryState;
+        FaultInfo = faultInfo;
+        QuarantinedVoiceIds = quarantinedVoiceIds?.ToArray() ?? [];
+    }
+
+    public bool IsAvailable { get; }
+    public string Message { get; }
+    public PronunciationInventoryState InventoryState { get; }
+    public string? FaultInfo { get; }
+    public IReadOnlyList<string> QuarantinedVoiceIds { get; }
+}
 
 public enum PronunciationPlaybackStatus
 {

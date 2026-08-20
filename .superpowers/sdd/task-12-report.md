@@ -146,3 +146,62 @@ culture=en-US;count=5
 ### Remaining concern after review
 
 - The verification host has no installed `en-GB` voice. Real SAPI selection/cancellation/disposal was exercised with installed `en-US` voices and a null output sink; deterministic GB choice and cross-accent fallback remain machine-independent seam tests.
+
+## Re-review remediation — inventory authority, publication ordering, and cancellation
+
+The second independent review findings I1, I2, and M1 are closed in this change.
+
+### Conflict-aware inventory authority
+
+Normalization now returns the safe selectable voices together with deterministic quarantined stable IDs and the raw eligible-English count. A successfully enumerated inventory containing English records that all quarantine is `UnavailableConflict`, uses truthful local conflict copy, and never uses the no-English/install guidance. A partial inventory remains usable for its nonconflicted voices while carrying per-ID quarantine metadata.
+
+Restore preserves a persisted ID only when it is currently exposed, explicitly quarantined, or inventory enumeration faulted. A quarantined ID produces the non-destructive issue `检测到本机语音清单冲突，已保留原语音选择`; unrelated corrupt settings can still be repaired transactionally without erasing that ID. An absent nonquarantined ID remains authoritatively removable. Tests cover raw English count 2 → normalized count 0, partial conflict preservation, absent-ID sanitization, and later recovery when the conflicting inventory becomes clean.
+
+### Ordered playback publication
+
+Card change, click, pause/resume, autoplay transitions, card switch, stop, and dispose now enter one FIFO playback command actor. Each new command synchronously cancels the preceding command token; the same token is passed through `IPronunciationService.SpeakAsync`, whose worker rechecks it before starting SAPI. Every queued command still executes its cancellation step, but stale commands cannot publish speech.
+
+Speech completion is observed outside the actor, so a long prompt cannot delay pause/cancel and owner-context callbacks cannot deadlock command ordering. Generation checks remain for stale feedback. Deterministic service-acceptance barriers reproduced the former check-to-publication race for click, pause, autoplay disable, card switch, and dispose; all five now reject the blocked stale autoplay publication.
+
+### Restore and startup cancellation
+
+Owner-context apply and cancellation now have one atomic linearization point. Cancellation checks occur before posting, and the posted callback must atomically claim apply ownership before mutating the immutable snapshot. If cancellation wins, `OperationCanceledException` propagates and a callback drained later performs no mutation or notification.
+
+Bootstrap now awaits pronunciation-settings preparation as a distinct phase before card/tray creation. Lifetime cancellation is rethrown from pronunciation restore and the adjacent app-setting read, reaches the startup exit/cleanup path, and never continues to card/tray creation. Tests cover cancellation after owner `Post` and cancellation during the preparation phase.
+
+### Additional strict TDD evidence
+
+- The all-conflict inventory test first failed to compile because conflict state and quarantine metadata did not exist; the partial persisted-ID test failed with `Actual: null`.
+- All five publication-boundary theory cases first failed because `automatic` appeared after the newer transition.
+- The bootstrap cancellation test first failed to compile against the former single card callback. After adding the preparation phase, the owner-post test failed with restored volume `55` instead of untouched `100`, proving the late apply.
+- A focused regression then caught superseded actor commands skipping their cancellation action. The actor now executes every command while token-gating only publication; the existing cancellation/lifecycle test and all five adversarial cases pass together.
+
+### Fresh final verification after re-review fixes
+
+```text
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --filter FullyQualifiedName~WindowsSpeechPronunciationServiceTests
+  19/19 passed (includes safe real installed-voice null-output smoke)
+
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --filter "FullyQualifiedName~PronunciationSettingsViewModelTests|FullyQualifiedName~BootstrapSequenceTests"
+  23/23 passed
+
+dotnet test WordFlow.sln -c Release --no-restore
+  475/475 passed (129 Domain, 47 Application, 195 Infrastructure, 104 App)
+
+dotnet build WordFlow.sln -c Release --no-restore
+  0 warnings, 0 errors
+
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+  54/54 passed
+
+runtime-network-reference-audit=pass;hits=0
+runtime-url-launch-audit=pass;hits=0
+installed-english-voice-count=5
+culture=en-US;count=5
+git diff --check
+  no whitespace errors; line-ending notices only
+```
+
+### Remaining concern after re-review
+
+- The host still has no installed `en-GB` voice. The real null-output SAPI path covers installed `en-US`; GB selection, conflict behavior, and fallback remain deterministic machine-independent engine tests.
