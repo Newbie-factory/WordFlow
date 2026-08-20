@@ -97,3 +97,52 @@ git diff --check
 
 - This machine has only `en-US` installed, so a physical `en-GB` voice smoke was not possible. Deterministic GB selection and graceful fallback are covered independently of machine state.
 - Audio output depends on the health of Windows SAPI and the installed offline voice package. Runtime failures are deliberately nonblocking and surfaced as accessible feedback while learning continues.
+
+## Independent-review remediation
+
+The follow-up review findings I1–I3 and M1–M2 are closed in this change. This addendum supersedes the earlier real-smoke description above: automated real-SAPI verification now calls `SetOutputToNull` before prompt creation and never writes to an audio endpoint. Production continues to use the default audio device.
+
+### Additional RED / GREEN evidence
+
+- Inventory-state tests first failed to compile because `PronunciationInventoryState` and fault metadata did not exist. Factory, event-handler registration, and enumeration faults are now `UnavailableFault`; only a successful empty inventory is `AuthoritativeEmpty` and receives offline voice-install guidance.
+- The persisted-ID recovery tests first failed against the old destructive restore path. A valid voice ID now survives throwing factory/enumerator startup plus unrelated setting repair, and restores after a later authoritative inventory. A successful authoritative empty inventory still removes and atomically persists a genuinely missing ID.
+- The delayed-cancel autoplay test reproduced false-at-card-change → true-before-cancel completion. Autoplay state is now captured causally and every autoplay transition invalidates pending playback; enabling does not replay the current card.
+- Duplicate inventory tests failed before normalization. Conflicting stable IDs and ambiguous selectable names are quarantined, identical records collapse, culture case is canonicalized, and final ordering is deterministic.
+- Owner-context restore tests exposed off-context notification behavior and an exception-throwing observer. SQLite read/repair writes now execute off the UI thread; an immutable snapshot is applied on the captured context, with per-observer containment.
+- Converting restore to owner-context application exposed a synchronous WPF startup deadlock. The bootstrap/card callback regression first failed to compile against the synchronous callback and now proves asynchronous card initialization is awaited; startup no longer calls `GetResult()` for pronunciation or the adjacent app-setting read.
+- A synchronous engine-completion regression verifies the current request is installed before an immediate completion event is correlated.
+
+### Review behavior and safety
+
+- Fault metadata exposes only the exception type, never exception messages, paths, registry data, or voice names. Transient speech faults use nonblocking local-failure copy and do not suggest reinstalling a language pack.
+- Inventory normalization keeps metadata faithful to the actual name accepted by `SpeechSynthesizer.SelectVoice`; ambiguous ID/name mappings are not exposed.
+- The real-engine test constructs `SystemSpeechEngineFactory(SpeechOutputPolicy.Null)`, enumerates and selects a real installed voice, creates a short `test` prompt, exercises cancellation/correlation, then detaches and disposes the synthesizer on the STA owner. The normal factory retains `DefaultAudioDevice`.
+- The production runtime-source scan remains free of HTTP/network clients, sockets, DNS, process launch, and URL launch references.
+
+### Fresh final verification after review fixes
+
+```text
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --filter FullyQualifiedName~WindowsSpeechPronunciationServiceTests
+  18/18 passed (includes safe real installed-voice null-output smoke)
+
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --filter "FullyQualifiedName~PronunciationSettingsViewModelTests|FullyQualifiedName~BootstrapSequenceTests"
+  14/14 passed
+
+dotnet test WordFlow.sln -c Release --no-restore
+  465/465 passed (129 Domain, 47 Application, 194 Infrastructure, 95 App)
+
+dotnet build WordFlow.sln -c Release --no-restore
+  0 warnings, 0 errors
+
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+  54/54 passed
+
+runtime-network-reference-audit=pass;hits=0
+runtime-url-launch-audit=pass;hits=0
+installed-english-voice-count=5
+culture=en-US;count=5
+```
+
+### Remaining concern after review
+
+- The verification host has no installed `en-GB` voice. Real SAPI selection/cancellation/disposal was exercised with installed `en-US` voices and a null output sink; deterministic GB choice and cross-accent fallback remain machine-independent seam tests.

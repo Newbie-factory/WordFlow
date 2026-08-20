@@ -13,7 +13,7 @@ public sealed class BootstrapSequenceTests
             () => calls.Add("directories"),
             _ => { calls.Add("verify"); return Task.CompletedTask; },
             _ => { calls.Add("migrate"); return Task.CompletedTask; },
-            () => calls.Add("card"),
+            _ => { calls.Add("card"); return Task.CompletedTask; },
             CancellationToken.None);
 
         Assert.Equal(["directories", "verify", "migrate", "card"], calls);
@@ -28,9 +28,26 @@ public sealed class BootstrapSequenceTests
             () => calls.Add("directories"),
             _ => throw new CorpusIntegrityException("invalid"),
             _ => { calls.Add("migrate"); return Task.CompletedTask; },
-            () => calls.Add("card"),
+            _ => { calls.Add("card"); return Task.CompletedTask; },
             CancellationToken.None));
 
         Assert.Equal(["directories"], calls);
+    }
+
+    [Fact]
+    public async Task RunAsync_awaits_asynchronous_card_initialization()
+    {
+        var releaseCard = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var bootstrap = BootstrapSequence.RunAsync(
+            () => { },
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            async _ => await releaseCard.Task,
+            CancellationToken.None);
+
+        Assert.False(bootstrap.IsCompleted);
+        releaseCard.SetResult();
+        await bootstrap;
     }
 }

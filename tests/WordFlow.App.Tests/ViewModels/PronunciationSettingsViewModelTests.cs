@@ -2,6 +2,7 @@ using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Audio;
+using System.Collections.Concurrent;
 
 namespace WordFlow.App.Tests.ViewModels;
 
@@ -61,6 +62,58 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         Assert.Contains("已修复", settings.SettingsIssue);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Throwing_factory_or_enumerator_preserves_persisted_voice_until_later_authoritative_recovery(bool factoryThrows)
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "us",
+            [PronunciationSettingsViewModel.RateKey] = "broken",
+        }, default);
+        using var faultedService = new WindowsSpeechPronunciationService(
+            factoryThrows ? new ThrowingEngineFactory() : new TestEngineFactory(new TestSpeechEngine(throwOnInventory: true)));
+        var faulted = new PronunciationSettingsViewModel(faultedService, store);
+
+        await faulted.RestoreAsync();
+        var afterFault = await store.GetManyAsync([PronunciationSettingsViewModel.VoiceKey], default);
+
+        Assert.Equal("us", faulted.SelectedVoiceId);
+        Assert.Equal("us", afterFault[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.DoesNotContain("语音", faulted.SettingsIssue);
+
+        using var recoveredService = new WindowsSpeechPronunciationService(
+            new TestEngineFactory(new TestSpeechEngine(throwOnInventory: false)));
+        var recovered = new PronunciationSettingsViewModel(recoveredService, store);
+        await recovered.RestoreAsync();
+        Assert.Equal("us", recovered.SelectedVoiceId);
+    }
+
+    [Fact]
+    public async Task Authoritative_empty_inventory_sanitizes_a_removed_persisted_voice()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "removed",
+        }, default);
+        var service = new FakePronunciationService
+        {
+            Voices = [],
+            Availability = new(false, WindowsSpeechPronunciationService.NoEnglishVoiceMessage, PronunciationInventoryState.AuthoritativeEmpty),
+        };
+        var settings = new PronunciationSettingsViewModel(service, store);
+
+        await settings.RestoreAsync();
+        var persisted = await store.GetManyAsync([PronunciationSettingsViewModel.VoiceKey], default);
+
+        Assert.Null(settings.SelectedVoiceId);
+        Assert.Equal("", persisted[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.Contains("不可用", settings.SettingsIssue);
+    }
+
     [Fact]
     public async Task Click_supersedes_pending_autoplay_and_failures_are_observed_as_feedback()
     {
@@ -104,6 +157,43 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Enabling_autoplay_while_a_disabled_card_change_is_cancelling_does_not_replay_that_card()
+    {
+        var service = new FakePronunciationService { DelayNextCancel = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync()) { Autoplay = false };
+
+        settings.OnCardChanged(Guid.NewGuid(), "must-not-play", isPaused: false);
+        await WaitUntilAsync(() => service.CancelCalls == 1);
+        settings.Autoplay = true;
+        service.ReleaseDelayedCancel();
+        await Task.Delay(100);
+
+        Assert.Empty(service.SpokenWords);
+    }
+
+    [Fact]
+    public async Task Restore_applies_all_notifications_on_owner_context_and_contains_observers()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.RateKey] = "invalid",
+        }, default);
+        using var owner = new PumpSynchronizationContext();
+        var settings = new PronunciationSettingsViewModel(new FakePronunciationService(), store, owner);
+        var notificationThreads = new ConcurrentBag<int>();
+        settings.PropertyChanged += (_, _) => throw new InvalidOperationException("observer fault");
+        settings.PropertyChanged += (_, _) => notificationThreads.Add(Environment.CurrentManagedThreadId);
+
+        var exception = await Record.ExceptionAsync(() => settings.RestoreAsync());
+
+        Assert.Null(exception);
+        Assert.NotEmpty(notificationThreads);
+        Assert.All(notificationThreads, id => Assert.Equal(owner.ThreadId, id));
+        Assert.Contains("已修复", settings.SettingsIssue);
+    }
+
+    [Fact]
     public async Task Playback_feedback_observer_fault_is_contained_and_does_not_fault_background_work()
     {
         var service = new FakePronunciationService { DelayCompletion = true };
@@ -125,7 +215,7 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         var service = new FakePronunciationService
         {
             Voices = [],
-            Availability = new(false, WindowsSpeechPronunciationService.NoEnglishVoiceMessage),
+            Availability = new(false, WindowsSpeechPronunciationService.NoEnglishVoiceMessage, PronunciationInventoryState.AuthoritativeEmpty),
         };
         var settings = new PronunciationSettingsViewModel(service, await StoreAsync());
         IFloatingCardActionHost host = new FloatingCardActionHost(offlineSpeech: settings);
@@ -163,10 +253,13 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
             new("gb", "GB", "en-GB", PronunciationAccent.British),
             new("us", "US", "en-US", PronunciationAccent.American),
         ];
-        public PronunciationAvailability Availability { get; set; } = new(true, "可用");
+        public PronunciationAvailability Availability { get; set; } =
+            new(true, "可用", PronunciationInventoryState.AuthoritativeAvailable);
         public List<string> SpokenWords { get; } = [];
         public int CancelCalls { get; private set; }
         public bool DelayCompletion { get; set; }
+        public bool DelayNextCancel { get; set; }
+        private TaskCompletionSource<bool>? delayedCancel;
         public PronunciationVoice? SelectVoice(string? voiceId, PronunciationAccent preference) =>
             Voices.FirstOrDefault(voice => voice.Id == voiceId) ?? Voices[0];
         public Task<PronunciationPlaybackResult> SpeakAsync(string text, string voiceId, int rate, int volume, CancellationToken ct)
@@ -178,12 +271,73 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
             pending.Add(completion);
             return completion.Task;
         }
-        public Task CancelAsync() { CancelCalls++; return Task.CompletedTask; }
+        public Task CancelAsync()
+        {
+            CancelCalls++;
+            if (!DelayNextCancel) return Task.CompletedTask;
+            DelayNextCancel = false;
+            delayedCancel = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            return delayedCancel.Task;
+        }
+        public void ReleaseDelayedCancel() => delayedCancel?.TrySetResult(true);
         public async Task WaitForCallsAsync(int count)
         {
             while (SpokenWords.Count < count) await calls.WaitAsync(TimeSpan.FromSeconds(2));
         }
         public void Complete(int index, PronunciationPlaybackResult result) => pending[index].TrySetResult(result);
         public void Dispose() { }
+    }
+
+    private sealed class ThrowingEngineFactory : IOfflineSpeechEngineFactory
+    {
+        public IOfflineSpeechEngine Create() => throw new InvalidOperationException("factory fault");
+    }
+
+    private sealed class TestEngineFactory(TestSpeechEngine engine) : IOfflineSpeechEngineFactory
+    {
+        public IOfflineSpeechEngine Create() => engine;
+    }
+
+    private sealed class TestSpeechEngine(bool throwOnInventory) : IOfflineSpeechEngine
+    {
+        public IReadOnlyList<SpeechEngineVoice> GetInstalledVoices() => throwOnInventory
+            ? throw new InvalidOperationException("enumeration fault")
+            : [new("us", "US", "en-US", true)];
+        public event EventHandler<SpeechEngineCompletedEventArgs>? SpeakCompleted { add { } remove { } }
+        public void SpeakAsync(Guid requestId, string text, string voiceId, int rate, int volume) { }
+        public void CancelAll() { }
+        public void Dispose() { }
+    }
+
+    private sealed class PumpSynchronizationContext : SynchronizationContext, IDisposable
+    {
+        private readonly BlockingCollection<(SendOrPostCallback Callback, object? State)> queue = [];
+        private readonly Thread thread;
+        private readonly ManualResetEventSlim ready = new();
+
+        public PumpSynchronizationContext()
+        {
+            thread = new Thread(Run) { IsBackground = true, Name = "Pronunciation settings owner context" };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            ready.Wait();
+        }
+
+        public int ThreadId { get; private set; }
+        public override void Post(SendOrPostCallback d, object? state) => queue.Add((d, state));
+        public void Dispose()
+        {
+            queue.CompleteAdding();
+            thread.Join();
+            ready.Dispose();
+            queue.Dispose();
+        }
+        private void Run()
+        {
+            ThreadId = Environment.CurrentManagedThreadId;
+            SetSynchronizationContext(this);
+            ready.Set();
+            foreach (var work in queue.GetConsumingEnumerable()) work.Callback(work.State);
+        }
     }
 }

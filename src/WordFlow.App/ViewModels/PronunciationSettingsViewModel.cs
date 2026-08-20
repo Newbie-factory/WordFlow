@@ -64,7 +64,8 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         set
         {
             if (!SetField(ref autoplay, value)) return;
-            if (!value) Stop();
+            Interlocked.Increment(ref playbackGeneration);
+            if (!value) Track(ObserveCancelAsync());
         }
     }
     public string? SettingsIssue { get => settingsIssue; private set => SetField(ref settingsIssue, value); }
@@ -74,50 +75,112 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
 
     public async Task RestoreAsync(CancellationToken ct = default)
     {
-        var values = await store.GetManyAsync(SettingKeys, ct).ConfigureAwait(false);
+        var snapshot = await Task.Run(async () =>
+        {
+            var values = await store.GetManyAsync(SettingKeys, ct).ConfigureAwait(false);
+            return BuildRestoredSnapshot(values);
+        }, ct).ConfigureAwait(false);
+
+        await ApplyOnOwnerAsync(() => ApplyRestoredSnapshot(snapshot), ct).ConfigureAwait(false);
+        if (snapshot.NeedsRepair)
+            await PersistAsync(snapshot.ToValues(), ct).ConfigureAwait(false);
+    }
+
+    public Task SaveAsync(CancellationToken ct = default)
+    {
+        ValidateCurrentSettings();
+        return PersistAsync(CurrentValues(), ct);
+    }
+
+    private RestoredSettingsSnapshot BuildRestoredSnapshot(IReadOnlyDictionary<string, string?> values)
+    {
         var issues = new List<string>();
 
         string? rawVoice = values[VoiceKey];
-        selectedVoiceId = string.IsNullOrWhiteSpace(rawVoice) ? null
+        string? restoredVoice = string.IsNullOrWhiteSpace(rawVoice) ? null
+            : service.Availability.InventoryState == PronunciationInventoryState.UnavailableFault ? rawVoice
             : service.Voices.Any(voice => string.Equals(voice.Id, rawVoice, StringComparison.Ordinal)) ? rawVoice
             : AddIssue<string?>(issues, "已移除不可用的语音", null);
 
         string? rawAccent = values[AccentKey];
-        accentPreference = rawAccent is null ? PronunciationAccent.Automatic
+        var restoredAccent = rawAccent is null ? PronunciationAccent.Automatic
             : Enum.TryParse<PronunciationAccent>(rawAccent, true, out var parsedAccent) &&
               parsedAccent is PronunciationAccent.Automatic or PronunciationAccent.British or PronunciationAccent.American
                 ? parsedAccent
                 : AddIssue(issues, "已修复口音偏好", PronunciationAccent.Automatic);
 
-        rate = ParseBounded(values[RateKey], -10, 10, 0, "已修复语速", issues);
-        volume = ParseBounded(values[VolumeKey], 0, 100, 100, "已修复音量", issues);
-        autoplay = values[AutoplayKey] is null ? false
+        int restoredRate = ParseBounded(values[RateKey], -10, 10, 0, "已修复语速", issues);
+        int restoredVolume = ParseBounded(values[VolumeKey], 0, 100, 100, "已修复音量", issues);
+        bool restoredAutoplay = values[AutoplayKey] is null ? false
             : bool.TryParse(values[AutoplayKey], out var parsedAutoplay) ? parsedAutoplay
             : AddIssue(issues, "已修复自动播放设置", false);
 
-        SettingsIssue = issues.Count == 0 ? null : string.Join("；", issues.Distinct(StringComparer.Ordinal));
-        NotifyAll();
-        if (issues.Count > 0) await SaveAsync(ct).ConfigureAwait(false);
+        return new(
+            restoredVoice,
+            restoredAccent,
+            restoredRate,
+            restoredVolume,
+            restoredAutoplay,
+            issues.Count == 0 ? null : string.Join("；", issues.Distinct(StringComparer.Ordinal)),
+            issues.Count > 0);
     }
 
-    public Task SaveAsync(CancellationToken ct = default)
+    private void ApplyRestoredSnapshot(RestoredSettingsSnapshot snapshot)
+    {
+        bool autoplayChanged = autoplay != snapshot.Autoplay;
+        selectedVoiceId = snapshot.VoiceId;
+        accentPreference = snapshot.Accent;
+        rate = snapshot.Rate;
+        volume = snapshot.Volume;
+        autoplay = snapshot.Autoplay;
+        settingsIssue = snapshot.Issue;
+        if (autoplayChanged)
+        {
+            Interlocked.Increment(ref playbackGeneration);
+            if (!autoplay) Track(ObserveCancelAsync());
+        }
+        NotifyAll();
+        RaisePropertyChanged(nameof(SettingsIssue));
+    }
+
+    private void ValidateCurrentSettings()
     {
         if (Rate is < -10 or > 10) throw new ArgumentOutOfRangeException(nameof(Rate));
         if (Volume is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(Volume));
         if (AccentPreference is not (PronunciationAccent.Automatic or PronunciationAccent.British or PronunciationAccent.American))
             throw new ArgumentOutOfRangeException(nameof(AccentPreference));
-        if (!string.IsNullOrWhiteSpace(SelectedVoiceId) &&
+        if (service.Availability.InventoryState != PronunciationInventoryState.UnavailableFault &&
+            !string.IsNullOrWhiteSpace(SelectedVoiceId) &&
             service.Voices.All(voice => !string.Equals(voice.Id, SelectedVoiceId, StringComparison.Ordinal)))
             throw new ArgumentException("The selected voice is not an installed English voice.", nameof(SelectedVoiceId));
+    }
 
-        return store.SetManyAsync(new Dictionary<string, string>
+    private IReadOnlyDictionary<string, string> CurrentValues() => new Dictionary<string, string>
+    {
+        [VoiceKey] = SelectedVoiceId ?? "",
+        [AccentKey] = AccentPreference.ToString(),
+        [RateKey] = Rate.ToString(CultureInfo.InvariantCulture),
+        [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
+        [AutoplayKey] = Autoplay.ToString(),
+    };
+
+    private Task PersistAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct) =>
+        Task.Run(() => store.SetManyAsync(values, ct), ct);
+
+    private Task ApplyOnOwnerAsync(Action apply, CancellationToken ct)
+    {
+        if (feedbackContext is null || ReferenceEquals(SynchronizationContext.Current, feedbackContext))
         {
-            [VoiceKey] = SelectedVoiceId ?? "",
-            [AccentKey] = AccentPreference.ToString(),
-            [RateKey] = Rate.ToString(CultureInfo.InvariantCulture),
-            [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
-            [AutoplayKey] = Autoplay.ToString(),
-        }, ct);
+            apply();
+            return Task.CompletedTask;
+        }
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        feedbackContext.Post(_ =>
+        {
+            try { apply(); completion.TrySetResult(true); }
+            catch (Exception exception) { completion.TrySetException(exception); }
+        }, null);
+        return completion.Task.WaitAsync(ct);
     }
 
     public FloatingCardActionResult Execute(Guid wordId, string word)
@@ -134,7 +197,8 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         if (disposed) return;
         paused = isPaused;
         long generation = Interlocked.Increment(ref playbackGeneration);
-        Track(ChangeCardAsync(generation, word));
+        bool shouldAutoplay = Autoplay;
+        Track(ChangeCardAsync(generation, word, shouldAutoplay));
     }
 
     public void SetPaused(bool value)
@@ -160,7 +224,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         disposed = true;
     }
 
-    private async Task ChangeCardAsync(long generation, string? word)
+    private async Task ChangeCardAsync(long generation, string? word, bool shouldAutoplay)
     {
         try { await service.CancelAsync().ConfigureAwait(false); }
         catch (Exception exception)
@@ -168,7 +232,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             PublishIfCurrent(generation, PronunciationPlaybackResult.Failed(exception.Message));
             return;
         }
-        if (!IsCurrent(generation) || paused || !Autoplay || string.IsNullOrWhiteSpace(word)) return;
+        if (!IsCurrent(generation) || paused || !shouldAutoplay || string.IsNullOrWhiteSpace(word)) return;
         await PlayAsync(generation, word).ConfigureAwait(false);
     }
 
@@ -247,13 +311,42 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
-        PropertyChanged?.Invoke(this, new(propertyName));
+        RaisePropertyChanged(propertyName);
         return true;
     }
 
     private void NotifyAll()
     {
         foreach (string property in new[] { nameof(SelectedVoiceId), nameof(AccentPreference), nameof(Rate), nameof(Volume), nameof(Autoplay) })
-            PropertyChanged?.Invoke(this, new(property));
+            RaisePropertyChanged(property);
+    }
+
+    private void RaisePropertyChanged(string? propertyName)
+    {
+        if (PropertyChanged is not { } handlers) return;
+        foreach (PropertyChangedEventHandler handler in handlers.GetInvocationList())
+        {
+            try { handler(this, new(propertyName)); }
+            catch { }
+        }
+    }
+
+    private sealed record RestoredSettingsSnapshot(
+        string? VoiceId,
+        PronunciationAccent Accent,
+        int Rate,
+        int Volume,
+        bool Autoplay,
+        string? Issue,
+        bool NeedsRepair)
+    {
+        public IReadOnlyDictionary<string, string> ToValues() => new Dictionary<string, string>
+        {
+            [VoiceKey] = VoiceId ?? "",
+            [AccentKey] = Accent.ToString(),
+            [RateKey] = Rate.ToString(CultureInfo.InvariantCulture),
+            [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
+            [AutoplayKey] = Autoplay.ToString(),
+        };
     }
 }

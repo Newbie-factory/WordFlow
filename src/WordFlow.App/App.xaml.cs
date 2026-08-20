@@ -63,7 +63,7 @@ public partial class App : System.Windows.Application
                 },
                 ct => CorpusIntegrityVerifier.VerifyAsync(paths, ct),
                 ct => services.GetRequiredService<MigrationRunner>().MigrateAsync(ct),
-                CreateCardAndTray,
+                CreateCardAndTrayAsync,
                 lifetime.Token);
         }
         catch (CorpusIntegrityException exception)
@@ -101,7 +101,7 @@ public partial class App : System.Windows.Application
         card.PrepareUiSmokeFocus();
     }
 
-    private void CreateCardAndTray()
+    private async Task CreateCardAndTrayAsync(CancellationToken cancellationToken)
     {
         shortcutService = services?.GetRequiredService<IShortcutService>()
             ?? throw new InvalidOperationException("Primary services are not available.");
@@ -111,7 +111,7 @@ public partial class App : System.Windows.Application
         var pronunciation = services.GetRequiredService<PronunciationSettingsViewModel>();
         try
         {
-            pronunciation.RestoreAsync(lifetime.Token).GetAwaiter().GetResult();
+            await pronunciation.RestoreAsync(cancellationToken);
             if (pronunciation.SettingsIssue is not null)
                 WriteLifecycle("pronunciation-settings-sanitized");
         }
@@ -137,7 +137,7 @@ public partial class App : System.Windows.Application
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
-        try { card.SuppressTopmostForFullscreen = appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, lifetime.Token).GetAwaiter().GetResult(); }
+        try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
         catch (Exception exception)
         {
             card.SuppressTopmostForFullscreen = true;

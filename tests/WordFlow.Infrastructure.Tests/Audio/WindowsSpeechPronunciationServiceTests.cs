@@ -35,10 +35,55 @@ public sealed class WindowsSpeechPronunciationServiceTests
             new FakeSpeechEngine([new("fr", "French", "fr-FR", true)])));
 
         Assert.False(service.Availability.IsAvailable);
+        Assert.Equal(PronunciationInventoryState.AuthoritativeEmpty, service.Availability.InventoryState);
+        Assert.Null(service.Availability.FaultInfo);
         Assert.Empty(service.Voices);
         Assert.Contains("Windows", service.Availability.Message);
         Assert.Contains("离线", service.Availability.Message);
         Assert.DoesNotContain("http", service.Availability.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("factory")]
+    [InlineData("handler")]
+    [InlineData("enumeration")]
+    public void Speech_subsystem_fault_is_not_reported_as_an_authoritative_empty_inventory(string failurePoint)
+    {
+        var engine = EnglishEngine();
+        engine.ThrowOnHandlerAdd = failurePoint == "handler";
+        engine.ThrowOnInventory = failurePoint == "enumeration";
+        IOfflineSpeechEngineFactory factory = failurePoint == "factory"
+            ? new ThrowingSpeechEngineFactory()
+            : new FakeSpeechEngineFactory(engine);
+
+        using var service = new WindowsSpeechPronunciationService(factory);
+
+        Assert.False(service.Availability.IsAvailable);
+        Assert.Equal(PronunciationInventoryState.UnavailableFault, service.Availability.InventoryState);
+        Assert.Contains("暂时不可用", service.Availability.Message);
+        Assert.DoesNotContain("安装", service.Availability.Message);
+        Assert.Equal("InvalidOperationException", service.Availability.FaultInfo);
+    }
+
+    [Fact]
+    public void Conflicting_duplicate_voice_id_or_selectable_name_is_quarantined_and_identical_entries_are_canonicalized()
+    {
+        var engine = new FakeSpeechEngine(
+        [
+            new("safe", "Canonical", "EN-us", true),
+            new("safe", "Canonical", "en-US", true),
+            new("dup-id", "First", "en-US", true),
+            new("dup-id", "Second", "en-GB", true),
+            new("name-a", "Shared", "en-US", true),
+            new("name-b", "shared", "en-GB", true),
+        ]);
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(engine));
+
+        var voice = Assert.Single(service.Voices);
+        Assert.Equal("safe", voice.Id);
+        Assert.Equal("Canonical", voice.Name);
+        Assert.Equal("en-US", voice.CultureName);
+        Assert.Equal(PronunciationInventoryState.AuthoritativeAvailable, service.Availability.InventoryState);
     }
 
     [Theory]
@@ -133,9 +178,10 @@ public sealed class WindowsSpeechPronunciationServiceTests
     }
 
     [Fact]
-    public async Task Real_installed_English_voice_smoke_is_guarded_and_stops_cleanly()
+    public async Task Real_installed_English_voice_null_output_smoke_is_guarded_and_stops_cleanly()
     {
-        using var service = new WindowsSpeechPronunciationService();
+        using var service = new WindowsSpeechPronunciationService(
+            new SystemSpeechEngineFactory(SpeechOutputPolicy.Null));
         var voice = service.SelectVoice(null, PronunciationAccent.Automatic);
         if (voice is null) return;
 
@@ -159,6 +205,18 @@ public sealed class WindowsSpeechPronunciationServiceTests
 
         Assert.Equal(PronunciationPlaybackStatus.Cancelled, (await speech.WaitAsync(TimeSpan.FromSeconds(2))).Status);
         Assert.Equal(engine.CreatedThreadId, engine.DisposeThreadId);
+    }
+
+    [Fact]
+    public async Task Synchronous_engine_completion_is_correlated_after_current_request_is_installed()
+    {
+        var engine = EnglishEngine();
+        engine.CompleteSynchronously = true;
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(engine));
+
+        var result = await service.SpeakAsync("sync", "us", 0, 50, default).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(PronunciationPlaybackStatus.Completed, result.Status);
     }
 
     private static FakeSpeechEngine EnglishEngine() =>
@@ -191,11 +249,20 @@ public sealed class WindowsSpeechPronunciationServiceTests
         public int CancelCalls { get; private set; }
         public List<string> Operations { get; } = [];
         public Exception? ThrowOnSpeak { get; set; }
+        public bool ThrowOnHandlerAdd { get; set; }
+        public bool ThrowOnInventory { get; set; }
+        public bool CompleteSynchronously { get; set; }
         public bool EventHandlerAttachedAfterDispose => completed is not null;
-        public IReadOnlyList<SpeechEngineVoice> GetInstalledVoices() => voices;
+        public IReadOnlyList<SpeechEngineVoice> GetInstalledVoices() => ThrowOnInventory
+            ? throw new InvalidOperationException("enumeration fault")
+            : voices;
         public event EventHandler<SpeechEngineCompletedEventArgs>? SpeakCompleted
         {
-            add => completed += value;
+            add
+            {
+                if (ThrowOnHandlerAdd) throw new InvalidOperationException("handler fault");
+                completed += value;
+            }
             remove => completed -= value;
         }
         public void CancelAll() { CancelCalls++; Operations.Add("cancel"); }
@@ -206,6 +273,7 @@ public sealed class WindowsSpeechPronunciationServiceTests
             Started.Add((requestId, text, voiceId, rate, volume));
             Operations.Add($"speak:{text}");
             starts.Release();
+            if (CompleteSynchronously) Complete(requestId);
         }
         public void Complete(Guid requestId, bool cancelled = false, Exception? error = null) =>
             completed?.Invoke(this, new(requestId, cancelled, error));

@@ -10,7 +10,18 @@ public enum PronunciationAccent
 
 public sealed record PronunciationVoice(string Id, string Name, string CultureName, PronunciationAccent Accent);
 
-public sealed record PronunciationAvailability(bool IsAvailable, string Message);
+public enum PronunciationInventoryState
+{
+    AuthoritativeAvailable,
+    AuthoritativeEmpty,
+    UnavailableFault,
+}
+
+public sealed record PronunciationAvailability(
+    bool IsAvailable,
+    string Message,
+    PronunciationInventoryState InventoryState,
+    string? FaultInfo = null);
 
 public enum PronunciationPlaybackStatus
 {
