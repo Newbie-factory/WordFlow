@@ -15,12 +15,15 @@ public partial class App : System.Windows.Application
     private TrayIconService? trayIcon;
     private TrayLifecycleController? trayController;
     private LocalLifecycleLog? lifecycleLog;
+    private ApplicationExitCoordinator? exitCoordinator;
+    private Task? coordinatorMonitor;
     private MainWindow? card;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        exitCoordinator = CreateExitCoordinator();
         try
         {
             AppPaths paths = AppPaths.ForCurrentUser();
@@ -28,14 +31,14 @@ public partial class App : System.Windows.Application
                 "WordFlow.Desktop",
                 _ => Dispatcher.InvokeAsync(ActivatePrimary).Task,
                 TimeSpan.FromSeconds(5),
-                lifetime.Token);
+                lifetime.Token,
+                exception => WriteLifecycle($"coordinator-background-fault type={exception.GetType().Name}"));
             if (!coordinator.IsPrimary)
             {
-                await coordinator.DisposeAsync();
-                coordinator = null;
-                Shutdown(0);
+                await ExitAsync(0);
                 return;
             }
+            coordinatorMonitor = ObserveCoordinatorAsync(coordinator);
 
             services = ServiceRegistration.BuildPrimaryServices(paths);
             await BootstrapSequence.RunAsync(
@@ -86,7 +89,7 @@ public partial class App : System.Windows.Application
             paused => card.SetPaused(paused),
             () => ShowLocalInformation("Control Center", "The control center shell is ready."),
             () => ShowLocalInformation("Today Progress", "Today’s progress will appear here."),
-            () => _ = ExitAsync(0));
+            ExitFromTray);
         trayIcon = new TrayIconService(trayController);
         WriteLifecycle($"primary-ready pid={Environment.ProcessId}");
     }
@@ -114,26 +117,84 @@ public partial class App : System.Windows.Application
     private void ShowLocalInformation(string title, string message) =>
         MessageBox.Show(card, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
 
-    private async Task ExitAsync(int exitCode)
+    private async void ExitFromTray() => await ExitAsync(0);
+
+    private Task ExitAsync(int exitCode)
     {
-        if (exiting) return;
-        exiting = true;
         WriteLifecycle($"exit-requested pid={Environment.ProcessId} code={exitCode}");
+        return exitCoordinator?.ExitAsync(exitCode)
+            ?? throw new InvalidOperationException("The application exit coordinator is not initialized.");
+    }
+
+    private ApplicationExitCoordinator CreateExitCoordinator() => new(
+        [
+            CancelLifetimeAsync,
+            DisposeTrayAsync,
+            CloseCardAsync,
+            DisposeServicesAsync,
+            DisposeCoordinatorAsync,
+            DisposeLifetimeAsync,
+        ],
+        exitCode =>
+        {
+            WriteLifecycle($"exit-complete pid={Environment.ProcessId} code={exitCode}");
+            Shutdown(exitCode);
+        },
+        exception => WriteLifecycle($"cleanup-fault pid={Environment.ProcessId} type={exception.GetType().Name}"));
+
+    private ValueTask CancelLifetimeAsync()
+    {
+        exiting = true;
         lifetime.Cancel();
+        return ValueTask.CompletedTask;
+    }
+
+    private ValueTask DisposeTrayAsync()
+    {
         trayIcon?.Dispose();
         trayIcon = null;
         trayController = null;
+        return ValueTask.CompletedTask;
+    }
+
+    private ValueTask CloseCardAsync()
+    {
         card?.Close();
+        card = null;
+        return ValueTask.CompletedTask;
+    }
+
+    private ValueTask DisposeServicesAsync()
+    {
         services?.Dispose();
         services = null;
+        return ValueTask.CompletedTask;
+    }
+
+    private async ValueTask DisposeCoordinatorAsync()
+    {
         if (coordinator is not null)
         {
             await coordinator.DisposeAsync();
             coordinator = null;
         }
-        WriteLifecycle($"exit-complete pid={Environment.ProcessId} code={exitCode}");
+    }
+
+    private ValueTask DisposeLifetimeAsync()
+    {
         lifetime.Dispose();
-        Shutdown(exitCode);
+        return ValueTask.CompletedTask;
+    }
+
+    private async Task ObserveCoordinatorAsync(SingleInstanceCoordinator observedCoordinator)
+    {
+        try { await observedCoordinator.Completion; }
+        catch (Exception exception)
+        {
+            WriteLifecycle($"terminal-listener-fault pid={Environment.ProcessId} type={exception.GetType().Name}");
+            Task exitTask = await Dispatcher.InvokeAsync(() => ExitAsync(1)).Task;
+            await exitTask;
+        }
     }
 
     private void WriteLifecycle(string eventName)

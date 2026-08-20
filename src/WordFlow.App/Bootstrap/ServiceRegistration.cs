@@ -13,7 +13,8 @@ public static class ServiceRegistration
         services.AddSingleton(paths);
         services.AddSingleton(new SqliteConnectionFactory(
             paths.UserDatabasePath, paths.VocabularyDatabasePath, paths.RelationDatabasePath));
-        services.AddSingleton<MigrationRunner>();
+        services.AddSingleton(provider => new MigrationRunner(
+            provider.GetRequiredService<SqliteConnectionFactory>(), backupDirectory: paths.BackupsDirectory));
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();

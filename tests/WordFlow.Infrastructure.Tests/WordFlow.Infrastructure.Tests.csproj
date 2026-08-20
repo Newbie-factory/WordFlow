@@ -13,5 +13,6 @@
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\WordFlow.Infrastructure\WordFlow.Infrastructure.csproj" />
+    <ProjectReference Include="..\WordFlow.SingleInstance.TestHost\WordFlow.SingleInstance.TestHost.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

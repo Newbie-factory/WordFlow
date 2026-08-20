@@ -1,4 +1,5 @@
 using WordFlow.Infrastructure.Windows;
+using System.IO.Pipes;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -177,7 +178,7 @@ public sealed class SingleInstanceCoordinatorTests
     }
 
     [Fact]
-    public async Task Invalid_activation_callback_does_not_kill_the_listener()
+    public async Task Failed_activation_is_nacked_and_a_later_success_still_works()
     {
         string applicationId = UniqueApplicationId();
         int attempts = 0;
@@ -192,15 +193,99 @@ public sealed class SingleInstanceCoordinatorTests
             },
             TimeSpan.FromSeconds(5), CancellationToken.None);
 
-        await using var firstSecondary = await SingleInstanceCoordinator.StartAsync(
-            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
+        await Assert.ThrowsAsync<ActivationFailedException>(() => SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None));
         await using var secondSecondary = await SingleInstanceCoordinator.StartAsync(
             applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
 
-        Assert.True(firstSecondary.ActivationWasSignaled);
         Assert.True(secondSecondary.ActivationWasSignaled);
         await secondAttempt.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(2, Volatile.Read(ref attempts));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Disconnecting_or_malformed_client_does_not_kill_the_listener(bool sendMalformedCommand)
+    {
+        string applicationId = UniqueApplicationId();
+        var activated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var primary = await SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => { activated.TrySetResult(); return Task.CompletedTask; },
+            TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        await using (var client = new NamedPipeClientStream(".", UserScopedPipeName(applicationId),
+                         PipeDirection.InOut, PipeOptions.Asynchronous))
+        {
+            await client.ConnectAsync(5000);
+            if (sendMalformedCommand)
+            {
+                await client.WriteAsync(new byte[] { 99 });
+                await client.FlushAsync();
+            }
+        }
+
+        await using var secondary = await SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.True(secondary.ActivationWasSignaled);
+        await activated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Terminal_listener_failure_after_readiness_is_surfaced_and_releases_ownership()
+    {
+        string applicationId = UniqueApplicationId();
+        int serverCreations = 0;
+        NamedPipeServerStream Factory(string pipeName)
+        {
+            if (Interlocked.Increment(ref serverCreations) > 1) throw new IOException("terminal listener failure");
+            return CreatePipeServer(pipeName);
+        }
+        var primary = await SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None,
+            Factory, _ => { });
+
+        await using (var client = new NamedPipeClientStream(".", UserScopedPipeName(applicationId),
+                         PipeDirection.InOut, PipeOptions.Asynchronous))
+        {
+            await client.ConnectAsync(5000);
+            await client.WriteAsync(new byte[] { 99 });
+            await client.FlushAsync();
+        }
+
+        IOException failure = await Assert.ThrowsAsync<IOException>(
+            () => primary.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("terminal listener failure", failure.Message, StringComparison.Ordinal);
+        await primary.DisposeAsync();
+
+        await using var replacement = await SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.True(replacement.IsPrimary);
+    }
+
+    [Fact]
+    public async Task Callback_fault_after_disposal_is_explicitly_observed()
+    {
+        string applicationId = UniqueApplicationId();
+        var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observed = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var primary = await SingleInstanceCoordinator.StartAsync(
+            applicationId,
+            _ => { callbackEntered.TrySetResult(); return callback.Task; },
+            TimeSpan.FromSeconds(5), CancellationToken.None,
+            pipeName => CreatePipeServer(pipeName), exception => observed.TrySetResult(exception));
+        Task<SingleInstanceCoordinator> secondary = SingleInstanceCoordinator.StartAsync(
+            applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
+        await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await primary.DisposeAsync();
+        callback.SetException(new InvalidOperationException("late callback fault"));
+
+        Exception failure = await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("late callback fault", failure.ToString(), StringComparison.Ordinal);
+        await using SingleInstanceCoordinator takeover = await secondary;
+        Assert.True(takeover.IsPrimary);
     }
 
     [Fact]
@@ -218,7 +303,8 @@ public sealed class SingleInstanceCoordinatorTests
         await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         await primary.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
-        await Assert.ThrowsAnyAsync<Exception>(() => secondary);
+        await using SingleInstanceCoordinator takeover = await secondary;
+        Assert.True(takeover.IsPrimary);
     }
 
     private static string UniqueApplicationId() => $"WordFlow.Tests.{Guid.NewGuid():N}";
@@ -231,6 +317,13 @@ public sealed class SingleInstanceCoordinatorTests
             SHA256.HashData(Encoding.UTF8.GetBytes($"{applicationId}\0{sid}")))[..32];
         return $"Local\\{applicationId}.{identity}";
     }
+
+    private static string UserScopedPipeName(string applicationId) =>
+        UserScopedMutexName(applicationId)["Local\\".Length..];
+
+    private static NamedPipeServerStream CreatePipeServer(string pipeName) => new(
+        pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
     private static async Task DisposeAllAsync(IEnumerable<SingleInstanceCoordinator> coordinators)
     {

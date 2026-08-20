@@ -9,10 +9,17 @@ public sealed class MigrationRunner
 {
     private readonly SqliteConnectionFactory factory;
     private readonly IReadOnlyList<SqliteMigration> migrations;
+    private readonly string backupDirectory;
 
-    public MigrationRunner(SqliteConnectionFactory factory, IEnumerable<SqliteMigration>? migrations = null)
+    public MigrationRunner(
+        SqliteConnectionFactory factory,
+        IEnumerable<SqliteMigration>? migrations = null,
+        string? backupDirectory = null)
     {
         this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
+        this.backupDirectory = Path.GetFullPath(backupDirectory
+            ?? Path.GetDirectoryName(factory.UserDatabasePath)
+            ?? throw new ArgumentException("The user database must have a parent directory.", nameof(factory)));
         this.migrations = (migrations ?? LoadEmbeddedMigrations())
             .OrderBy(migration => migration.Version)
             .ToArray();
@@ -57,9 +64,12 @@ public sealed class MigrationRunner
 
     private string BuildBackupPath(int currentVersion)
     {
+        Directory.CreateDirectory(backupDirectory);
         var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ", System.Globalization.CultureInfo.InvariantCulture);
-        var path = $"{factory.UserDatabasePath}.v{currentVersion}.{timestamp}.backup";
-        for (var suffix = 1; File.Exists(path); suffix++) path = $"{factory.UserDatabasePath}.v{currentVersion}.{timestamp}.{suffix}.backup";
+        string databaseName = Path.GetFileName(factory.UserDatabasePath);
+        var path = Path.Combine(backupDirectory, $"{databaseName}.v{currentVersion}.{timestamp}.backup");
+        for (var suffix = 1; File.Exists(path); suffix++)
+            path = Path.Combine(backupDirectory, $"{databaseName}.v{currentVersion}.{timestamp}.{suffix}.backup");
         return path;
     }
 

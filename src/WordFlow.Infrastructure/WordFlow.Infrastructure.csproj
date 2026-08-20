@@ -16,4 +16,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Data\Migrations\*.sql" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="WordFlow.Infrastructure.Tests" />
+  </ItemGroup>
 </Project>
