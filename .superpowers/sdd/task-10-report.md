@@ -102,3 +102,81 @@ The real Win32 smoke used a thread hotkey with the uncommon chord `Ctrl+Alt+Shif
 - Rechecked Application/WPF dependency direction, Task 8 rating reconciliation, cross-scope overlap, disabled duplicates, corrupt restore, SQLite transaction lifetime, unique staging IDs, stale-ID routing, callback containment, HWND recreation, owner-thread disposal, and exact shutdown ordering.
 - Confirmed no progress-ledger edit, network dependency, silent Windows-key reservation, or WPF type in the Application port/domain boundary.
 - Win32 cannot make an OS registration swap and SQLite commit one kernel-level atomic operation. The adapter minimizes the gap with a staged SQLite transaction and immediate restoration, and its fault-injected orders preserve the prior state. A different external process racing to claim the just-released old chord in the tiny commit-failure rollback window is an unavoidable OS-level race; such a failure surfaces as a Win32/lifecycle fault rather than being hidden.
+
+## Review remediation (C1, I1-I7)
+
+This section supersedes the earlier implementation notes where they differ. The original default mapping and persistence encoding remain compatible.
+
+### Additional TDD RED evidence
+
+The review fixes were driven by focused failing tests before production changes:
+
+- C1/I1/I5 initially failed compilation because the service had no dispatcher seam, lifecycle snapshot, bounded allocator, or chord-aware stale-message routing.
+- The A0-A5 modifier theory produced six failures because left/right Shift, Ctrl, and Alt virtual keys were accepted as standalone chords.
+- Commit failure + old-chord theft + candidate cleanup failure exposed split OS/SQLite/memory truth. Partial restore removal and terminal reconciliation notification also failed.
+- Reentrant Reset/Restore delivered an older Hard binding after a callback committed a newer one. A two-subscriber same-action test later showed subscriber B receiving version 2 after nested version 3.
+- Fake transaction `Dispose()` faults escaped `TryReplace`/`ResetAll` before rollback or adoption. A commit-that-writes-then-throws test proved SQLite could retain the candidate while memory/Win32 reverted to the old binding.
+- A one-shot `UnregisterHotKey` failure was reported terminal even though the immediate tracked retry released every registration.
+- Repeated failed Reset All with the same reason did not raise `ResetConflictReason` again.
+
+Each case was observed red under its focused filter and then green after the corresponding implementation change.
+
+### Lifecycle, atomicity, and thread model
+
+- All public native lifecycle, mutation, message-routing, disposal, and event work passes through platform-neutral `IShortcutDispatcher`. Production injects the WPF HWND-owner `Dispatcher`; the non-WPF default explicitly rejects off-owner calls. Dedicated-dispatcher tests assert native calls and binding events never execute on worker callers.
+- The service exposes `Ready`, `Degraded`, `Terminal`, and `Disposed` lifecycle snapshots. A recoverable external loss disables the affected binding and persists that actual state. If reconciliation itself cannot be persisted, the service enters Terminal and rejects further mutation rather than hiding disagreement.
+- `TryReplace`, Reset All, restore, and HWND recreation use active, staged, retired, and pending-cleanup registration sets. Staged/pending IDs are never routable. Active routing is removed immediately before unregister; it is restored only if native unregister says the registration still exists.
+- IDs are allocated only in `0..0xBFFF`, exclude all active/staged/pending/retired IDs, report explicit exhaustion, and are quarantined after confirmed unregister until successful HWND recreation. `WM_HOTKEY` additionally validates lParam modifiers/VK, preventing a delayed message from invoking an action after safe ID reuse.
+- Rollback always cleans or tracks every candidate, reconstructs removed old registrations by exact ID, disables any registration an external process stole, and explicitly persists the reconciled complete snapshot. It no longer assumes that a thrown `Commit()` implies SQLite did not commit.
+- A pre-commit transaction/dispose fault rolls back and re-persists the reconciled old truth. A post-commit `Dispose()` fault adopts the committed candidate/default/restore truth and exposes Degraded state. Persistent native cleanup failure is non-routable, tracked, Terminal on disposal, and retryable; a transient first failure that the immediate retry clears ends Disposed without a false exception.
+- App shutdown disposes shortcuts on the UI dispatcher before destroying the HWND. Real SQLite transactions use immediate acquisition, bounded busy timeout, rollback-on-dispose, and connection cleanup in `finally`.
+
+### Reconciled failure matrix
+
+| Failure/order | Observable terminal truth |
+|---|---|
+| Candidate register or store staging | Old OS/SQLite/memory unchanged; staged ID released or tracked non-routable |
+| Old unregister fails | Old remains active; candidate cleaned/tracked; old snapshot explicitly persisted |
+| Commit fails before write | Candidate cleaned, removed old reconstructed, old snapshot explicitly re-persisted |
+| Commit writes then throws | Same explicit rollback persistence overwrites the ambiguous candidate; old OS/SQLite/memory agree |
+| Commit plus transaction disposal fail | Disposal cannot bypass `finally`; candidate cleanup and old reconstruction still run |
+| Commit succeeds, transaction disposal fails | Candidate/default/restore is adopted in OS/SQLite/memory; lifecycle reports Degraded |
+| Old reconstruction partially fails | Stolen actions are disabled in memory and SQLite; surviving exact registrations remain active; lifecycle Degraded |
+| Reconciliation persistence fails | Actual reconstructed/disabled memory state is published; lifecycle Terminal identifies unresolved SQLite reconciliation |
+| Candidate cleanup fails | ID remains reserved, non-routable, and retryable; lifecycle/result expose the pending cleanup |
+| HWND recreation partially fails | New-HWND candidates are cleaned/tracked; old HWND registrations reconstruct or become explicitly disabled |
+| Persistent disposal cleanup fails | Active routing is empty; pending native IDs remain tracked; Dispose throws and lifecycle is Terminal until retry succeeds |
+
+### Events, focused delivery, and recorder truth
+
+- Binding changes carry monotonic versions. Per-action current-version checks occur before every subscriber callback, suppressing stale concurrent, batch, and same-action reentrant delivery. Settings rows and the label map also ignore older versions, so final labels equal `service.Bindings`.
+- Global callback and Focused bridge subscribers are isolated individually; later handlers still run, and callback-fault observers are themselves contained. Focused mappings never call Win32 and no WPF type crosses the Application port boundary.
+- WPF capture maps left/right modifier keys at the edge; validation rejects generic modifiers and VK `0xA0..0xA5` while retaining ordinary user chords. Existing documented OS-reserved policy is unchanged.
+- Failed chord/scope/enable/default/reset operations notify every affected property. `ShortcutSettingsViewModel` implements `INotifyPropertyChanged`, including repeated identical `ResetConflictReason` failures, and all getters continue to read the service's actual binding.
+
+### Review verification
+
+Fresh commands run from `D:\baicizhan\.worktrees\wordflow-implementation`:
+
+```powershell
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~GlobalShortcut|FullyQualifiedName~ShortcutPersistenceIntegration"
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~ShortcutSettings"
+dotnet test WordFlow.sln -c Release --no-restore
+dotnet build WordFlow.sln -c Release --no-restore
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+git diff --check
+```
+
+Results:
+
+- Shortcut lifecycle/persistence/real HWND focused: 52/52 passed.
+- Shortcut settings focused: 17/17 passed.
+- Full Release: 362/362 passed (129 Domain, 44 Application, 145 Infrastructure, 44 App).
+- Release build: 0 warnings, 0 errors.
+- Python vocabulary: 54/54 passed.
+- `git diff --check`: no whitespace errors; only Git's informational LF-to-CRLF notices.
+- The guarded automated smoke created a real message-only HWND on its STA owner thread, registered `Ctrl+Alt+Shift+F23`, verified a duplicate registration was rejected, disposed the service, then registered the identical chord under a probe ID. The probe was unregistered in `finally`, the HWND was destroyed on its owner thread, and the test process exited normally.
+
+### Remaining concern
+
+No user-space design can prevent another process from claiming the old chord after its required `UnregisterHotKey` and before rollback reconstruction. That external theft is now an explicit modeled outcome: the action is disabled, OS/SQLite/memory are reconciled, and lifecycle is Degraded. If SQLite reconciliation also fails, lifecycle becomes Terminal; the service never reports the hidden old binding as active.

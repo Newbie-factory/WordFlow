@@ -13,6 +13,16 @@ public enum ShortcutConflictKind
     Lifecycle,
 }
 
+public enum ShortcutLifecycleState
+{
+    Ready,
+    Degraded,
+    Terminal,
+    Disposed,
+}
+
+public sealed record ShortcutLifecycleSnapshot(ShortcutLifecycleState State, string? Reason = null);
+
 public sealed record ShortcutRegistrationResult(
     bool Succeeded,
     ShortcutConflictKind ConflictKind,
@@ -22,18 +32,19 @@ public sealed record ShortcutRegistrationResult(
     public static ShortcutRegistrationResult Success(ShortcutBinding? binding = null) =>
         new(true, ShortcutConflictKind.None, null, binding);
 
-    public static ShortcutRegistrationResult Conflict(ShortcutConflictKind kind, string reason) =>
-        new(false, kind, reason, null);
+    public static ShortcutRegistrationResult Conflict(ShortcutConflictKind kind, string reason, ShortcutBinding? binding = null) =>
+        new(false, kind, reason, binding);
 }
 
 public sealed record ShortcutRestoreIssue(ShortcutAction? Action, ShortcutConflictKind Kind, string Reason);
 
 public sealed record ShortcutRestoreResult(IReadOnlyList<ShortcutRestoreIssue> Issues);
 
-public sealed class ShortcutBindingChangedEventArgs(ShortcutAction action, ShortcutBinding binding) : EventArgs
+public sealed class ShortcutBindingChangedEventArgs(ShortcutAction action, ShortcutBinding binding, long version = 0) : EventArgs
 {
     public ShortcutAction Action { get; } = action;
     public ShortcutBinding Binding { get; } = binding;
+    public long Version { get; } = version;
 }
 
 public sealed class ShortcutCallbackFaultedEventArgs(Exception exception) : EventArgs
@@ -45,14 +56,22 @@ public interface IShortcutService : IDisposable
 {
     IReadOnlyDictionary<ShortcutAction, ShortcutBinding> Bindings { get; }
     IReadOnlyList<ShortcutRestoreIssue> RestoreIssues { get; }
+    ShortcutLifecycleSnapshot Lifecycle { get; }
     event EventHandler<ShortcutAction>? ActionInvoked;
     event EventHandler<ShortcutBindingChangedEventArgs>? BindingChanged;
     event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted;
     ShortcutRegistrationResult TryReplace(ShortcutAction action, ShortcutBinding candidate);
     ShortcutRegistrationResult ResetAll();
     ShortcutRestoreResult RestorePersisted();
-    void AttachWindowHandle(nint handle);
-    bool ProcessWindowMessage(int message, nint id);
+    ShortcutRegistrationResult AttachWindowHandle(nint handle);
+    bool ProcessWindowMessage(int message, nint id, nint chordData = default);
+}
+
+public interface IShortcutDispatcher
+{
+    bool CheckAccess();
+    T Invoke<T>(Func<T> action);
+    void Invoke(Action action);
 }
 
 public sealed record StoredShortcutBinding(string Command, string Value)

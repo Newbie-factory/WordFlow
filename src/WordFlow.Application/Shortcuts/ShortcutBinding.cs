@@ -60,7 +60,7 @@ public readonly record struct ShortcutChord(int VirtualKey, ShortcutModifiers Mo
 
     public string? Validate()
     {
-        if (VirtualKey is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C)
+        if (VirtualKey is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C or >= 0xA0 and <= 0xA5)
             return "A modifier key cannot be recorded by itself.";
         if (VirtualKey <= 0 || VirtualKey > 0xFE)
             return "The key is outside the supported Windows virtual-key range.";

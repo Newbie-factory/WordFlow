@@ -7,7 +7,7 @@ namespace WordFlow.App.Bootstrap;
 
 public static class ServiceRegistration
 {
-    public static ServiceProvider BuildPrimaryServices(AppPaths paths)
+    public static ServiceProvider BuildPrimaryServices(AppPaths paths, IShortcutDispatcher? shortcutDispatcher = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         var services = new ServiceCollection();
@@ -19,8 +19,10 @@ public static class ServiceRegistration
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
+        services.AddSingleton(shortcutDispatcher ?? new OwnerThreadShortcutDispatcher());
         services.AddSingleton<IShortcutService>(provider =>
-            new GlobalShortcutService(provider.GetRequiredService<SqliteConnectionFactory>()));
+            new GlobalShortcutService(provider.GetRequiredService<SqliteConnectionFactory>(),
+                provider.GetRequiredService<IShortcutDispatcher>()));
         return services.BuildServiceProvider(validateScopes: true);
     }
 }

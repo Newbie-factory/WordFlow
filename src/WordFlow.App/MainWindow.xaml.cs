@@ -35,7 +35,8 @@ public partial class MainWindow : Window
     {
         if (shortcutService is null) return;
         var handle = new WindowInteropHelper(this).Handle;
-        shortcutService.AttachWindowHandle(handle);
+        var attach = shortcutService.AttachWindowHandle(handle);
+        if (!attach.Succeeded) throw new InvalidOperationException(attach.ConflictReason);
         shortcutService.RestorePersisted();
         source = HwndSource.FromHwnd(handle);
         source?.AddHook(WindowProcedure);
@@ -43,7 +44,7 @@ public partial class MainWindow : Window
 
     private nint WindowProcedure(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
-        if (shortcutService?.ProcessWindowMessage(message, wParam) == true) handled = true;
+        if (shortcutService?.ProcessWindowMessage(message, wParam, lParam) == true) handled = true;
         return 0;
     }
 
@@ -51,13 +52,7 @@ public partial class MainWindow : Window
     {
         if (focusedShortcuts is null) return;
         var key = args.Key == Key.System ? args.SystemKey : args.Key;
-        int virtualKey = KeyInterop.VirtualKeyFromKey(key);
-        var modifiers = ShortcutModifiers.None;
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) modifiers |= ShortcutModifiers.Control;
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) modifiers |= ShortcutModifiers.Alt;
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) modifiers |= ShortcutModifiers.Shift;
-        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows)) modifiers |= ShortcutModifiers.Windows;
-        args.Handled = focusedShortcuts.TryInvoke(new ShortcutChord(virtualKey, modifiers));
+        args.Handled = focusedShortcuts.TryInvoke(WpfShortcutChordCapture.FromKey(key, Keyboard.Modifiers));
     }
 
     private void OnShortcutActionInvoked(object? sender, ShortcutAction action) =>

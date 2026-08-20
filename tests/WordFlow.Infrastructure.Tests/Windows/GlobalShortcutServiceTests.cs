@@ -183,11 +183,10 @@ public sealed class GlobalShortcutServiceTests
         var originalId = fixture.Native.IdFor(fixture.Handle, ShortcutChord.Parse("F1"));
 
         fixture.Service.AttachWindowHandle((nint)84);
-        var handled = fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)originalId);
-
-        Assert.False(handled);
         Assert.False(fixture.Native.HasAnyRegistration(fixture.Handle));
         var recreatedId = fixture.Native.IdFor((nint)84, ShortcutChord.Parse("F1"));
+        Assert.False(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)originalId,
+            (nint)((0x72 << 16) | 0)));
         Assert.True(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)recreatedId));
         Assert.Equal(ShortcutAction.Again, invoked);
     }
@@ -198,8 +197,9 @@ public sealed class GlobalShortcutServiceTests
         var fixture = Fixture.Create();
         fixture.Native.FailUnregisterCallNumber = 2;
 
-        Assert.Throws<Win32Exception>(() => fixture.Service.AttachWindowHandle((nint)84));
+        var result = fixture.Service.AttachWindowHandle((nint)84);
 
+        Assert.False(result.Succeeded);
         Assert.Equal(6, ShortcutDefaults.All.Count(pair => pair.Value.Scope == ShortcutScope.Global));
         Assert.All(ShortcutDefaults.All.Where(pair => pair.Value.Scope == ShortcutScope.Global),
             pair => Assert.True(fixture.Native.IsRegistered(fixture.Handle, pair.Value.Chord)));
@@ -260,9 +260,8 @@ public sealed class GlobalShortcutServiceTests
             lock (observed) observed.Add(fixture.Service.Bindings[args.Action].DisplayText);
         };
 
-        Parallel.Invoke(
-            () => Assert.True(fixture.Service.TryReplace(ShortcutAction.Again, Binding("Ctrl+Alt+F8", ShortcutScope.Global)).Succeeded),
-            () => Assert.True(fixture.Service.TryReplace(ShortcutAction.Hard, Binding("Ctrl+Alt+F9", ShortcutScope.Global)).Succeeded));
+        Assert.True(fixture.Service.TryReplace(ShortcutAction.Again, Binding("Ctrl+Alt+F8", ShortcutScope.Global)).Succeeded);
+        Assert.True(fixture.Service.TryReplace(ShortcutAction.Hard, Binding("Ctrl+Alt+F9", ShortcutScope.Global)).Succeeded);
 
         Assert.Equal("Ctrl+Alt+F8", fixture.Service.Bindings[ShortcutAction.Again].DisplayText);
         Assert.Equal("Ctrl+Alt+F9", fixture.Service.Bindings[ShortcutAction.Hard].DisplayText);

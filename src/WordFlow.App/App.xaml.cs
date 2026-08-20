@@ -2,6 +2,7 @@ using System.Windows;
 using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
+using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Windows;
@@ -19,6 +20,7 @@ public partial class App : System.Windows.Application
     private ApplicationExitCoordinator? exitCoordinator;
     private Task? coordinatorMonitor;
     private MainWindow? card;
+    private IShortcutService? shortcutService;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -41,7 +43,7 @@ public partial class App : System.Windows.Application
             }
             coordinatorMonitor = ObserveCoordinatorAsync(coordinator);
 
-            services = ServiceRegistration.BuildPrimaryServices(paths);
+            services = ServiceRegistration.BuildPrimaryServices(paths, new WpfShortcutDispatcher(Dispatcher));
             await BootstrapSequence.RunAsync(
                 () =>
                 {
@@ -73,7 +75,7 @@ public partial class App : System.Windows.Application
 
     private void CreateCardAndTray()
     {
-        var shortcutService = services?.GetRequiredService<IShortcutService>()
+        shortcutService = services?.GetRequiredService<IShortcutService>()
             ?? throw new InvalidOperationException("Primary services are not available.");
         shortcutService.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
@@ -135,6 +137,7 @@ public partial class App : System.Windows.Application
         [
             CancelLifetimeAsync,
             DisposeTrayAsync,
+            DisposeShortcutsAsync,
             CloseCardAsync,
             DisposeServicesAsync,
             DisposeCoordinatorAsync,
@@ -159,6 +162,13 @@ public partial class App : System.Windows.Application
         trayIcon?.Dispose();
         trayIcon = null;
         trayController = null;
+        return ValueTask.CompletedTask;
+    }
+
+    private ValueTask DisposeShortcutsAsync()
+    {
+        shortcutService?.Dispose();
+        shortcutService = null;
         return ValueTask.CompletedTask;
     }
 

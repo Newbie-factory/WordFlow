@@ -1,15 +1,44 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows.Input;
+using System.Windows.Threading;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
 
 namespace WordFlow.App.ViewModels;
 
-public sealed class ShortcutSettingsViewModel : IDisposable
+public sealed class WpfShortcutDispatcher(Dispatcher dispatcher) : IShortcutDispatcher
+{
+    private readonly Dispatcher dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+    public bool CheckAccess() => dispatcher.CheckAccess();
+    public T Invoke<T>(Func<T> action) => CheckAccess() ? action() : dispatcher.Invoke(action);
+    public void Invoke(Action action)
+    {
+        if (CheckAccess()) action();
+        else dispatcher.Invoke(action);
+    }
+}
+
+public static class WpfShortcutChordCapture
+{
+    public static ShortcutChord FromKey(Key key, ModifierKeys modifiers)
+    {
+        int virtualKey = KeyInterop.VirtualKeyFromKey(key);
+        var shortcutModifiers = ShortcutModifiers.None;
+        if (modifiers.HasFlag(ModifierKeys.Control)) shortcutModifiers |= ShortcutModifiers.Control;
+        if (modifiers.HasFlag(ModifierKeys.Alt)) shortcutModifiers |= ShortcutModifiers.Alt;
+        if (modifiers.HasFlag(ModifierKeys.Shift)) shortcutModifiers |= ShortcutModifiers.Shift;
+        if (modifiers.HasFlag(ModifierKeys.Windows)) shortcutModifiers |= ShortcutModifiers.Windows;
+        return new(virtualKey, shortcutModifiers);
+    }
+}
+
+public sealed class ShortcutSettingsViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly IShortcutService service;
     private bool disposed;
+    private string? resetConflictReason;
 
     public ShortcutSettingsViewModel(IShortcutService service)
     {
@@ -22,12 +51,27 @@ public sealed class ShortcutSettingsViewModel : IDisposable
 
     public ReadOnlyObservableCollection<ShortcutBindingItemViewModel> Items { get; }
     public ShortcutLabelMap Labels { get; }
-    public string? ResetConflictReason { get; private set; }
+    public string? ResetConflictReason
+    {
+        get => resetConflictReason;
+        private set
+        {
+            if (resetConflictReason == value) return;
+            resetConflictReason = value;
+            PropertyChanged?.Invoke(this, new(nameof(ResetConflictReason)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public bool ResetAll()
     {
         var result = service.ResetAll();
+        bool unchangedFailure = !result.Succeeded && resetConflictReason == result.ConflictReason;
         ResetConflictReason = result.ConflictReason;
+        if (unchangedFailure) PropertyChanged?.Invoke(this, new(nameof(ResetConflictReason)));
+        if (!result.Succeeded)
+            foreach (var item in Items) item.RefreshAll();
         return result.Succeeded;
     }
 
@@ -45,6 +89,7 @@ public sealed class ShortcutBindingItemViewModel : INotifyPropertyChanged, IDisp
     private readonly IShortcutService service;
     private bool disposed;
     private string? conflictReason;
+    private long lastVersion;
 
     internal ShortcutBindingItemViewModel(IShortcutService service, ShortcutAction action)
     {
@@ -68,7 +113,7 @@ public sealed class ShortcutBindingItemViewModel : INotifyPropertyChanged, IDisp
         set
         {
             if (value == Current.Scope) return;
-            Apply(Current with { Scope = value });
+            Apply(Current with { Scope = value }, nameof(Scope));
         }
     }
 
@@ -78,7 +123,7 @@ public sealed class ShortcutBindingItemViewModel : INotifyPropertyChanged, IDisp
         set
         {
             if (value == Current.IsEnabled) return;
-            Apply(Current with { IsEnabled = value });
+            Apply(Current with { IsEnabled = value }, nameof(IsEnabled));
         }
     }
 
@@ -87,14 +132,16 @@ public sealed class ShortcutBindingItemViewModel : INotifyPropertyChanged, IDisp
         if (!ShortcutChord.TryParse(chord, out var parsed))
         {
             ConflictReason = "Record one non-modifier key with optional Ctrl, Alt, or Shift modifiers.";
+            OnPropertyChanged(nameof(ChordDisplay));
             return false;
         }
-        return Apply(Current with { Chord = parsed });
+        return Apply(Current with { Chord = parsed }, nameof(ChordDisplay));
     }
 
-    public bool Record(ShortcutChord chord) => Apply(Current with { Chord = chord });
+    public bool Record(ShortcutChord chord) => Apply(Current with { Chord = chord }, nameof(ChordDisplay));
 
-    public bool RestoreDefault() => Apply(ShortcutDefaults.For(Action));
+    public bool RestoreDefault() => Apply(ShortcutDefaults.For(Action),
+        nameof(ChordDisplay), nameof(Scope), nameof(IsEnabled));
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -107,20 +154,29 @@ public sealed class ShortcutBindingItemViewModel : INotifyPropertyChanged, IDisp
 
     private ShortcutBinding Current => service.Bindings[Action];
 
-    private bool Apply(ShortcutBinding candidate)
+    internal void RefreshAll()
+    {
+        OnPropertyChanged(nameof(ChordDisplay));
+        OnPropertyChanged(nameof(Scope));
+        OnPropertyChanged(nameof(IsEnabled));
+    }
+
+    private bool Apply(ShortcutBinding candidate, params string[] attemptedProperties)
     {
         var result = service.TryReplace(Action, candidate);
         ConflictReason = result.ConflictReason;
+        if (!result.Succeeded)
+            foreach (string property in attemptedProperties) OnPropertyChanged(property);
         return result.Succeeded;
     }
 
     private void OnBindingChanged(object? sender, ShortcutBindingChangedEventArgs args)
     {
         if (args.Action != Action) return;
+        if (args.Version < lastVersion) return;
+        lastVersion = args.Version;
         ConflictReason = null;
-        OnPropertyChanged(nameof(ChordDisplay));
-        OnPropertyChanged(nameof(Scope));
-        OnPropertyChanged(nameof(IsEnabled));
+        RefreshAll();
     }
 
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
@@ -131,12 +187,14 @@ public sealed class ShortcutLabelMap : INotifyPropertyChanged, IDisposable
 {
     private readonly IShortcutService service;
     private readonly Dictionary<ShortcutAction, string> labels;
+    private readonly Dictionary<ShortcutAction, long> versions = [];
     private bool disposed;
 
     internal ShortcutLabelMap(IShortcutService service)
     {
         this.service = service;
         labels = service.Bindings.ToDictionary(pair => pair.Key, pair => Format(pair.Value));
+        foreach (var action in labels.Keys) versions[action] = 0;
         service.BindingChanged += OnBindingChanged;
     }
 
@@ -152,6 +210,8 @@ public sealed class ShortcutLabelMap : INotifyPropertyChanged, IDisposable
 
     private void OnBindingChanged(object? sender, ShortcutBindingChangedEventArgs args)
     {
+        if (args.Version < versions[args.Action]) return;
+        versions[args.Action] = args.Version;
         labels[args.Action] = Format(args.Binding);
         PropertyChanged?.Invoke(this, new("Item[]"));
     }
@@ -175,6 +235,7 @@ public sealed class FocusedShortcutBindingBridge : IDisposable
     }
 
     public event EventHandler<ShortcutAction>? ActionInvoked;
+    public event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted;
 
     public bool TryInvoke(ShortcutChord chord)
     {
@@ -183,7 +244,14 @@ public sealed class FocusedShortcutBindingBridge : IDisposable
         {
             if (disposed || !focused.TryGetValue(chord, out action)) return false;
         }
-        ActionInvoked?.Invoke(this, action);
+        if (ActionInvoked is { } handlers)
+        {
+            foreach (EventHandler<ShortcutAction> handler in handlers.GetInvocationList())
+            {
+                try { handler(this, action); }
+                catch (Exception exception) { PublishFault(exception); }
+            }
+        }
         return true;
     }
 
@@ -199,6 +267,16 @@ public sealed class FocusedShortcutBindingBridge : IDisposable
     }
 
     private void OnBindingChanged(object? sender, ShortcutBindingChangedEventArgs args) => Rebuild();
+
+    private void PublishFault(Exception exception)
+    {
+        if (CallbackFaulted is not { } handlers) return;
+        foreach (EventHandler<ShortcutCallbackFaultedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try { handler(this, new(exception)); }
+            catch { }
+        }
+    }
 
     private void Rebuild()
     {
