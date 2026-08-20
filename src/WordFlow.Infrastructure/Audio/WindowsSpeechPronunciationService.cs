@@ -297,26 +297,38 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
             candidates.Add(new(voice.Id, voice.Name, cultureName, AccentFor(cultureName)));
         }
 
-        var quarantinedIds = new HashSet<string>(StringComparer.Ordinal);
-        var unambiguousIds = new List<PronunciationVoice>();
-        foreach (var group in candidates.GroupBy(voice => voice.Id, StringComparer.Ordinal))
+        var uniqueCandidates = candidates.Distinct().ToArray();
+        var namesById = uniqueCandidates
+            .GroupBy(voice => voice.Id, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(voice => voice.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.Ordinal);
+        var idsByName = uniqueCandidates
+            .GroupBy(voice => voice.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(voice => voice.Id).ToHashSet(StringComparer.Ordinal),
+                StringComparer.OrdinalIgnoreCase);
+
+        var quarantinedIds = uniqueCandidates
+            .GroupBy(voice => voice.Id, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var ids in idsByName.Values.Where(ids => ids.Count > 1))
+            quarantinedIds.UnionWith(ids);
+
+        var pending = new Queue<string>(quarantinedIds.OrderBy(id => id, StringComparer.Ordinal));
+        while (pending.TryDequeue(out string? id))
         {
-            if (group.Select(voice => (voice.Name, voice.CultureName, voice.Accent)).Distinct().Count() == 1)
-                unambiguousIds.Add(group.First());
-            else
-                quarantinedIds.Add(group.Key);
+            foreach (string name in namesById[id])
+            foreach (string connectedId in idsByName[name])
+                if (quarantinedIds.Add(connectedId)) pending.Enqueue(connectedId);
         }
 
-        var selectable = new List<PronunciationVoice>();
-        foreach (var group in unambiguousIds.GroupBy(voice => voice.Name, StringComparer.OrdinalIgnoreCase))
-        {
-            if (group.Select(voice => voice.Id).Distinct(StringComparer.Ordinal).Count() == 1)
-                selectable.Add(group.First());
-            else
-                foreach (var voice in group) quarantinedIds.Add(voice.Id);
-        }
-
-        var normalized = selectable
+        var normalized = uniqueCandidates
+            .Where(voice => !quarantinedIds.Contains(voice.Id))
             .OrderBy(voice => voice.CultureName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(voice => voice.Id, StringComparer.Ordinal)
             .ToArray();

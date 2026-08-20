@@ -171,6 +171,58 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Quarantined_restored_voice_allows_each_unrelated_setting_save_and_later_clean_resolution()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "dup",
+        }, default);
+        using var conflictedService = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false,
+            [
+                new("dup", "First", "en-US", true),
+                new("dup", "Second", "en-GB", true),
+            ])));
+        var conflicted = new PronunciationSettingsViewModel(conflictedService, store);
+        await conflicted.RestoreAsync();
+
+        conflicted.Rate = -3;
+        await conflicted.SaveAsync();
+        conflicted.Volume = 61;
+        await conflicted.SaveAsync();
+        conflicted.AccentPreference = PronunciationAccent.British;
+        await conflicted.SaveAsync();
+        conflicted.Autoplay = true;
+        await conflicted.SaveAsync();
+
+        var persisted = await store.GetManyAsync(
+            [
+                PronunciationSettingsViewModel.VoiceKey,
+                PronunciationSettingsViewModel.RateKey,
+                PronunciationSettingsViewModel.VolumeKey,
+                PronunciationSettingsViewModel.AccentKey,
+                PronunciationSettingsViewModel.AutoplayKey,
+            ], default);
+        Assert.Equal("dup", persisted[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.Equal("-3", persisted[PronunciationSettingsViewModel.RateKey]);
+        Assert.Equal("61", persisted[PronunciationSettingsViewModel.VolumeKey]);
+        Assert.Equal(nameof(PronunciationAccent.British), persisted[PronunciationSettingsViewModel.AccentKey]);
+        Assert.Equal(bool.TrueString, persisted[PronunciationSettingsViewModel.AutoplayKey]);
+
+        using var recoveredService = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false, [new("dup", "Recovered", "en-GB", true)])));
+        var recovered = new PronunciationSettingsViewModel(recoveredService, store);
+        await recovered.RestoreAsync();
+
+        Assert.Equal("dup", recovered.SelectedVoiceId);
+        Assert.Equal(-3, recovered.Rate);
+        Assert.Equal(61, recovered.Volume);
+        Assert.Equal(PronunciationAccent.British, recovered.AccentPreference);
+        Assert.True(recovered.Autoplay);
+    }
+
+    [Fact]
     public async Task Click_supersedes_pending_autoplay_and_failures_are_observed_as_feedback()
     {
         var store = await StoreAsync();

@@ -162,7 +162,8 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             throw new ArgumentOutOfRangeException(nameof(AccentPreference));
         if (service.Availability.InventoryState != PronunciationInventoryState.UnavailableFault &&
             !string.IsNullOrWhiteSpace(SelectedVoiceId) &&
-            service.Voices.All(voice => !string.Equals(voice.Id, SelectedVoiceId, StringComparison.Ordinal)))
+            service.Voices.All(voice => !string.Equals(voice.Id, SelectedVoiceId, StringComparison.Ordinal)) &&
+            !service.Availability.QuarantinedVoiceIds.Contains(SelectedVoiceId, StringComparer.Ordinal))
             throw new ArgumentException("The selected voice is not an installed English voice.", nameof(SelectedVoiceId));
     }
 

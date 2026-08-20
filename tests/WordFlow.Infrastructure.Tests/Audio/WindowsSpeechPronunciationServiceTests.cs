@@ -105,6 +105,44 @@ public sealed class WindowsSpeechPronunciationServiceTests
         Assert.DoesNotContain("安装", service.Availability.Message);
     }
 
+    [Fact]
+    public void Overlapping_id_and_selectable_name_conflict_quarantines_the_entire_connected_component()
+    {
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(
+            new FakeSpeechEngine(
+            [
+                new("id-a", "Shared", "en-US", true),
+                new("id-a", "Other", "en-GB", true),
+                new("id-b", "shared", "en-GB", true),
+            ])));
+
+        Assert.Empty(service.Voices);
+        Assert.Equal(["id-a", "id-b"], service.Availability.QuarantinedVoiceIds);
+        Assert.Equal(PronunciationInventoryState.UnavailableConflict, service.Availability.InventoryState);
+        Assert.Contains("冲突", service.Availability.Message);
+        Assert.DoesNotContain("安装", service.Availability.Message);
+    }
+
+    [Fact]
+    public void Conflict_graph_is_case_insensitive_and_keeps_exact_duplicates_in_deterministic_safe_order()
+    {
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(
+            new FakeSpeechEngine(
+            [
+                new("id-a", "Shared", "en-US", true),
+                new("id-a", "Other", "en-GB", true),
+                new("id-b", "sHaReD", "en-GB", true),
+                new("id-c", "OTHER", "en-AU", true),
+                new("safe-z", "Solo Z", "EN-us", true),
+                new("safe-z", "Solo Z", "en-US", true),
+                new("safe-a", "Solo A", "en-GB", true),
+            ])));
+
+        Assert.Equal(["safe-a", "safe-z"], service.Voices.Select(voice => voice.Id));
+        Assert.Equal(["en-GB", "en-US"], service.Voices.Select(voice => voice.CultureName));
+        Assert.Equal(["id-a", "id-b", "id-c"], service.Availability.QuarantinedVoiceIds);
+    }
+
     [Theory]
     [InlineData("", 0, 50)]
     [InlineData("word", -11, 50)]

@@ -205,3 +205,56 @@ git diff --check
 ### Remaining concern after re-review
 
 - The host still has no installed `en-GB` voice. The real null-output SAPI path covers installed `en-US`; GB selection, conflict behavior, and fallback remain deterministic machine-independent engine tests.
+
+## Final review closure — connected conflict graph and quarantined saves
+
+The final independent review findings I1 and M1 are closed.
+
+### Connected ID/name conflict graph
+
+The normalizer now canonicalizes eligible English rows, removes only exact duplicate rows, and constructs the complete case-insensitive bipartite stable-ID ↔ SAPI-name graph before choosing any exposed voice. Conflicting metadata for one ID or one selectable name mapped to multiple IDs seeds quarantine; quarantine then propagates to the entire connected component. Only identities outside every conflicted component are exposed.
+
+This closes the overlapping case `id-a/Shared`, `id-a/Other`, `id-b/shared`: both IDs quarantine, no voice is exposed, and availability is `UnavailableConflict` with non-install guidance. A longer case-insensitive graph through `OTHER` also quarantines its connected third ID while exact culture-case duplicate rows remain one safe voice. Safe output and quarantine metadata retain deterministic culture/ordinal-ID ordering.
+
+### Saving a preserved quarantined voice
+
+Settings validation now treats an exact current `QuarantinedVoiceIds` match as preservable, alongside the existing transient-inventory-fault allowance. It does not allow arbitrary absent IDs; authoritative clean inventories have no quarantine match and continue to reject every missing ID.
+
+The integration regression restores a quarantined `dup` ID under `UnavailableConflict`, changes and saves rate, volume, accent, and autoplay independently, verifies every transaction retains `voice_id=dup`, then restores all values after a later clean authoritative inventory resolves `dup`.
+
+### Strict TDD evidence
+
+- The exact overlapping graph first exposed `id-b/shared` instead of an empty inventory.
+- The case-insensitive chain first exposed both `id-b` and `id-c` instead of only deterministic safe voices.
+- The first unrelated rate save after restoring quarantined `dup` failed with `ArgumentException: The selected voice is not an installed English voice`.
+- The minimal graph traversal and exact quarantine validation changes made those focused regressions green without weakening arbitrary-unknown validation.
+
+### Fresh final verification
+
+```text
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --filter FullyQualifiedName~WindowsSpeechPronunciationServiceTests
+  21/21 passed (includes safe real installed-voice null-output smoke)
+
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --filter "FullyQualifiedName~PronunciationSettingsViewModelTests|FullyQualifiedName~BootstrapSequenceTests"
+  24/24 passed
+
+dotnet test WordFlow.sln -c Release --no-restore
+  478/478 passed (129 Domain, 47 Application, 197 Infrastructure, 105 App)
+
+dotnet build WordFlow.sln -c Release --no-restore
+  0 warnings, 0 errors
+
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+  54/54 passed
+
+runtime-network-reference-audit=pass;hits=0
+runtime-url-launch-audit=pass;hits=0
+installed-english-voice-count=5
+culture=en-US;count=5
+git diff --check
+  no whitespace errors; line-ending notices only
+```
+
+### Remaining environment limitation
+
+- This host still has no physical `en-GB` voice. The real null-output SAPI smoke covers installed `en-US`; GB selection, fallback, connected conflicts, and case normalization are covered through the machine-independent engine seam.
