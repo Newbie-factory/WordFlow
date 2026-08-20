@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
+using WordFlow.Infrastructure.Windows;
 
 namespace WordFlow.App.Bootstrap;
 
@@ -18,6 +19,8 @@ public static class ServiceRegistration
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
+        services.AddSingleton<IShortcutService>(provider =>
+            new GlobalShortcutService(provider.GetRequiredService<SqliteConnectionFactory>()));
         return services.BuildServiceProvider(validateScopes: true);
     }
 }

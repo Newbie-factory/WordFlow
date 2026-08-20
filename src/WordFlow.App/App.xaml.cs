@@ -2,6 +2,7 @@ using System.Windows;
 using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
+using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Windows;
 
@@ -72,7 +73,11 @@ public partial class App : System.Windows.Application
 
     private void CreateCardAndTray()
     {
-        card = new MainWindow();
+        var shortcutService = services?.GetRequiredService<IShortcutService>()
+            ?? throw new InvalidOperationException("Primary services are not available.");
+        shortcutService.CallbackFaulted += (_, args) =>
+            WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
+        card = new MainWindow(shortcutService);
         card.Closing += (_, args) =>
         {
             if (exiting) return;
