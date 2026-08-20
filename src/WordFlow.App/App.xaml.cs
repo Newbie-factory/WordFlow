@@ -33,7 +33,7 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         if (e.Args.Contains("--ui-smoke", StringComparer.OrdinalIgnoreCase))
         {
-            StartUiSmoke();
+            StartUiSmoke(e.Args.Contains("--ui-smoke-production", StringComparer.OrdinalIgnoreCase));
             return;
         }
         exitCoordinator = CreateExitCoordinator();
@@ -83,11 +83,12 @@ public partial class App : System.Windows.Application
         }
     }
 
-    private void StartUiSmoke()
+    private void StartUiSmoke(bool productionActions)
     {
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         var placementPath = Path.Combine(Path.GetTempPath(), $"wordflow-ui-smoke-{Environment.ProcessId}.json");
-        var smokeViewModel = UiSmokeCardFactory.CreateViewModel();
+        cardActionHost = productionActions ? FloatingCardActionHost.Unavailable : null;
+        var smokeViewModel = UiSmokeCardFactory.CreateViewModel(cardActionHost);
         card = new FloatingCardWindow(smokeViewModel, new WindowPlacementService(placementPath));
         card.EnableUiSmokeControlMessages = true;
         card.SuppressTopmostForFullscreen = false;

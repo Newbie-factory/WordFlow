@@ -53,7 +53,7 @@ public sealed class RelationDrawerViewModelTests
             Row(Id(3), "folded") with { SourceSenseId = "sense-b", PartOfSpeech = "v", SourceDefinition = "secondary evidence" },
         };
         using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
-            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)));
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)), usesSenseGroups: true);
 
         await drawer.OpenAsync(Id(1));
 
@@ -62,6 +62,20 @@ public sealed class RelationDrawerViewModelTests
         drawer.SearchText = "secondary evidence";
         Assert.True(drawer.Groups[1].IsExpanded);
         Assert.Equal("folded", Assert.Single(drawer.FilteredItems).Word);
+    }
+
+    [Fact]
+    public async Task Non_sense_drawer_exposes_one_flat_result_list_without_empty_semantic_groups()
+    {
+        var rows = new[] { Row(Id(2), "methodical"), Row(Id(3), "metallic") };
+        using var drawer = new RelationDrawerViewModel("形近易混", "暂无可靠易混词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)), usesSenseGroups: false);
+
+        await drawer.OpenAsync(Id(1));
+
+        Assert.False(drawer.UsesSenseGroups);
+        Assert.Empty(drawer.Groups);
+        Assert.Equal(["methodical", "metallic"], drawer.FilteredItems.Select(item => item.Word));
     }
 
     [Fact]

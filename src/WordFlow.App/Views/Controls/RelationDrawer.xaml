@@ -4,6 +4,60 @@
              xmlns:local="clr-namespace:WordFlow.App.Views.Controls"
              Focusable="False" UseLayoutRounding="True" ClipToBounds="True"
              KeyboardNavigation.TabNavigation="Cycle">
+    <UserControl.Resources>
+        <Style x:Key="RelationListItemStyle" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,0,6"/><Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/><Setter Property="FocusVisualStyle" Value="{StaticResource Focus.Ring}"/>
+            <Setter Property="AutomationProperties.Name" Value="{Binding AutomationName}"/>
+        </Style>
+        <DataTemplate x:Key="RelationRowTemplate">
+            <Border x:Name="RelationRowSurface" Background="{StaticResource Brush.SurfaceRaised}"
+                    BorderBrush="{StaticResource Brush.ControlBorder}" BorderThickness="1" CornerRadius="8" Padding="9">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <DockPanel LastChildFill="True">
+                            <Border DockPanel.Dock="Right" Background="{StaticResource Brush.AccentSurface}" CornerRadius="{StaticResource Radius.Badge}" Padding="7,3"><TextBlock Text="{Binding Badge}" FontSize="11" Foreground="{StaticResource Brush.AccentStrong}"/></Border>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="{Binding Word}" FontFamily="{StaticResource Font.Display}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{Binding Phonetic}" Margin="8,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}"/></StackPanel>
+                        </DockPanel>
+                        <TextBlock Text="{Binding Chinese}" Margin="0,2,0,0" FontSize="12" TextWrapping="Wrap"/>
+                        <StackPanel x:Name="FullEvidence">
+                            <TextBlock Text="{Binding Contrast}" Margin="0,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Collocation, StringFormat=搭配 · {0}}" Margin="0,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                        <Expander x:Name="CompactEvidence" Header="辨析与搭配" Visibility="Collapsed" FontSize="11"
+                                  AutomationProperties.Name="展开辨析与搭配">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Contrast}" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding Collocation, StringFormat=搭配 · {0}}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+                    <StackPanel x:Name="ActionPanel" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                        <Button Style="{StaticResource Button.Base}" Width="32" Height="32" MinHeight="32" Padding="7" IsEnabled="{Binding CanSpeak}" Click="Speak_Click" ToolTip="{Binding SpeakHelpText}" AutomationProperties.Name="{Binding SpeakAutomationName}" AutomationProperties.HelpText="{Binding SpeakHelpText}" TabIndex="21"><TextBlock Text="音" FontWeight="SemiBold"/></Button>
+                        <Button x:Name="DetailsInlineButton" Style="{StaticResource Button.Base}" Width="32" Height="32" MinHeight="32" Margin="0,4,0,0" Padding="7" IsEnabled="{Binding CanOpenDetails}" Click="Details_Click" ToolTip="{Binding DetailsHelpText}" AutomationProperties.Name="{Binding DetailsAutomationName}" AutomationProperties.HelpText="{Binding DetailsHelpText}" TabIndex="22"><TextBlock Text="详" FontWeight="SemiBold"/></Button>
+                    </StackPanel>
+                </Grid>
+                <Border.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="{Binding SpeakAutomationName}" IsEnabled="{Binding CanSpeak}" AutomationProperties.Name="{Binding SpeakAutomationName}" AutomationProperties.HelpText="{Binding SpeakHelpText}" Click="Speak_Click"/>
+                        <MenuItem Header="{Binding DetailsAutomationName}" IsEnabled="{Binding CanOpenDetails}" AutomationProperties.Name="{Binding DetailsAutomationName}" AutomationProperties.HelpText="{Binding DetailsHelpText}" Click="Details_Click"/>
+                        <Separator/><MenuItem Header="{Binding AddAutomationName}" IsEnabled="{Binding CanAddToLearning}" AutomationProperties.Name="{Binding AddAutomationName}" AutomationProperties.HelpText="{Binding AddHelpText}" Click="AddToLearning_Click"/>
+                    </ContextMenu>
+                </Border.ContextMenu>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsCompact, RelativeSource={RelativeSource AncestorType={x:Type local:RelationDrawer}}}" Value="True">
+                    <Setter TargetName="FullEvidence" Property="Visibility" Value="Collapsed"/>
+                    <Setter TargetName="CompactEvidence" Property="Visibility" Value="Visible"/>
+                    <Setter TargetName="ActionPanel" Property="Orientation" Value="Horizontal"/>
+                    <Setter TargetName="ActionPanel" Property="VerticalAlignment" Value="Top"/>
+                    <Setter TargetName="DetailsInlineButton" Property="Margin" Value="4,0,0,0"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
     <Border x:Name="DrawerSurface" Background="{StaticResource Brush.Canvas}" BorderBrush="{StaticResource Brush.ControlBorder}"
             BorderThickness="1" CornerRadius="12" Width="480">
         <Border.Style>
@@ -51,74 +105,33 @@
             <ScrollViewer x:Name="ResultsScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled" CanContentScroll="True"
                           AutomationProperties.Name="关系词完整结果">
-                <ItemsControl ItemsSource="{Binding Groups}" KeyboardNavigation.TabNavigation="Continue">
+                <Grid>
+                <ItemsControl x:Name="GroupedResults" ItemsSource="{Binding Groups}" KeyboardNavigation.TabNavigation="Continue">
+                    <ItemsControl.Style>
+                        <Style TargetType="ItemsControl"><Style.Triggers><DataTrigger Binding="{Binding UsesSenseGroups}" Value="False"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style>
+                    </ItemsControl.Style>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Expander x:Name="SenseGroupExpander" Header="{Binding Header}" IsExpanded="{Binding IsExpanded}" Margin="0,0,0,6"
                                       Visibility="{Binding HasMatches, Converter={StaticResource BoolVisibility}}">
                                 <ListBox ItemsSource="{Binding VisibleItems}" Background="Transparent" BorderThickness="0"
-                                         ScrollViewer.VerticalScrollBarVisibility="Disabled" KeyboardNavigation.TabNavigation="Continue">
-                                    <ListBox.ItemContainerStyle>
-                                        <Style TargetType="ListBoxItem">
-                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/>
-                                            <Setter Property="Margin" Value="0,0,0,6"/><Setter Property="Background" Value="Transparent"/>
-                                            <Setter Property="BorderThickness" Value="0"/><Setter Property="FocusVisualStyle" Value="{StaticResource Focus.Ring}"/>
-                                            <Setter Property="AutomationProperties.Name" Value="{Binding AutomationName}"/>
-                                        </Style>
-                                    </ListBox.ItemContainerStyle>
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border x:Name="RelationRowSurface" Background="{StaticResource Brush.SurfaceRaised}"
-                                                    BorderBrush="{StaticResource Brush.ControlBorder}" BorderThickness="1" CornerRadius="8" Padding="9">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                                    <StackPanel>
-                                                        <DockPanel LastChildFill="True">
-                                                            <Border DockPanel.Dock="Right" Background="{StaticResource Brush.AccentSurface}" CornerRadius="{StaticResource Radius.Badge}" Padding="7,3"><TextBlock Text="{Binding Badge}" FontSize="11" Foreground="{StaticResource Brush.AccentStrong}"/></Border>
-                                                            <StackPanel Orientation="Horizontal"><TextBlock Text="{Binding Word}" FontFamily="{StaticResource Font.Display}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="{Binding Phonetic}" Margin="8,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}"/></StackPanel>
-                                                        </DockPanel>
-                                                        <TextBlock Text="{Binding Chinese}" Margin="0,2,0,0" FontSize="12" TextWrapping="Wrap"/>
-                                                        <StackPanel x:Name="FullEvidence">
-                                                            <TextBlock Text="{Binding Contrast}" Margin="0,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}" TextWrapping="Wrap"/>
-                                                            <TextBlock Text="{Binding Collocation, StringFormat=搭配 · {0}}" Margin="0,2,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}" TextWrapping="Wrap"/>
-                                                        </StackPanel>
-                                                        <Expander x:Name="CompactEvidence" Header="辨析与搭配" Visibility="Collapsed" FontSize="11"
-                                                                  AutomationProperties.Name="展开辨析与搭配">
-                                                            <StackPanel>
-                                                                <TextBlock Text="{Binding Contrast}" TextWrapping="Wrap"/>
-                                                                <TextBlock Text="{Binding Collocation, StringFormat=搭配 · {0}}" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                                            </StackPanel>
-                                                        </Expander>
-                                                    </StackPanel>
-                                                    <StackPanel x:Name="ActionPanel" Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
-                                                        <Button Style="{StaticResource Button.Base}" Width="32" Height="32" MinHeight="32" Padding="7" IsEnabled="{Binding CanSpeak}" Click="Speak_Click" ToolTip="{Binding SpeakHelpText}" AutomationProperties.Name="{Binding SpeakAutomationName}" AutomationProperties.HelpText="{Binding SpeakHelpText}" TabIndex="21"><TextBlock Text="音" FontWeight="SemiBold"/></Button>
-                                                        <Button x:Name="DetailsInlineButton" Style="{StaticResource Button.Base}" Width="32" Height="32" MinHeight="32" Margin="0,4,0,0" Padding="7" IsEnabled="{Binding CanOpenDetails}" Click="Details_Click" ToolTip="{Binding DetailsHelpText}" AutomationProperties.Name="{Binding DetailsAutomationName}" AutomationProperties.HelpText="{Binding DetailsHelpText}" TabIndex="22"><TextBlock Text="详" FontWeight="SemiBold"/></Button>
-                                                    </StackPanel>
-                                                </Grid>
-                                                <Border.ContextMenu>
-                                                    <ContextMenu>
-                                                        <MenuItem Header="{Binding SpeakAutomationName}" IsEnabled="{Binding CanSpeak}" AutomationProperties.Name="{Binding SpeakAutomationName}" AutomationProperties.HelpText="{Binding SpeakHelpText}" Click="Speak_Click"/>
-                                                        <MenuItem Header="{Binding DetailsAutomationName}" IsEnabled="{Binding CanOpenDetails}" AutomationProperties.Name="{Binding DetailsAutomationName}" AutomationProperties.HelpText="{Binding DetailsHelpText}" Click="Details_Click"/>
-                                                        <Separator/><MenuItem Header="{Binding AddAutomationName}" IsEnabled="{Binding CanAddToLearning}" AutomationProperties.Name="{Binding AddAutomationName}" AutomationProperties.HelpText="{Binding AddHelpText}" Click="AddToLearning_Click"/>
-                                                    </ContextMenu>
-                                                </Border.ContextMenu>
-                                            </Border>
-                                            <DataTemplate.Triggers>
-                                                <DataTrigger Binding="{Binding IsCompact, RelativeSource={RelativeSource AncestorType={x:Type local:RelationDrawer}}}" Value="True">
-                                                    <Setter TargetName="FullEvidence" Property="Visibility" Value="Collapsed"/>
-                                                    <Setter TargetName="CompactEvidence" Property="Visibility" Value="Visible"/>
-                                                    <Setter TargetName="ActionPanel" Property="Orientation" Value="Horizontal"/>
-                                                    <Setter TargetName="ActionPanel" Property="VerticalAlignment" Value="Top"/>
-                                                    <Setter TargetName="DetailsInlineButton" Property="Margin" Value="4,0,0,0"/>
-                                                </DataTrigger>
-                                            </DataTemplate.Triggers>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled" KeyboardNavigation.TabNavigation="Continue"
+                                         AutomationProperties.Name="{Binding Header, StringFormat={}{0}结果列表}"
+                                         ItemContainerStyle="{StaticResource RelationListItemStyle}" ItemTemplate="{StaticResource RelationRowTemplate}">
                                 </ListBox>
                             </Expander>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
+                <ListBox x:Name="FlatResultsList" ItemsSource="{Binding FilteredItems}" Background="Transparent" BorderThickness="0"
+                         ScrollViewer.VerticalScrollBarVisibility="Disabled" KeyboardNavigation.TabNavigation="Continue"
+                         AutomationProperties.Name="易混词结果列表"
+                         ItemContainerStyle="{StaticResource RelationListItemStyle}" ItemTemplate="{StaticResource RelationRowTemplate}">
+                    <ListBox.Style>
+                        <Style TargetType="ListBox"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding UsesSenseGroups}" Value="False"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style>
+                    </ListBox.Style>
+                </ListBox>
+                </Grid>
             </ScrollViewer>
             <StackPanel x:Name="FooterPanel" Grid.Row="2" Margin="0,6,0,0">
                 <TextBlock Text="{Binding EmptyMessage}" HorizontalAlignment="Center" Padding="8" Foreground="{StaticResource Brush.InkMuted}" AutomationProperties.LiveSetting="Polite">

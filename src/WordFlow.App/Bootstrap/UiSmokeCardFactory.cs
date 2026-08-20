@@ -9,9 +9,9 @@ namespace WordFlow.App.Bootstrap;
 
 internal static class UiSmokeCardFactory
 {
-    public static FloatingCardViewModel CreateViewModel()
+    public static FloatingCardViewModel CreateViewModel(IFloatingCardActionHost? actionHost = null)
     {
-        var actionHost = new FloatingCardActionHost(
+        actionHost ??= new FloatingCardActionHost(
             CompletedPort((_, word) => $"已播放 {word} 的离线发音"),
             CompletedPort((_, word) => $"已打开 {word} 的完整词条"),
             CompletedPort((_, word) => $"已将 {word} 加入学习"));

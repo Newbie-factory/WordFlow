@@ -327,6 +327,12 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         if (isError) ErrorMessage = message;
     }
 
+    public void RequestCurrentDetailsFromSurface()
+    {
+        if (current is not { } card || IsPaused || IsBusy || disposed) return;
+        Dispatch(new(RelationActionKind.OpenDetails, card.Word.WordId, card.Word.Lemma));
+    }
+
     public void SetPaused(bool paused)
     {
         if (disposed || isPaused == paused) return;

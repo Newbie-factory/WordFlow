@@ -17,6 +17,13 @@ public sealed class FloatingCardAccessibilityTests
         Assert.True(Array.IndexOf(names, "PhoneticText") < Array.IndexOf(names, "ChineseText"));
         Assert.Contains("AgainButton", names);
         Assert.Contains("SynonymsButton", names);
+        var cardSurface = card.Descendants().Single(element => element.Name.LocalName == "AccessibleBorder" && (string?)element.Attribute(x + "Name") == "WindowSurface");
+        Assert.Equal("True", (string?)cardSurface.Attribute("Focusable"));
+        Assert.Equal("9", (string?)cardSurface.Attribute("KeyboardNavigation.TabIndex"));
+        Assert.False(string.IsNullOrWhiteSpace((string?)cardSurface.Attribute("AutomationProperties.Name")));
+        Assert.False(string.IsNullOrWhiteSpace((string?)cardSurface.Attribute("AutomationProperties.HelpText")));
+        var accessibleBorder = File.ReadAllText(Path.Combine(project, "Views", "Controls", "AccessibleBorder.cs"));
+        Assert.Contains("OnCreateAutomationPeer", accessibleBorder, StringComparison.Ordinal);
         Assert.All(card.Descendants(presentation + "Button"), button =>
             Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("AutomationProperties.Name"))));
         Assert.All(card.Descendants(presentation + "Button").Where(button => (string?)button.Attribute(x + "Name") is "WordText" or "CurrentDetailsButton"), button =>
@@ -33,6 +40,9 @@ public sealed class FloatingCardAccessibilityTests
         Assert.All(drawer.Descendants(presentation + "ListBoxItem"), item =>
             Assert.False(string.IsNullOrWhiteSpace((string?)item.Attribute("AutomationProperties.Name"))));
         Assert.Equal("搜索全部关系词", (string?)drawer.Descendants(presentation + "TextBox").Single().Attribute("AutomationProperties.Name"));
+        var flatResults = drawer.Descendants(presentation + "ListBox").Single(element => (string?)element.Attribute(x + "Name") == "FlatResultsList");
+        Assert.Equal("{Binding FilteredItems}", (string?)flatResults.Attribute("ItemsSource"));
+        Assert.Equal("易混词结果列表", (string?)flatResults.Attribute("AutomationProperties.Name"));
         Assert.Contains(drawer.Descendants(presentation + "Expander"), element => (string?)element.Attribute(x + "Name") == "CompactEvidence");
         Assert.All(drawer.Descendants(presentation + "MenuItem"), item =>
         {

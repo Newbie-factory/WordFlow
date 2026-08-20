@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using WordFlow.App.ViewModels;
@@ -55,6 +56,8 @@ public partial class FloatingCardWindow : Window
         ConfusablesDrawer.DesiredHeightChanged += (_, _) => ConfigureDrawer(ConfusablesDrawer);
         SynonymsDrawer.DismissRequested += (_, _) => DismissDrawer(SynonymsDrawer);
         ConfusablesDrawer.DismissRequested += (_, _) => DismissDrawer(ConfusablesDrawer);
+        WindowSurface.AddHandler(Mouse.MouseUpEvent, new MouseButtonEventHandler(CardSurface_MouseUp), handledEventsToo: true);
+        WindowSurface.AddHandler(Keyboard.KeyDownEvent, new KeyEventHandler(CardSurface_KeyDown), handledEventsToo: true);
 
         placementSaveTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
         placementSaveTimer.Tick += (_, _) => { placementSaveTimer.Stop(); SavePlacement(); };
@@ -190,6 +193,38 @@ public partial class FloatingCardWindow : Window
     {
         if (args.ChangedButton == MouseButton.Left && args.ButtonState == MouseButtonState.Pressed) DragMove();
     }
+    private void CardSurface_MouseUp(object sender, MouseButtonEventArgs args)
+    {
+        if (args.ChangedButton != MouseButton.Left || args.OriginalSource is not DependencyObject sourceElement) return;
+        var route = RouteToRoot(sourceElement).Select(element => new CardSurfaceInteractionPolicy.RouteNode(
+            element.GetType(),
+            ReferenceEquals(element, WindowSurface),
+            ReferenceEquals(element, DragRegion)));
+        if (!CardSurfaceInteractionPolicy.ShouldOpenDetails(route, args.Handled)) return;
+        args.Handled = true;
+        viewModel?.RequestCurrentDetailsFromSurface();
+    }
+
+    private void CardSurface_KeyDown(object sender, KeyEventArgs args)
+    {
+        var key = args.Key == Key.System ? args.SystemKey : args.Key;
+        if (args.Handled || !ReferenceEquals(args.OriginalSource, WindowSurface) || key is not (Key.Enter or Key.Space)) return;
+        args.Handled = true;
+        viewModel?.RequestCurrentDetailsFromSurface();
+    }
+
+    private static IEnumerable<DependencyObject> RouteToRoot(DependencyObject origin)
+    {
+        for (DependencyObject? current = origin; current is not null; current = ParentOf(current)) yield return current;
+    }
+
+    private static DependencyObject? ParentOf(DependencyObject element) => element switch
+    {
+        FrameworkContentElement content => content.Parent,
+        ContentElement content => ContentOperations.GetParent(content),
+        Visual or Visual3D => VisualTreeHelper.GetParent(element),
+        _ => LogicalTreeHelper.GetParent(element),
+    };
     private void OnPreviewKeyDown(object sender, KeyEventArgs args)
     {
         if (focusedShortcuts is null) return;

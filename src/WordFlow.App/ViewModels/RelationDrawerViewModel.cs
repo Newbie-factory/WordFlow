@@ -118,6 +118,7 @@ public sealed class RelationDrawerViewModel : INotifyPropertyChanged, IDisposabl
 
     public string Title { get; }
     public string NoResultsMessage { get; }
+    public bool UsesSenseGroups => usesSenseGroups;
     public Guid? CurrentWordId => wordId;
     public IReadOnlyList<RelationItemViewModel> AllItems => allItems;
     public IReadOnlyList<RelationGroupViewModel> Groups => groups;
@@ -163,7 +164,7 @@ public sealed class RelationDrawerViewModel : INotifyPropertyChanged, IDisposabl
                     wordId = currentWordId;
                     loadedPrimarySense = primarySense;
                     allItems = success.Value.Select(data => new RelationItemViewModel(data, Publish, actionHost)).ToArray();
-                    groups = BuildGroups(allItems, primarySense);
+                    groups = usesSenseGroups ? BuildGroups(allItems, primarySense) : [];
                     searchText = "";
                     OnPropertyChanged(nameof(SearchText));
                     NotifyItemsChanged();
@@ -200,9 +201,6 @@ public sealed class RelationDrawerViewModel : INotifyPropertyChanged, IDisposabl
         var grouped = items.GroupBy(item => (item.Data.SourceSenseId, item.Data.PartOfSpeech, item.Data.SourceDefinition))
             .Select(group => new { group.Key, Items = (IReadOnlyList<RelationItemViewModel>)group.ToArray() }).ToArray();
         if (grouped.Length == 0) return [];
-        if (!usesSenseGroups)
-            return grouped.Select((group, index) => new RelationGroupViewModel(group.Key.SourceSenseId, group.Key.PartOfSpeech, group.Key.SourceDefinition, group.Items, index == 0, false)).ToArray();
-
         var matching = primarySense is null ? null : grouped.FirstOrDefault(group =>
             (!string.IsNullOrWhiteSpace(primarySense.SenseId) && string.Equals(group.Key.SourceSenseId, primarySense.SenseId, StringComparison.Ordinal)) ||
             (Normalize(group.Key.SourceDefinition) == Normalize(primarySense.Definition) && Normalize(group.Key.PartOfSpeech) == Normalize(primarySense.PartOfSpeech)));

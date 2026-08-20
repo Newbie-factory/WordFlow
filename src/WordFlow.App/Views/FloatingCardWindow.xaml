@@ -8,8 +8,11 @@
         SnapsToDevicePixels="True" UseLayoutRounding="True"
         AutomationProperties.Name="WordFlow 悬浮学习卡">
     <Grid>
-    <Border x:Name="WindowSurface" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.ControlBorder}"
-            BorderThickness="1" CornerRadius="{StaticResource Radius.Card}" Effect="{StaticResource Shadow.Card}">
+    <controls:AccessibleBorder x:Name="WindowSurface" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.ControlBorder}"
+            BorderThickness="1" CornerRadius="{StaticResource Radius.Card}" Effect="{StaticResource Shadow.Card}"
+            Focusable="True" KeyboardNavigation.TabIndex="9" FocusVisualStyle="{StaticResource Focus.Ring}"
+            AutomationProperties.Name="打开当前学习卡详情"
+            AutomationProperties.HelpText="{Binding DetailsAvailabilityHelp}">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
@@ -129,7 +132,7 @@
                            AutomationProperties.LiveSetting="Polite" />
             </StackPanel>
         </Grid>
-    </Border>
+    </controls:AccessibleBorder>
     <Popup x:Name="SynonymsPopup" PlacementTarget="{Binding ElementName=WindowSurface}" Placement="Bottom" StaysOpen="True"
            AllowsTransparency="True" IsOpen="{Binding Synonyms.IsOpen, Mode=OneWay}" PopupAnimation="None">
         <controls:RelationDrawer x:Name="SynonymsDrawer" DataContext="{Binding Synonyms}" />

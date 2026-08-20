@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [int]$WorkAreaHeightPx = 0
+    [int]$WorkAreaHeightPx = 0,
+    [switch]$ProductionMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +14,9 @@ $executable = $candidates | Where-Object { Test-Path -LiteralPath $_ } | ForEach
     Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty FullName
 if (-not $executable) { throw "Build the $Configuration WordFlow.App executable before running the UI smoke." }
 
-$suffix = if ($WorkAreaHeightPx -gt 0) { "-constrained" } else { "" }
+$modeSuffix = if ($ProductionMode) { "" } else { "-capability" }
+$areaSuffix = if ($WorkAreaHeightPx -gt 0) { "-constrained" } else { "" }
+$suffix = "$modeSuffix$areaSuffix"
 $screenshot = Join-Path $repositoryRoot ".superpowers\sdd\task-11-visual$suffix.png"
 $evidence = Join-Path $repositoryRoot ".superpowers\sdd\task-11-ui-smoke$suffix.json"
 
@@ -65,6 +68,10 @@ $n = @{
     RowAddStatus = U '5bey5bCGIHByZWNpc2Ug5Yqg5YWl5a2m5Lmg'
     SearchMatch = U 'c2NydXB1bG91c++8m+mfs+aghyAvc2FtcGxlLTMv'
     Paused = U '5a2m5Lmg5bey5pqC5YGc'
+    CardSurface = U '5omT5byA5b2T5YmN5a2m5Lmg5Y2h6K+m5oOF'
+    Unavailable = U '5Yqf6IO95bCG5Zyo5a+55bqU56a757q/5qih5Z2X5bCx57uq5ZCO5Y+v55So'
+    FlatList = U '5piT5re36K+N57uT5p6c5YiX6KGo'
+    ConfusableRowPrefix = 'methodical'
 }
 
 function Wait-ForElement {
@@ -129,6 +136,7 @@ function Assert-FocusPrefix([string]$Prefix) {
 $process = $null
 try {
     $arguments = @("--ui-smoke")
+    if ($ProductionMode) { $arguments += "--ui-smoke-production" }
     if ($WorkAreaHeightPx -gt 0) { $arguments += "--ui-smoke-work-area-height=$WorkAreaHeightPx" }
     $process = Start-Process -FilePath $executable -ArgumentList $arguments -PassThru
     $desktop = [System.Windows.Automation.AutomationElement]::RootElement
@@ -161,6 +169,27 @@ try {
     $wordBefore = $word.Current.Name
     $mainBefore = $window.Current.BoundingRectangle
 
+    $productionUnavailableVerified = $false
+    if ($ProductionMode) {
+        $detailsButton = Find-PidNamePrefix $desktop $process.Id $n.DetailsPrefix
+        $surface = Find-PidName $desktop $process.Id $n.CardSurface
+        if ($word.Current.IsEnabled -or $detailsButton.Current.IsEnabled) { throw "Production speech/details controls must be disabled without an owner." }
+        if ($word.Current.HelpText -ne $n.Unavailable -or $detailsButton.Current.HelpText -ne $n.Unavailable -or $surface.Current.HelpText -ne $n.Unavailable) {
+            throw "Production action controls must expose the truthful unavailable help text."
+        }
+        $chineseBounds = $chinese.Current.BoundingRectangle
+        $null = [WordFlowSmokeNative]::SetCursorPos([int]($chineseBounds.Left + $chineseBounds.Width / 2), [int]($chineseBounds.Top + $chineseBounds.Height / 2))
+        [WordFlowSmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        [WordFlowSmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        $null = Find-PidName $desktop $process.Id $n.Unavailable
+        $surface.SetFocus()
+        $null = Assert-FocusPrefix $n.CardSurface
+        $null = [WordFlowSmokeNative]::SendMessage($nativeHandle, 0x0100, [IntPtr]13, [IntPtr]0)
+        $null = [WordFlowSmokeNative]::SendMessage($nativeHandle, 0x0101, [IntPtr]13, [IntPtr]0)
+        $null = Find-PidName $desktop $process.Id $n.Unavailable
+        $productionUnavailableVerified = $true
+    }
+
     $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]3, [IntPtr]0)
     $pauseDeadline = [DateTime]::UtcNow.AddSeconds(5)
     $good = Find-PidNamePrefix $desktop $process.Id $n.Good
@@ -172,8 +201,13 @@ try {
     while (-not $good.Current.IsEnabled -and [DateTime]::UtcNow -lt $resumeDeadline) { Start-Sleep -Milliseconds 50 }
     if (-not $good.Current.IsEnabled) { throw "Resume did not restore learning commands." }
 
-    $tabPrefixes = @($n.WordPrefix, $n.DetailsPrefix, $n.Again, $n.Hard, $n.Good, $n.Slash, $n.Synonyms, $n.Confusables)
-    $word.SetFocus()
+    $tabPrefixes = if ($ProductionMode) {
+        @($n.Again, $n.Hard, $n.Good, $n.Slash, $n.Synonyms, $n.Confusables)
+    } else {
+        @($n.WordPrefix, $n.DetailsPrefix, $n.Again, $n.Hard, $n.Good, $n.Slash, $n.Synonyms, $n.Confusables)
+    }
+    $tabStart = if ($ProductionMode) { Find-PidNamePrefix $desktop $process.Id $n.Again } else { $word }
+    $tabStart.SetFocus()
     Start-Sleep -Milliseconds 200
     $tabNames = @((Assert-FocusPrefix $tabPrefixes[0]))
     for ($index = 1; $index -lt $tabPrefixes.Count; $index++) {
@@ -193,8 +227,10 @@ try {
     $tabNames += Assert-FocusPrefix $n.Undo
 
     $word = Find-PidNamePrefix $desktop $process.Id $n.WordPrefix
-    Invoke-Element $word
-    $null = Find-PidName $desktop $process.Id $n.SpeechStatus
+    if (-not $ProductionMode) {
+        Invoke-Element $word
+        $null = Find-PidName $desktop $process.Id $n.SpeechStatus
+    }
 
     Invoke-Element (Find-PidName $desktop $process.Id $n.Synonyms)
     $synonymResults = Find-PidName $desktop $process.Id $n.Results
@@ -211,8 +247,11 @@ try {
     $popupTabGroup = Assert-FocusPrefix $n.Group
     [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
     $popupTabRow = Assert-FocusPrefix $n.RowPrefix
-    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-    $popupTabAction = Assert-FocusPrefix $n.RowSpeak
+    $popupTabAction = ""
+    if (-not $ProductionMode) {
+        [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+        $popupTabAction = Assert-FocusPrefix $n.RowSpeak
+    }
     [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
     Start-Sleep -Milliseconds 200
     $openAfterEscape = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
@@ -224,24 +263,35 @@ try {
     $synonymResults = Find-PidName $desktop $process.Id $n.Results
     $row = Find-PidNamePrefix $desktop $process.Id $n.RowPrefix
     if (-not $row.Current.Name.Contains($n.Contrast) -or -not $row.Current.Name.Contains($n.Collocation)) { throw "Relation row lacks contextual evidence." }
-    $rowSpeak = Find-PidName $desktop $process.Id $n.RowSpeak
-    $null = Find-PidName $desktop $process.Id $n.RowDetails
-    Invoke-Element $rowSpeak
-    $null = Find-PidName $desktop $process.Id $n.RowSpeechStatus
+    $rowSpeak = Find-PidNameType $desktop $process.Id $n.RowSpeak ([System.Windows.Automation.ControlType]::Button)
+    $rowDetails = Find-PidNameType $desktop $process.Id $n.RowDetails ([System.Windows.Automation.ControlType]::Button)
+    if ($ProductionMode) {
+        if ($rowSpeak.Current.IsEnabled -or $rowDetails.Current.IsEnabled) { throw "Production relation actions must be disabled without an owner." }
+        if ($rowSpeak.Current.HelpText -ne $n.Unavailable -or $rowDetails.Current.HelpText -ne $n.Unavailable) { throw "Disabled relation actions lack unavailable help." }
+    } else {
+        Invoke-Element $rowSpeak
+        $null = Find-PidName $desktop $process.Id $n.RowSpeechStatus
+    }
 
     $rowBounds = $row.Current.BoundingRectangle
     $null = [WordFlowSmokeNative]::SetCursorPos([int]($rowBounds.Left + $rowBounds.Width / 2), [int]($rowBounds.Top + $rowBounds.Height / 2))
     [WordFlowSmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
     [WordFlowSmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
     $contextDetails = Find-PidNameType $desktop $process.Id $n.RowDetails ([System.Windows.Automation.ControlType]::MenuItem)
-    $null = Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem)
-    Invoke-Element $contextDetails
-    $null = Find-PidName $desktop $process.Id (U '5bey5omT5byAIHByZWNpc2Ug55qE5a6M5pW06K+N5p2h')
-    $null = [WordFlowSmokeNative]::SetCursorPos([int]($rowBounds.Left + $rowBounds.Width / 2), [int]($rowBounds.Top + $rowBounds.Height / 2))
-    [WordFlowSmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
-    [WordFlowSmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
-    Invoke-Element (Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem))
-    $null = Find-PidName $desktop $process.Id $n.RowAddStatus
+    $contextAdd = Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem)
+    if ($ProductionMode) {
+        if ($contextDetails.Current.IsEnabled -or $contextAdd.Current.IsEnabled) { throw "Production context actions must be disabled without an owner." }
+        if ($contextDetails.Current.HelpText -ne $n.Unavailable -or $contextAdd.Current.HelpText -ne $n.Unavailable) { throw "Disabled context actions lack unavailable help." }
+        [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+    } else {
+        Invoke-Element $contextDetails
+        $null = Find-PidName $desktop $process.Id (U '5bey5omT5byAIHByZWNpc2Ug55qE5a6M5pW06K+N5p2h')
+        $null = [WordFlowSmokeNative]::SetCursorPos([int]($rowBounds.Left + $rowBounds.Width / 2), [int]($rowBounds.Top + $rowBounds.Height / 2))
+        [WordFlowSmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+        [WordFlowSmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+        Invoke-Element (Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem))
+        $null = Find-PidName $desktop $process.Id $n.RowAddStatus
+    }
 
     $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]1, [IntPtr]0)
     $hideDeadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -258,10 +308,24 @@ try {
 
     Invoke-Element (Find-PidName $desktop $process.Id $n.Confusables)
     Start-Sleep -Milliseconds 300
+    $confusableSearch = Find-PidName $desktop $process.Id $n.Search
+    if (-not $confusableSearch.Current.HasKeyboardFocus) { throw "Opening F5 did not focus its search box." }
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $f5TabResults = Assert-FocusPrefix $n.Results
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $f5TabFlatList = Assert-FocusPrefix $n.FlatList
+    $f5FocusedRow = [System.Windows.Automation.AutomationElement]::FocusedElement
+    $f5TabRow = $f5FocusedRow.Current.Name
+    if ($f5FocusedRow.Current.ProcessId -ne $process.Id -or [string]::IsNullOrWhiteSpace($f5TabRow)) { throw "F5 Tab traversal landed on an unlabeled or foreign element." }
     $visibleResults = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id), (Name-Condition $n.Results))) |
         Where-Object { -not $_.Current.IsOffscreen }
     if ($visibleResults.Count -ne 1) { throw "Exactly one relation drawer must be visible." }
+    $focusablePopupPeers = @($visibleResults[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.IsKeyboardFocusable -and -not $_.Current.IsOffscreen })
+    $unnamedPopupPeers = @($focusablePopupPeers | Where-Object { [string]::IsNullOrWhiteSpace($_.Current.Name) })
+    if ($unnamedPopupPeers.Count -ne 0) { throw "F5 exposed $($unnamedPopupPeers.Count) unlabeled focusable popup peer(s)." }
+    if (-not ($focusablePopupPeers.Current.Name -contains $n.FlatList)) { throw "F5 did not expose its named flat results list." }
     $resultsBounds = $visibleResults[0].Current.BoundingRectangle
     $visibleRows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id),
@@ -345,12 +409,13 @@ try {
     } finally { $bitmap.Dispose() }
 
     $result = [ordered]@{
-        pid = $process.Id; executable = $executable; window = $window.Current.Name
+        pid = $process.Id; executable = $executable; window = $window.Current.Name; mode = $(if ($ProductionMode) { "production-unavailable" } else { "injected-capability" })
         word_before = $wordBefore; word_after = $word.Current.Name
         phonetic_name = $phonetic.Current.Name; chinese_name = $chinese.Current.Name
-        tab_order = $tabNames; popup_tab_order = @($search.Current.Name, $popupTabResults, $popupTabGroup, $popupTabRow, $popupTabAction); contextual_row = $row.Current.Name
+        tab_order = $tabNames; popup_tab_order = @($search.Current.Name, $popupTabResults, $popupTabGroup, $popupTabRow, $popupTabAction) | Where-Object { $_ }
+        f5_popup_tab_order = @($confusableSearch.Current.Name, $f5TabResults, $f5TabFlatList, $f5TabRow); f5_unlabeled_focusable_peers = $unnamedPopupPeers.Count; contextual_row = $row.Current.Name
         one_drawer_visible = $true; internal_scroll = $true; stable_window_bounds = $true
-        pause_gated = $true; escape_returned_to_main = $true; hide_restore_closed_popup = $true; popup_topmost_suppressed_and_restored = $true
+        pause_gated = $true; escape_returned_to_main = $true; hide_restore_closed_popup = $true; popup_topmost_suppressed_and_restored = $true; production_unavailable_verified = $productionUnavailableVerified
         complete_visible_rows = $completeRows.Count; clipped_visible_rows = $clippedRows.Count
         work_area_height_limit_px = $WorkAreaHeightPx; screenshot = $screenshot
     }

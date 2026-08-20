@@ -1,4 +1,5 @@
 using WordFlow.App.Bootstrap;
+using WordFlow.App.ViewModels;
 using WordFlow.App.Views.Controls;
 using WordFlow.Application.Shortcuts;
 
@@ -10,7 +11,7 @@ public sealed class FloatingCardUiSmokeModelTests
     public void Drawer_viewport_uses_at_most_five_measured_rows_and_available_work_area()
     {
         Assert.Equal(294, RelationDrawerViewport.Measure([52, 56, 58, 60, 64, 90], availableHeight: 500, rowGap: 1));
-        Assert.Equal(180, RelationDrawerViewport.Measure([52, 56, 58, 60, 64, 90], availableHeight: 180, rowGap: 1));
+        Assert.Equal(168, RelationDrawerViewport.Measure([52, 56, 58, 60, 64, 90], availableHeight: 180, rowGap: 1));
         Assert.Equal(0, RelationDrawerViewport.Measure([], availableHeight: 180, rowGap: 1));
     }
 
@@ -42,5 +43,20 @@ public sealed class FloatingCardUiSmokeModelTests
 
         Assert.True(viewModel.Confusables.AllItems.Count > 5);
         Assert.Equal(word, viewModel.Word);
+    }
+
+    [Fact]
+    public async Task Production_automation_fixture_uses_the_truthful_unavailable_action_host()
+    {
+        using var viewModel = UiSmokeCardFactory.CreateViewModel(FloatingCardActionHost.Unavailable);
+        await viewModel.InitializeAsync();
+
+        Assert.False(viewModel.CanSpeakCurrentWord);
+        Assert.False(viewModel.CanOpenCurrentDetails);
+        Assert.Equal("功能将在对应离线模块就绪后可用", viewModel.DetailsAvailabilityHelp);
+
+        viewModel.RequestCurrentDetailsFromSurface();
+
+        Assert.Equal("功能将在对应离线模块就绪后可用", viewModel.AccessibleStatus);
     }
 }

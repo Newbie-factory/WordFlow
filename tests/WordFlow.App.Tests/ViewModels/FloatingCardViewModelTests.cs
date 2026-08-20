@@ -173,6 +173,33 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Blank_card_details_action_reports_unavailable_truth_or_dispatches_the_registered_owner()
+    {
+        using var unavailableLabels = new ShortcutLabelMap(new FakeShortcutService());
+        using var unavailable = CreateViewModel(unavailableLabels, Card(1, "abate", "/əˈbeɪt/", "减轻"));
+        await unavailable.InitializeAsync();
+
+        unavailable.RequestCurrentDetailsFromSurface();
+
+        Assert.Equal("功能将在对应离线模块就绪后可用", unavailable.AccessibleStatus);
+
+        var calls = new List<string>();
+        var host = new FloatingCardActionHost(details: new FakeActionPort((_, word) =>
+        {
+            calls.Add(word);
+            return FloatingCardActionResult.Completed($"已打开 {word} 的完整词条");
+        }));
+        using var availableLabels = new ShortcutLabelMap(new FakeShortcutService());
+        using var available = CreateViewModel(availableLabels, Card(1, "abate", "/əˈbeɪt/", "减轻"), actionHost: host);
+        await available.InitializeAsync();
+
+        available.RequestCurrentDetailsFromSurface();
+
+        Assert.Equal(["abate"], calls);
+        Assert.Equal("已打开 abate 的完整词条", available.AccessibleStatus);
+    }
+
+    [Fact]
     public void Registered_action_ports_report_their_real_result_and_observable_side_effect()
     {
         var calls = new List<string>();
