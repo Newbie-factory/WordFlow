@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using WordFlow.Application;
 using WordFlow.Application.Learning;
+using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
 using WordFlow.Domain.Learning;
 
@@ -21,6 +22,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private readonly ShortcutLabelMap shortcutLabels;
     private readonly DailyPlan plan;
     private readonly IFloatingCardActionHost actionHost;
+    private readonly ICardPronunciationPlayback? pronunciation;
     private NextCard? current;
     private string? errorMessage;
     private string accessibleStatus = "准备学习";
@@ -37,17 +39,20 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         RelationDrawerViewModel confusables,
         ShortcutLabelMap shortcutLabels,
         IFloatingCardActionHost? actionHost = null,
-        DailyPlan? plan = null)
+        DailyPlan? plan = null,
+        ICardPronunciationPlayback? pronunciation = null)
     {
         this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
         Synonyms = synonyms ?? throw new ArgumentNullException(nameof(synonyms));
         Confusables = confusables ?? throw new ArgumentNullException(nameof(confusables));
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
         this.actionHost = actionHost ?? FloatingCardActionHost.Unavailable;
+        this.pronunciation = pronunciation;
         this.plan = plan ?? DailyPlan.Default;
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
         Synonyms.ActionRequested += OnRelationActionRequested;
         Confusables.ActionRequested += OnRelationActionRequested;
+        if (pronunciation is not null) pronunciation.PlaybackFeedback += OnPronunciationFeedback;
 
         AgainCommand = Command(() => RateAsync(RatingShortcut.F1), () => CanRate);
         HardCommand = Command(() => RateAsync(RatingShortcut.F2), () => CanRate);
@@ -72,7 +77,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public bool IsPaused => isPaused;
     public bool CanSpeakCurrentWord => actionHost.Capability(RelationActionKind.Speak).IsAvailable;
     public bool CanOpenCurrentDetails => actionHost.Capability(RelationActionKind.OpenDetails).IsAvailable;
-    public string SpeakAvailabilityHelp => actionHost.Capability(RelationActionKind.Speak).HelpText;
+    public string SpeakAvailabilityHelp => $"{actionHost.Capability(RelationActionKind.Speak).HelpText} · 快捷键 {PronunciationGesture}";
     public string DetailsAvailabilityHelp => actionHost.Capability(RelationActionKind.OpenDetails).HelpText;
     public bool IsBusy
     {
@@ -107,6 +112,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public string SynonymsGesture => Label(ShortcutAction.ToggleSynonyms);
     public string ConfusablesGesture => Label(ShortcutAction.ToggleConfusables);
     public string UndoGesture => Label(ShortcutAction.Undo);
+    public string PronunciationGesture => Label(ShortcutAction.Pronounce);
 
     public ICommand AgainCommand { get; }
     public ICommand HardCommand { get; }
@@ -203,6 +209,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             case ShortcutAction.ToggleSynonyms: await ToggleDrawerAsync(Synonyms, ct); break;
             case ShortcutAction.ToggleConfusables: await ToggleDrawerAsync(Confusables, ct); break;
             case ShortcutAction.Undo: await UndoAsync(ct); break;
+            case ShortcutAction.Pronounce: PublishCurrent(RelationActionKind.Speak); break;
             default: throw new ArgumentOutOfRangeException(nameof(action), action, "Unknown card action.");
         }
     }
@@ -216,6 +223,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         shortcutLabels.PropertyChanged -= OnShortcutLabelsChanged;
         Synonyms.ActionRequested -= OnRelationActionRequested;
         Confusables.ActionRequested -= OnRelationActionRequested;
+        if (pronunciation is not null)
+        {
+            pronunciation.PlaybackFeedback -= OnPronunciationFeedback;
+            pronunciation.Stop();
+        }
         Synonyms.Dispose();
         Confusables.Dispose();
         shortcutLabels.Dispose();
@@ -284,6 +296,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     {
         generation++;
         current = next;
+        pronunciation?.OnCardChanged(next?.Word.WordId, next?.Word.Lemma, IsPaused);
         OnPropertyChanged(nameof(Word));
         OnPropertyChanged(nameof(Phonetic));
         OnPropertyChanged(nameof(Chinese));
@@ -310,6 +323,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SynonymsGesture));
         OnPropertyChanged(nameof(ConfusablesGesture));
         OnPropertyChanged(nameof(UndoGesture));
+        OnPropertyChanged(nameof(PronunciationGesture));
+        OnPropertyChanged(nameof(SpeakAvailabilityHelp));
     }
 
     private void RaiseCommandStates()
@@ -337,6 +352,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     {
         if (disposed || isPaused == paused) return;
         isPaused = paused;
+        pronunciation?.SetPaused(paused);
         OnPropertyChanged(nameof(IsPaused));
         OnPropertyChanged(nameof(CanRate));
         if (paused)
@@ -359,6 +375,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private void OnRelationActionRequested(object? sender, RelationActionRequestedEventArgs args) => Dispatch(args);
+    private void OnPronunciationFeedback(object? sender, PronunciationPlaybackResult result) =>
+        ReportActionFeedback(result.Message, result.Status == PronunciationPlaybackStatus.Failed);
     private void Dispatch(RelationActionRequestedEventArgs args)
     {
         ActionRequested?.Invoke(this, args);

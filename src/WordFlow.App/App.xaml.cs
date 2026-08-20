@@ -108,7 +108,18 @@ public partial class App : System.Windows.Application
         var shortcutFaults = new ShortcutCallbackFaultHub();
         shortcutFaults.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
-        cardActionHost = FloatingCardActionHost.Unavailable;
+        var pronunciation = services.GetRequiredService<PronunciationSettingsViewModel>();
+        try
+        {
+            pronunciation.RestoreAsync(lifetime.Token).GetAwaiter().GetResult();
+            if (pronunciation.SettingsIssue is not null)
+                WriteLifecycle("pronunciation-settings-sanitized");
+        }
+        catch (Exception exception)
+        {
+            WriteLifecycle($"pronunciation-setting-read-fault type={exception.GetType().Name}");
+        }
+        cardActionHost = new FloatingCardActionHost(offlineSpeech: pronunciation);
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
             services.GetRequiredService<SubmitRating>(),
@@ -117,7 +128,8 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<GetSynonyms>(),
             services.GetRequiredService<GetConfusables>(),
             new ShortcutLabelMap(shortcutService),
-            cardActionHost);
+            cardActionHost,
+            pronunciation);
         var paths = services.GetRequiredService<AppPaths>();
         card = new FloatingCardWindow(
             viewModel,
@@ -138,7 +150,7 @@ public partial class App : System.Windows.Application
         };
         card.RelationActionRequested += (_, request) =>
         {
-            WriteLifecycle($"card-action-unavailable action={request.Action} word={request.Word}");
+            WriteLifecycle($"card-action-requested action={request.Action} word={request.Word}");
         };
         card.Closing += (_, args) =>
         {

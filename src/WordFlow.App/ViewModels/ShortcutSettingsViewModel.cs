@@ -217,7 +217,7 @@ public sealed class ShortcutLabelMap : INotifyPropertyChanged, IDisposable
     }
 
     private static string Format(ShortcutBinding binding) =>
-        binding.IsEnabled ? binding.DisplayText : $"Disabled · {binding.DisplayText}";
+        !binding.Chord.IsAssigned ? "未分配" : binding.IsEnabled ? binding.DisplayText : $"Disabled · {binding.DisplayText}";
 }
 
 public sealed class FocusedShortcutBindingBridge : IDisposable

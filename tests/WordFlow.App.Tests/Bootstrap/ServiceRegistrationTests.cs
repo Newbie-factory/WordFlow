@@ -1,5 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
+using WordFlow.App.ViewModels;
+using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
 
 namespace WordFlow.App.Tests.Bootstrap;
@@ -23,6 +25,22 @@ public sealed class ServiceRegistrationTests : IDisposable
 
         Assert.Single(Directory.GetFiles(paths.BackupsDirectory, "wordflow.sqlite3.v1.*.backup"));
         Assert.Empty(Directory.GetFiles(paths.DataDirectory, "wordflow.sqlite3.v1.*.backup"));
+    }
+
+    [Fact]
+    public async Task Primary_services_own_one_offline_pronunciation_service_and_its_settings_model()
+    {
+        var paths = new AppPaths(Path.Combine(root, "pronunciation"), Path.Combine(root, "bundle"));
+        paths.Initialize();
+        using ServiceProvider services = ServiceRegistration.BuildPrimaryServices(paths);
+        await services.GetRequiredService<MigrationRunner>().MigrateAsync(default);
+
+        var service = services.GetRequiredService<IPronunciationService>();
+        var settings = services.GetRequiredService<PronunciationSettingsViewModel>();
+
+        Assert.Same(service, services.GetRequiredService<IPronunciationService>());
+        Assert.Same(settings, services.GetRequiredService<PronunciationSettingsViewModel>());
+        Assert.DoesNotContain("http", service.Availability.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FindRepositoryRoot()

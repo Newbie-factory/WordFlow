@@ -144,6 +144,24 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Configured_pronunciation_shortcut_uses_the_same_current_word_action()
+    {
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var spoken = new List<string>();
+        var host = new FloatingCardActionHost(offlineSpeech: new FakeActionPort((_, word) =>
+        {
+            spoken.Add(word);
+            return FloatingCardActionResult.Completed("started");
+        }));
+        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"), actionHost: host);
+        await viewModel.InitializeAsync();
+
+        await viewModel.HandleShortcutAsync(ShortcutAction.Pronounce);
+
+        Assert.Equal(["abate"], spoken);
+    }
+
+    [Fact]
     public async Task Unexpected_and_cancelled_command_failures_are_observed_and_announced()
     {
         using var labels = new ShortcutLabelMap(new FakeShortcutService());
@@ -278,11 +296,37 @@ public sealed class FloatingCardViewModelTests
         Assert.Equal("学习已暂停", viewModel.AccessibleStatus);
     }
 
+    [Fact]
+    public async Task Autoplay_is_requested_once_for_initial_and_successful_new_cards_but_never_for_failure_or_pause()
+    {
+        var playback = new RecordingCardPronunciation();
+        var first = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        var second = Card(2, "bolster", "/ˈbəʊlstə/", "支持");
+        int calls = 0;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, first,
+            submit: (_, _) => ++calls == 1
+                ? Task.FromResult<UseCaseResult<LearningTransition>>(new StorageFailure<LearningTransition>("busy"))
+                : Task.FromResult<UseCaseResult<LearningTransition>>(new Success<LearningTransition>(new(second.Card, second))),
+            pronunciation: playback);
+
+        await viewModel.InitializeAsync();
+        await viewModel.RateAsync(RatingShortcut.F3);
+        viewModel.SetPaused(true);
+        await viewModel.RateAsync(RatingShortcut.F3);
+        viewModel.SetPaused(false);
+        await viewModel.RateAsync(RatingShortcut.F3);
+
+        Assert.Equal(["abate", "bolster"], playback.CardWords.Where(word => word is not null));
+        Assert.Contains(true, playback.PauseStates);
+    }
+
     private static FloatingCardViewModel CreateViewModel(
         ShortcutLabelMap labels,
         NextCard initial,
         Func<SubmitRatingRequest, CancellationToken, Task<UseCaseResult<LearningTransition>>>? submit = null,
-        IFloatingCardActionHost? actionHost = null)
+        IFloatingCardActionHost? actionHost = null,
+        ICardPronunciationPlayback? pronunciation = null)
     {
         var operations = new FloatingCardOperations(
             (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)),
@@ -291,7 +335,7 @@ public sealed class FloatingCardViewModelTests
             (_, _) => Task.FromResult<UseCaseResult<CardState>>(new Success<CardState>(initial.Card)));
         var synonyms = EmptyDrawer("近义辨析", "暂无可靠近义词");
         var confusables = EmptyDrawer("形近易混", "暂无可靠易混词");
-        return new FloatingCardViewModel(operations, synonyms, confusables, labels, actionHost);
+        return new FloatingCardViewModel(operations, synonyms, confusables, labels, actionHost, pronunciation: pronunciation);
     }
 
     private static IFloatingCardActionHost AvailableHost() => new FloatingCardActionHost(
@@ -336,5 +380,15 @@ public sealed class FloatingCardViewModelTests
     private sealed class FakeActionPort(Func<Guid, string, FloatingCardActionResult> execute) : IFloatingCardActionPort
     {
         public FloatingCardActionResult Execute(Guid wordId, string word) => execute(wordId, word);
+    }
+
+    private sealed class RecordingCardPronunciation : ICardPronunciationPlayback
+    {
+        public List<string?> CardWords { get; } = [];
+        public List<bool> PauseStates { get; } = [];
+        public event EventHandler<PronunciationPlaybackResult>? PlaybackFeedback { add { } remove { } }
+        public void OnCardChanged(Guid? wordId, string? word, bool isPaused) => CardWords.Add(word);
+        public void SetPaused(bool paused) => PauseStates.Add(paused);
+        public void Stop() => CardWords.Add(null);
     }
 }

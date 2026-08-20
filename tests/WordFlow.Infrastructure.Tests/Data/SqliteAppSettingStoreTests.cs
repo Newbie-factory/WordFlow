@@ -21,5 +21,19 @@ public sealed class SqliteAppSettingStoreTests : IDisposable
         Assert.False(await new SqliteAppSettingStore(factory).GetBooleanAsync("floating_card.suppress_topmost_fullscreen", true, default));
     }
 
+    [Fact]
+    public async Task Multiple_settings_commit_atomically()
+    {
+        var factory = new SqliteConnectionFactory(Path.Combine(directory, "atomic-user.db"));
+        await new MigrationRunner(factory).MigrateAsync(default);
+        var settings = new SqliteAppSettingStore(factory);
+
+        await settings.SetManyAsync(new Dictionary<string, string> { ["a"] = "1", ["b"] = "2" }, default);
+        var restored = await settings.GetManyAsync(["a", "b"], default);
+
+        Assert.Equal("1", restored["a"]);
+        Assert.Equal("2", restored["b"]);
+    }
+
     public void Dispose() => Directory.Delete(directory, recursive: true);
 }

@@ -9,6 +9,19 @@ namespace WordFlow.App.Tests.ViewModels;
 public sealed class ShortcutSettingsViewModelTests
 {
     [Fact]
+    public void Pronunciation_is_configurable_but_has_no_invented_default_key()
+    {
+        var binding = ShortcutDefaults.For(ShortcutAction.Pronounce);
+
+        Assert.False(binding.IsEnabled);
+        Assert.False(binding.Chord.IsAssigned);
+        Assert.Equal("未分配", binding.DisplayText);
+        Assert.Equal("disabled|focused|Unassigned", binding.ToString());
+        Assert.True(ShortcutBinding.TryParse(binding.ToString(), out var restored));
+        Assert.Equal(binding, restored);
+    }
+
+    [Fact]
     public void Recorder_rows_show_normalized_chord_scope_and_enable_state()
     {
         var service = new FakeShortcutService();

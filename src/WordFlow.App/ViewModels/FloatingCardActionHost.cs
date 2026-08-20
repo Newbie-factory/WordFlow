@@ -17,6 +17,11 @@ public interface IFloatingCardActionPort
     FloatingCardActionResult Execute(Guid wordId, string word);
 }
 
+public interface ICapabilityAwareFloatingCardActionPort : IFloatingCardActionPort
+{
+    FloatingCardActionCapability Capability { get; }
+}
+
 public sealed class DelegateFloatingCardActionPort(Func<Guid, string, FloatingCardActionResult> execute) : IFloatingCardActionPort
 {
     public FloatingCardActionResult Execute(Guid wordId, string word) => execute(wordId, word);
@@ -44,20 +49,25 @@ public sealed class FloatingCardActionHost : IFloatingCardActionHost
 
     public static IFloatingCardActionHost Unavailable { get; } = new FloatingCardActionHost();
 
-    public FloatingCardActionCapability Capability(RelationActionKind action) => ports.ContainsKey(action)
-        ? new(true, action switch
+    public FloatingCardActionCapability Capability(RelationActionKind action)
+    {
+        if (!ports.TryGetValue(action, out var port)) return new(false, UnavailableCopy);
+        if (port is ICapabilityAwareFloatingCardActionPort aware) return aware.Capability;
+        return new(true, action switch
         {
             RelationActionKind.Speak => "播放离线发音",
             RelationActionKind.OpenDetails => "打开完整词条",
             RelationActionKind.AddToLearning => "加入学习队列",
             _ => "执行词条操作",
-        })
-        : new(false, UnavailableCopy);
+        });
+    }
 
     public FloatingCardActionResult Dispatch(RelationActionRequestedEventArgs request)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (!ports.TryGetValue(request.Action, out var port)) return FloatingCardActionResult.Unavailable(UnavailableCopy);
+        var capability = Capability(request.Action);
+        if (!capability.IsAvailable) return FloatingCardActionResult.Unavailable(capability.HelpText);
         try { return port.Execute(request.WordId, request.Word) ?? FloatingCardActionResult.Failed("词条操作未返回结果"); }
         catch (Exception exception) { return FloatingCardActionResult.Failed($"词条操作失败：{exception.Message}"); }
     }

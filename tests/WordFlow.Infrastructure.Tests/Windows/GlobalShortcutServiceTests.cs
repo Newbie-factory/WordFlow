@@ -18,7 +18,13 @@ public sealed class GlobalShortcutServiceTests
             pair => AssertDefault(pair, ShortcutAction.Slash, "Shift+F3", ShortcutScope.Global),
             pair => AssertDefault(pair, ShortcutAction.ToggleSynonyms, "F4", ShortcutScope.Global),
             pair => AssertDefault(pair, ShortcutAction.ToggleConfusables, "F5", ShortcutScope.Global),
-            pair => AssertDefault(pair, ShortcutAction.Undo, "Ctrl+Z", ShortcutScope.Focused));
+            pair => AssertDefault(pair, ShortcutAction.Undo, "Ctrl+Z", ShortcutScope.Focused),
+            pair =>
+            {
+                Assert.Equal(ShortcutAction.Pronounce, pair.Key);
+                Assert.False(pair.Value.Chord.IsAssigned);
+                Assert.False(pair.Value.IsEnabled);
+            });
     }
 
     [Fact]

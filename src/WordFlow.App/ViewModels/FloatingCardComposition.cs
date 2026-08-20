@@ -16,7 +16,8 @@ public static class FloatingCardComposition
         GetSynonyms getSynonyms,
         GetConfusables getConfusables,
         ShortcutLabelMap shortcutLabels,
-        IFloatingCardActionHost? actionHost = null)
+        IFloatingCardActionHost? actionHost = null,
+        ICardPronunciationPlayback? pronunciation = null)
     {
         ArgumentNullException.ThrowIfNull(getNextCard);
         ArgumentNullException.ThrowIfNull(submitRating);
@@ -38,7 +39,7 @@ public static class FloatingCardComposition
         var confusables = new RelationDrawerViewModel(
             "形近易混", "暂无可靠易混词",
             async (wordId, ct) => MapConfusables(await getConfusables.HandleAsync(new(wordId), ct)), actionHost);
-        return new(operations, synonyms, confusables, shortcutLabels, actionHost);
+        return new(operations, synonyms, confusables, shortcutLabels, actionHost, pronunciation: pronunciation);
     }
 
     private static UseCaseResult<IReadOnlyList<RelationItemData>> MapSynonyms(

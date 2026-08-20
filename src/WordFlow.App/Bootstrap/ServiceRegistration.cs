@@ -1,10 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
+using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Learning;
 using WordFlow.Application.Relations;
 using WordFlow.Domain.Learning;
 using WordFlow.Domain.Scheduling;
 using WordFlow.Infrastructure.Data;
+using WordFlow.Infrastructure.Audio;
 using WordFlow.Infrastructure.Windows;
 
 namespace WordFlow.App.Bootstrap;
@@ -22,6 +24,11 @@ public static class ServiceRegistration
             provider.GetRequiredService<SqliteConnectionFactory>(), backupDirectory: paths.BackupsDirectory));
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<SqliteAppSettingStore>();
+        services.AddSingleton<IPronunciationService, WindowsSpeechPronunciationService>();
+        services.AddSingleton(provider => new PronunciationSettingsViewModel(
+            provider.GetRequiredService<IPronunciationService>(),
+            provider.GetRequiredService<SqliteAppSettingStore>(),
+            SynchronizationContext.Current));
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
         services.AddSingleton(TimeProvider.System);

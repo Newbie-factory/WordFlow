@@ -16,6 +16,9 @@ public readonly record struct ShortcutChord(int VirtualKey, ShortcutModifiers Mo
         ["Delete"] = 0x2E, ["Win"] = 0x5B, ["NumLock"] = 0x90, ["ScrollLock"] = 0x91,
     };
 
+    public static ShortcutChord Unassigned { get; } = new(0, ShortcutModifiers.None);
+    public bool IsAssigned => VirtualKey != 0;
+
     public static ShortcutChord Parse(string value)
     {
         if (!TryParse(value, out var chord))
@@ -27,6 +30,11 @@ public readonly record struct ShortcutChord(int VirtualKey, ShortcutModifiers Mo
     {
         chord = default;
         if (string.IsNullOrWhiteSpace(value)) return false;
+        if (value.Equals("Unassigned", StringComparison.OrdinalIgnoreCase) || value.Equals("未分配", StringComparison.Ordinal))
+        {
+            chord = Unassigned;
+            return true;
+        }
         var parts = value.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return false;
         var modifiers = ShortcutModifiers.None;
@@ -49,6 +57,7 @@ public readonly record struct ShortcutChord(int VirtualKey, ShortcutModifiers Mo
 
     public override string ToString()
     {
+        if (!IsAssigned) return "Unassigned";
         var parts = new List<string>(5);
         if (Modifiers.HasFlag(ShortcutModifiers.Control)) parts.Add("Ctrl");
         if (Modifiers.HasFlag(ShortcutModifiers.Alt)) parts.Add("Alt");
@@ -116,7 +125,13 @@ public readonly record struct ShortcutChord(int VirtualKey, ShortcutModifiers Mo
 
 public sealed record ShortcutBinding(ShortcutChord Chord, ShortcutScope Scope, bool IsEnabled)
 {
-    public string DisplayText => Chord.ToString();
+    public string DisplayText => Chord.IsAssigned ? Chord.ToString() : "未分配";
+
+    public string? Validate()
+    {
+        if (!Chord.IsAssigned) return IsEnabled ? "Assign a key before enabling this shortcut." : null;
+        return Chord.Validate();
+    }
 
     public override string ToString() =>
         $"{(IsEnabled ? "enabled" : "disabled")}|{Scope.ToString().ToLowerInvariant()}|{Chord}";

@@ -9,6 +9,7 @@ public enum ShortcutAction
     ToggleSynonyms,
     ToggleConfusables,
     Undo,
+    Pronounce,
 }
 
 public enum ShortcutScope
@@ -39,6 +40,7 @@ public static class ShortcutDefaults
             [ShortcutAction.ToggleSynonyms] = Global("F4"),
             [ShortcutAction.ToggleConfusables] = Global("F5"),
             [ShortcutAction.Undo] = new(ShortcutChord.Parse("Ctrl+Z"), ShortcutScope.Focused, true),
+            [ShortcutAction.Pronounce] = new(ShortcutChord.Unassigned, ShortcutScope.Focused, false),
         };
 
     public static IReadOnlyDictionary<ShortcutAction, ShortcutBinding> All => Bindings;

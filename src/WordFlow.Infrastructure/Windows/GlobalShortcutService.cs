@@ -211,7 +211,7 @@ public sealed class GlobalShortcutService : IShortcutService
                 return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, "A previous cleanup is still pending.", bindings.GetValueOrDefault(action));
             if (!Enum.IsDefined(action)) return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.InvalidBinding, "Unknown shortcut action.");
             var previousBinding = bindings[action];
-            if (candidate.Chord.Validate() is { } validation)
+            if (candidate.Validate() is { } validation)
                 return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Reserved, validation, previousBinding);
             var duplicate = bindings.FirstOrDefault(pair => pair.Key != action && pair.Value.IsEnabled && candidate.IsEnabled && pair.Value.Chord == candidate.Chord);
             if (!duplicate.Equals(default(KeyValuePair<ShortcutAction, ShortcutBinding>)))
@@ -474,7 +474,7 @@ public sealed class GlobalShortcutService : IShortcutService
             ShortcutBinding? parsed = null;
             string? validation = null;
             bool malformed = matching.Length != 1 || !matching[0].TryParse(out var encoded, out parsed) || encoded != action ||
-                (validation = parsed!.Chord.Validate()) is not null;
+                (validation = parsed!.Validate()) is not null;
             if (malformed)
             {
                 target[action] = ShortcutDefaults.For(action) with { IsEnabled = false };
