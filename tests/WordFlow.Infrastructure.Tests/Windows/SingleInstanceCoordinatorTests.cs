@@ -232,7 +232,7 @@ public sealed class SingleInstanceCoordinatorTests
     }
 
     [Fact]
-    public async Task Terminal_listener_failure_after_readiness_is_surfaced_and_releases_ownership()
+    public async Task Terminal_listener_failure_keeps_ownership_until_ordered_owner_disposal()
     {
         string applicationId = UniqueApplicationId();
         int serverCreations = 0;
@@ -241,7 +241,7 @@ public sealed class SingleInstanceCoordinatorTests
             if (Interlocked.Increment(ref serverCreations) > 1) throw new IOException("terminal listener failure");
             return CreatePipeServer(pipeName);
         }
-        var primary = await SingleInstanceCoordinator.StartAsync(
+        await using var primary = await SingleInstanceCoordinator.StartAsync(
             applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None,
             Factory, _ => { });
 
@@ -256,11 +256,25 @@ public sealed class SingleInstanceCoordinatorTests
         IOException failure = await Assert.ThrowsAsync<IOException>(
             () => primary.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
         Assert.Contains("terminal listener failure", failure.Message, StringComparison.Ordinal);
+
+        int serviceBootstraps = 0;
+        async Task AttemptServiceBootstrapAsync()
+        {
+            await using SingleInstanceCoordinator candidate = await SingleInstanceCoordinator.StartAsync(
+                applicationId, _ => Task.CompletedTask, TimeSpan.FromMilliseconds(150), CancellationToken.None);
+            if (candidate.IsPrimary) Interlocked.Increment(ref serviceBootstraps);
+        }
+
+        await Assert.ThrowsAsync<TimeoutException>(AttemptServiceBootstrapAsync);
+        Assert.Equal(0, Volatile.Read(ref serviceBootstraps));
+
         await primary.DisposeAsync();
 
         await using var replacement = await SingleInstanceCoordinator.StartAsync(
             applicationId, _ => Task.CompletedTask, TimeSpan.FromSeconds(5), CancellationToken.None);
+        if (replacement.IsPrimary) Interlocked.Increment(ref serviceBootstraps);
         Assert.True(replacement.IsPrimary);
+        Assert.Equal(1, Volatile.Read(ref serviceBootstraps));
     }
 
     [Fact]

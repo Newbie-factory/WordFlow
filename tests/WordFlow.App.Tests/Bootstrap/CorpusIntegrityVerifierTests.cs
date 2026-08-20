@@ -53,6 +53,28 @@ public sealed class CorpusIntegrityVerifierTests : IDisposable
             () => CorpusIntegrityVerifier.VerifyAsync(paths, pins, cancellation.Token));
     }
 
+    [Theory]
+    [InlineData("vocabulary", "")]
+    [InlineData("vocabulary", "ABCDEF")]
+    [InlineData("vocabulary", "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")]
+    [InlineData("relations", "")]
+    [InlineData("relations", "ABCDEF")]
+    [InlineData("relations", "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG")]
+    public async Task VerifyAsync_classifies_invalid_application_hash_pins_as_fatal_configuration(
+        string artifact,
+        string invalidPin)
+    {
+        (AppPaths paths, CorpusHashPins validPins) = await CreateBundleAsync();
+        var pins = artifact == "vocabulary"
+            ? validPins with { VocabularySha256 = invalidPin }
+            : validPins with { RelationsSha256 = invalidPin };
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CorpusIntegrityVerifier.VerifyAsync(paths, pins, CancellationToken.None));
+
+        Assert.Contains("application corpus hash pin", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Trusted_hash_pins_match_the_actual_packaged_databases()
     {

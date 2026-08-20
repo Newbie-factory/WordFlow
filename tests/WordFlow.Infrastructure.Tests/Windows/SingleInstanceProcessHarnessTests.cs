@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.Versioning;
 
 namespace WordFlow.Infrastructure.Tests.Windows;
@@ -14,7 +15,7 @@ public sealed class SingleInstanceProcessHarnessTests : IDisposable
     {
         Directory.CreateDirectory(stateDirectory);
         string applicationId = $"WordFlow.ProcessHarness.{Guid.NewGuid():N}";
-        string host = FindHostExecutable();
+        string host = FindHostBuild().Executable;
         string log = Path.Combine(stateDirectory, "events.log");
         Process? primary = null, secondary = null, replacement = null;
         try
@@ -52,6 +53,20 @@ public sealed class SingleInstanceProcessHarnessTests : IDisposable
             process => Assert.True(process!.HasExited));
     }
 
+    [Fact]
+    public void Host_executable_is_resolved_from_the_current_build_configuration()
+    {
+        (string configuration, string executable) = FindHostBuild();
+        string currentConfiguration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
+            ?? throw new DirectoryNotFoundException("Test output configuration directory not found.");
+
+        Assert.Equal(currentConfiguration, configuration);
+        Assert.Contains(
+            Path.Combine("bin", currentConfiguration, "net8.0-windows10.0.19041.0"),
+            executable,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private Process StartHost(string host, string applicationId)
     {
         var startInfo = new ProcessStartInfo(host)
@@ -80,20 +95,18 @@ public sealed class SingleInstanceProcessHarnessTests : IDisposable
         throw new TimeoutException($"Timed out waiting for '{expected}'.");
     }
 
-    private static string FindHostExecutable()
+    private static (string Configuration, string Executable) FindHostBuild()
     {
-        DirectoryInfo? directory = new(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "WordFlow.sln")))
-            directory = directory.Parent;
-        string root = directory?.FullName ?? throw new DirectoryNotFoundException("WordFlow repository root not found.");
-        string outputRoot = Path.Combine(root, "tests", "WordFlow.SingleInstance.TestHost", "bin");
-        string? executable = new[] { "Release", "Debug" }
-            .Select(configuration => Path.Combine(outputRoot, configuration,
-                "net8.0-windows10.0.19041.0", "WordFlow.SingleInstance.TestHost.exe"))
-            .Where(File.Exists)
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
-        return executable ?? throw new FileNotFoundException("The single-instance process test host was not built.");
+        IReadOnlyDictionary<string, string?> metadata = typeof(SingleInstanceProcessHarnessTests).Assembly
+            .GetCustomAttributes<AssemblyMetadataAttribute>()
+            .ToDictionary(attribute => attribute.Key, attribute => attribute.Value, StringComparer.Ordinal);
+        string configuration = metadata.GetValueOrDefault("SingleInstanceTestHostConfiguration")
+            ?? throw new InvalidOperationException("The test-host build configuration was not supplied by MSBuild.");
+        string executable = metadata.GetValueOrDefault("SingleInstanceTestHostPath")
+            ?? throw new InvalidOperationException("The test-host output path was not supplied by MSBuild.");
+        if (!File.Exists(executable))
+            throw new FileNotFoundException("The single-instance process test host was not built for this test configuration.", executable);
+        return (configuration, executable);
     }
 
     private static void StopExact(Process? process)

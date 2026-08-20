@@ -209,7 +209,6 @@ public sealed class SingleInstanceCoordinator : IAsyncDisposable
         {
             ready.TrySetException(exception);
             ReportBackgroundFault(backgroundFaultObserver, exception);
-            shutdown.Cancel();
             throw;
         }
     }

@@ -3,6 +3,7 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <SingleInstanceTestHostPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\WordFlow.SingleInstance.TestHost\bin\$(Configuration)\net8.0-windows10.0.19041.0\WordFlow.SingleInstance.TestHost.exe'))</SingleInstanceTestHostPath>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets><IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets></PackageReference>
@@ -12,7 +13,19 @@
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
   <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SingleInstanceTestHostConfiguration</_Parameter1>
+      <_Parameter2>$(Configuration)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SingleInstanceTestHostPath</_Parameter1>
+      <_Parameter2>$(SingleInstanceTestHostPath)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\WordFlow.Infrastructure\WordFlow.Infrastructure.csproj" />
-    <ProjectReference Include="..\WordFlow.SingleInstance.TestHost\WordFlow.SingleInstance.TestHost.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\WordFlow.SingleInstance.TestHost\WordFlow.SingleInstance.TestHost.csproj"
+                      ReferenceOutputAssembly="false"
+                      AdditionalProperties="Configuration=$(Configuration)" />
   </ItemGroup>
 </Project>

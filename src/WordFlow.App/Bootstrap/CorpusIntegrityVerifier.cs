@@ -36,6 +36,8 @@ public static class CorpusIntegrityVerifier
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(pins);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateApplicationHashPin(pins.VocabularySha256, "vocabulary");
+        ValidateApplicationHashPin(pins.RelationsSha256, "relations");
         try
         {
             await VerifyVocabularyAsync(paths, pins.VocabularySha256, cancellationToken).ConfigureAwait(false);
@@ -125,6 +127,12 @@ public static class CorpusIntegrityVerifier
             throw ManifestError($"The {artifact} manifest does not match the trusted application hash pin.");
     }
 
+    private static void ValidateApplicationHashPin(string hash, string artifact)
+    {
+        if (hash is null || hash.Length != 64 || !hash.All(Uri.IsHexDigit))
+            throw new InvalidOperationException($"The application corpus hash pin for {artifact} is invalid.");
+    }
+
     private static CorpusIntegrityException ManifestError(string message) => new(message);
 
     private static async Task<JsonDocument> ReadManifestAsync(string path, CancellationToken cancellationToken)
@@ -136,8 +144,6 @@ public static class CorpusIntegrityVerifier
 
     private static async Task VerifyFileAsync(string path, long? expectedLength, string expectedHash, CancellationToken cancellationToken)
     {
-        if (expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit))
-            throw new InvalidOperationException("The application corpus hash pin is invalid.");
         await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (expectedLength is not null && stream.Length != expectedLength)

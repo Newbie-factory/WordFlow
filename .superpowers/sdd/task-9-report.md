@@ -6,7 +6,7 @@
 - Worktree: `D:\baicizhan\.worktrees\wordflow-implementation`
 - Branch: `codex/wordflow-implementation`
 - Baseline and recovery-start head: `50390be` (`fix: complete learning concurrency boundaries`).
-- Resulting head: the commit containing this report, with message `feat: bootstrap single-instance WPF shell`.
+- Task 9 history: initial implementation `2ce5742` (`feat: bootstrap single-instance WPF shell`), first review hardening `1a15150`, and the final residual-review commit containing this report.
 - The interrupted agent left all Task 9 work uncommitted. It was preserved and audited in place; no inherited change was discarded wholesale.
 - There was no pre-existing `task-9-report.md` or persistent Task 9 build/smoke artifact. `.superpowers\sdd\progress.md` was not edited.
 
@@ -190,3 +190,42 @@ Fresh real WPF smoke used exact `Start-Process -WindowStyle Hidden -PassThru` la
 - Rechecked compiled pins against actual source/output hashes, fail-closed ordering, corpus exception boundaries, pipe success/failure framing, retry bounds, per-connection versus terminal errors, mutex relinquishment, detached task observation, dispatcher failure handling, serialized best-effort cleanup, backup placement, and exact-PID process cleanup.
 - No network client, downloader, remote repair, telemetry sink, or progress-ledger edit was introduced.
 - The only unchanged non-blocking concern is direct Explorer notification-area clicking: exact tray menu/controller/disposal behavior remains automated, and real WPF smoke proves tray construction completes, but the environment does not expose reliable tray-shell click automation.
+
+## Residual re-review remediation: I1-R, I4-R, and M1-R
+
+Recovery continued from committed head `1a15150` on the original `50390be` baseline. This section supersedes the earlier sentence saying a terminal listener fault immediately relinquishes ownership: `Completion` now faults while the owner deliberately keeps the mutex until explicit ordered disposal.
+
+### Strict RED/GREEN evidence
+
+The residual tests were written before their fixes and run in Release:
+
+```powershell
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~CorpusIntegrityVerifierTests
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~Terminal_listener_failure_keeps_ownership_until_ordered_owner_disposal|FullyQualifiedName~SingleInstanceProcessHarnessTests"
+```
+
+- I1-R RED: all six empty, short, or non-hex vocabulary/relations pin cases returned `CorpusIntegrityException`; GREEN: both application pins are structurally validated before the corpus-repair exception boundary and the same cases now throw exact `InvalidOperationException`. Existing malformed-manifest tests still return `CorpusIntegrityException`, and pre-cancelled verification still propagates `OperationCanceledException`.
+- I4-R RED: a contender became primary after terminal `Completion` faulted but before the old owner disposed; GREEN: the listener no longer cancels election ownership autonomously. The contender now exhausts its bounded signal/re-election attempt with `TimeoutException` and records zero modeled service bootstraps. After the old owner explicitly disposes, replacement takeover succeeds and records exactly one bootstrap. `App.xaml.cs` retains the required cleanup order: service provider/DB disposal, then coordinator/mutex disposal.
+- M1-R RED: both process-harness tests failed because no deterministic build metadata existed; GREEN: MSBuild emits the exact helper configuration and executable path into the test assembly, and the project reference explicitly carries `Configuration=$(Configuration)`. The Release regression proves the configured path contains `bin\Release\net8.0-windows10.0.19041.0`; no newest-Debug-or-Release scan remains.
+
+### Fresh verification
+
+```powershell
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --filter FullyQualifiedName~Windows --no-restore
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --filter FullyQualifiedName~Bootstrap --no-restore
+dotnet test WordFlow.sln -c Release --no-restore
+dotnet build WordFlow.sln -c Release --no-restore
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+git diff --check
+```
+
+- Windows focused: 20/20 passed, including the deterministic Release cross-process helper.
+- App Bootstrap focused: 27/27 passed.
+- Full Release: 293/293 passed (129 Domain, 44 Application, 93 Infrastructure, 27 App).
+- Release build: 0 warnings and 0 errors; Python vocabulary: 54/54; diff check: clean apart from informational Windows line-ending notices.
+
+The refreshed helper smoke used the exact MSBuild-selected Release executable. Primary PID `129580` emitted one `bootstrap`/`ready` and exact-PID termination returned `-1`; secondary PID `132628` exited 0 and primary logged activation; replacement PID `130140` emitted the second primary-only `bootstrap`/`ready` and exited 0 through its stop hook. Only PIDs `129580`, `132628`, and `130140` were targeted; recorded and exact-executable remaining sets were empty. The deterministic artifact was refreshed at `tests\WordFlow.Infrastructure.Tests\Windows\task-9-process-smoke.json`.
+
+The fresh real WPF smoke started only the exact Release executable with `Start-Process -WindowStyle Hidden -PassThru`. Primary PID `120304` remained alive, logged `primary-ready`, and exposed handle `1446440` with title `WordFlow`; secondary PID `129092` exited 0 after `activation-received pid=120304`, while exact-path ownership remained `[120304]`. Cleanup targeted only those two recorded PIDs and left both the recorded and exact-executable process sets empty.
+
+Residual self-review found no new network path, second DB writer, product reference to the helper, autonomous mutex release, unobserved listener fault, or progress-ledger edit. The unchanged automation limitation is direct Explorer tray-icon clicking; tray actions and disposal remain covered by focused tests and real primary startup reaches tray construction.
