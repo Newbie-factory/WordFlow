@@ -5,8 +5,14 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:WordFlow.App"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-
-    </Grid>
+        Title="WordFlow" Height="240" Width="420"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize" Topmost="True">
+    <Border Padding="28" Background="#FFF8F1" CornerRadius="12">
+        <StackPanel VerticalAlignment="Center">
+            <TextBlock Text="WordFlow" FontSize="16" Foreground="#85664B" />
+            <TextBlock Text="Ready for your next word" Margin="0,18,0,8" FontSize="28" FontWeight="SemiBold" />
+            <TextBlock x:Name="StatusText" Text="Offline corpus verified" FontSize="14" Foreground="#5B7253" />
+            <TextBlock Text="Close hides this card. Use the tray icon to exit." Margin="0,24,0,0" FontSize="12" Foreground="#756C65" />
+        </StackPanel>
+    </Border>
 </Window>

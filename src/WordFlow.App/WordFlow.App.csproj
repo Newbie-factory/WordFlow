@@ -14,4 +14,10 @@
     <ProjectReference Include="..\WordFlow.Application\WordFlow.Application.csproj" />
     <ProjectReference Include="..\WordFlow.Infrastructure\WordFlow.Infrastructure.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\data\ielts\vocabulary.sqlite3" Link="Data\ielts\vocabulary.sqlite3" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\data\ielts\relations.sqlite3" Link="Data\ielts\relations.sqlite3" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\data\ielts\manifest.json" Link="Data\ielts\manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\data\ielts\relations-manifest.json" Link="Data\ielts\relations-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

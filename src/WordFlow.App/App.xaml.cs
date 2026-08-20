@@ -1,12 +1,144 @@
-﻿using System.Configuration;
-using System.Data;
 using System.Windows;
+using System.IO;
+using Microsoft.Extensions.DependencyInjection;
+using WordFlow.App.Bootstrap;
+using WordFlow.Infrastructure.Data;
+using WordFlow.Infrastructure.Windows;
 
 namespace WordFlow.App;
 
-/// <summary>
-/// Interaction logic for App.xaml
-/// </summary>
 public partial class App : System.Windows.Application
 {
+    private readonly CancellationTokenSource lifetime = new();
+    private SingleInstanceCoordinator? coordinator;
+    private ServiceProvider? services;
+    private TrayIconService? trayIcon;
+    private TrayLifecycleController? trayController;
+    private LocalLifecycleLog? lifecycleLog;
+    private MainWindow? card;
+    private bool exiting;
+
+    protected override async void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+        try
+        {
+            AppPaths paths = AppPaths.ForCurrentUser();
+            coordinator = await SingleInstanceCoordinator.StartAsync(
+                "WordFlow.Desktop",
+                _ => Dispatcher.InvokeAsync(ActivatePrimary).Task,
+                TimeSpan.FromSeconds(5),
+                lifetime.Token);
+            if (!coordinator.IsPrimary)
+            {
+                await coordinator.DisposeAsync();
+                coordinator = null;
+                Shutdown(0);
+                return;
+            }
+
+            services = ServiceRegistration.BuildPrimaryServices(paths);
+            await BootstrapSequence.RunAsync(
+                () =>
+                {
+                    paths.Initialize();
+                    lifecycleLog = new LocalLifecycleLog(paths.LogsDirectory);
+                    WriteLifecycle($"primary-elected pid={Environment.ProcessId}");
+                },
+                ct => CorpusIntegrityVerifier.VerifyAsync(paths, ct),
+                ct => services.GetRequiredService<MigrationRunner>().MigrateAsync(ct),
+                CreateCardAndTray,
+                lifetime.Token);
+        }
+        catch (CorpusIntegrityException exception)
+        {
+            WriteLifecycle($"fatal-corpus-error pid={Environment.ProcessId}");
+            MessageBox.Show(
+                $"WordFlow cannot start because its local vocabulary data failed verification.\n\n{exception.Message}\n\n{exception.RepairInstructions}",
+                "WordFlow local data repair required", MessageBoxButton.OK, MessageBoxImage.Error);
+            await ExitAsync(2);
+        }
+        catch (Exception exception)
+        {
+            WriteLifecycle($"fatal-startup-error pid={Environment.ProcessId} type={exception.GetType().Name}");
+            MessageBox.Show($"WordFlow could not start.\n\n{exception.Message}", "WordFlow startup error",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+            await ExitAsync(1);
+        }
+    }
+
+    private void CreateCardAndTray()
+    {
+        card = new MainWindow();
+        card.Closing += (_, args) =>
+        {
+            if (exiting) return;
+            args.Cancel = true;
+            card.Hide();
+            trayController?.SynchronizeCardVisibility(isVisible: false);
+        };
+        MainWindow = card;
+        card.Show();
+
+        trayController = new TrayLifecycleController(
+            initiallyCardVisible: true,
+            SetCardVisibility,
+            paused => card.SetPaused(paused),
+            () => ShowLocalInformation("Control Center", "The control center shell is ready."),
+            () => ShowLocalInformation("Today Progress", "Today’s progress will appear here."),
+            () => _ = ExitAsync(0));
+        trayIcon = new TrayIconService(trayController);
+        WriteLifecycle($"primary-ready pid={Environment.ProcessId}");
+    }
+
+    private void ActivatePrimary()
+    {
+        WriteLifecycle($"activation-received pid={Environment.ProcessId}");
+        if (card is null) return;
+        SetCardVisibility(true);
+        if (card.WindowState == WindowState.Minimized) card.WindowState = WindowState.Normal;
+        card.Activate();
+        card.Topmost = true;
+        card.Topmost = false;
+        card.Focus();
+    }
+
+    private void SetCardVisibility(bool visible)
+    {
+        if (card is null) return;
+        if (visible) { card.Show(); card.Activate(); }
+        else card.Hide();
+        trayController?.SynchronizeCardVisibility(visible);
+    }
+
+    private void ShowLocalInformation(string title, string message) =>
+        MessageBox.Show(card, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
+
+    private async Task ExitAsync(int exitCode)
+    {
+        if (exiting) return;
+        exiting = true;
+        WriteLifecycle($"exit-requested pid={Environment.ProcessId} code={exitCode}");
+        lifetime.Cancel();
+        trayIcon?.Dispose();
+        trayIcon = null;
+        trayController = null;
+        card?.Close();
+        services?.Dispose();
+        services = null;
+        if (coordinator is not null)
+        {
+            await coordinator.DisposeAsync();
+            coordinator = null;
+        }
+        WriteLifecycle($"exit-complete pid={Environment.ProcessId} code={exitCode}");
+        lifetime.Dispose();
+        Shutdown(exitCode);
+    }
+
+    private void WriteLifecycle(string eventName)
+    {
+        try { lifecycleLog?.Write(eventName); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+    }
 }
