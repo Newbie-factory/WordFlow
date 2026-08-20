@@ -45,13 +45,14 @@
                     <Button x:Name="WordText" Command="{Binding SpeakCurrentWordCommand}" HorizontalAlignment="Left" Padding="0"
                             Background="Transparent" BorderThickness="0" FocusVisualStyle="{StaticResource Focus.Ring}" TabIndex="0"
                             AutomationProperties.Name="{Binding Word, StringFormat=播放当前单词 {0} 离线发音}"
-                            AutomationProperties.HelpText="{Binding Word}">
+                            AutomationProperties.HelpText="{Binding SpeakAvailabilityHelp}">
                         <TextBlock Text="{Binding Word}" FontFamily="{StaticResource Font.Display}" FontSize="{StaticResource Type.Word}"
                                    FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                     </Button>
                     <Button x:Name="CurrentDetailsButton" Command="{Binding OpenCurrentDetailsCommand}" HorizontalAlignment="Right"
                             VerticalAlignment="Top" Style="{StaticResource Button.Base}" MinHeight="28" Padding="9,4" TabIndex="1"
-                            AutomationProperties.Name="{Binding Word, StringFormat=打开当前单词 {0} 完整词条}">词条</Button>
+                            AutomationProperties.Name="{Binding Word, StringFormat=打开当前单词 {0} 完整词条}"
+                            AutomationProperties.HelpText="{Binding DetailsAvailabilityHelp}">词条</Button>
                     <TextBlock x:Name="PhoneticText" Grid.Row="1" Text="{Binding Phonetic}" Margin="1,2,0,0"
                                FontSize="15" Foreground="{StaticResource Brush.AccentStrong}"
                                AutomationProperties.Name="{Binding Phonetic, StringFormat=当前单词音标 {0}}"

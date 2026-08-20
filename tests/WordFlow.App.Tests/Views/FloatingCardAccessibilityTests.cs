@@ -19,6 +19,8 @@ public sealed class FloatingCardAccessibilityTests
         Assert.Contains("SynonymsButton", names);
         Assert.All(card.Descendants(presentation + "Button"), button =>
             Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("AutomationProperties.Name"))));
+        Assert.All(card.Descendants(presentation + "Button").Where(button => (string?)button.Attribute(x + "Name") is "WordText" or "CurrentDetailsButton"), button =>
+            Assert.False(string.IsNullOrWhiteSpace((string?)button.Attribute("AutomationProperties.HelpText"))));
         var tabOrder = card.Descendants(presentation + "Button")
             .Select(button => int.Parse((string?)button.Attribute("TabIndex") ?? throw new Xunit.Sdk.XunitException("Every card button requires an explicit TabIndex.")))
             .OrderBy(index => index)
@@ -30,5 +32,12 @@ public sealed class FloatingCardAccessibilityTests
         Assert.Equal("Auto", (string?)scroll.Attribute("VerticalScrollBarVisibility"));
         Assert.All(drawer.Descendants(presentation + "ListBoxItem"), item =>
             Assert.False(string.IsNullOrWhiteSpace((string?)item.Attribute("AutomationProperties.Name"))));
+        Assert.Equal("搜索全部关系词", (string?)drawer.Descendants(presentation + "TextBox").Single().Attribute("AutomationProperties.Name"));
+        Assert.Contains(drawer.Descendants(presentation + "Expander"), element => (string?)element.Attribute(x + "Name") == "CompactEvidence");
+        Assert.All(drawer.Descendants(presentation + "MenuItem"), item =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace((string?)item.Attribute("AutomationProperties.Name")));
+            Assert.False(string.IsNullOrWhiteSpace((string?)item.Attribute("AutomationProperties.HelpText")));
+        });
     }
 }

@@ -9,7 +9,8 @@ $candidates = @(
     (Join-Path $repositoryRoot "src\WordFlow.App\bin\x64\$Configuration\net8.0-windows10.0.19041.0\WordFlow.App.exe"),
     (Join-Path $repositoryRoot "src\WordFlow.App\bin\$Configuration\net8.0-windows10.0.19041.0\WordFlow.App.exe")
 )
-$executable = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$executable = $candidates | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Item -LiteralPath $_ } |
+    Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1 -ExpandProperty FullName
 if (-not $executable) { throw "Build the $Configuration WordFlow.App executable before running the UI smoke." }
 
 $suffix = if ($WorkAreaHeightPx -gt 0) { "-constrained" } else { "" }
@@ -35,6 +36,8 @@ public static class WordFlowSmokeNative {
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr window);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr window, int index);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
 }
 '@
@@ -50,12 +53,18 @@ $n = @{
     DetailsPrefix = U '5omT5byA5b2T5YmN5Y2V6K+NIG1ldGljdWxvdXM='
     Again = U '5LiN6K6k6K+G'; Hard = U '5qih57OK'; Good = U '6K6k6K+G'; Slash = U '5pap6K+N'
     Synonyms = U '5bGV5byA5oiW5pS26LW36L+R5LmJ6L6o5p6Q'; Confusables = U '5bGV5byA5oiW5pS26LW35b2i6L+R5piT5re3'; Undo = U '5pKk6ZSA'
-    SpeechStatus = U '5bey5o+Q5LqkIG1ldGljdWxvdXMg55qE56a757q/5Y+R6Z+z6K+35rGC'
+    SpeechStatus = U '5bey5pKt5pS+IG1ldGljdWxvdXMg55qE56a757q/5Y+R6Z+z'
     Results = U '5YWz57O76K+N5a6M5pW057uT5p6c'
+    Search = U '5pCc57Si5YWo6YOo5YWz57O76K+N'
+    Group = U 'YSDCtyBjYXJlZnVsIGFuZCBwcmVjaXNl'
     RowPrefix = U 'cHJlY2lzZe+8m+mfs+aghyAvc2FtcGxlLTEv77yb5Lit5paHIOe7j+i/h+aguOmqjOeahOS4reaWh+mHiuS5iSAx'
     Contrast = U '6L6o5p6Q'; Collocation = U '5pCt6YWN'
     RowSpeak = U '5pKt5pS+IHByZWNpc2Ug56a757q/5Y+R6Z+z'; RowDetails = U '5omT5byAIHByZWNpc2Ug5a6M5pW06K+N5p2h'
-    RowSpeechStatus = U '5bey5o+Q5LqkIHByZWNpc2Ug55qE56a757q/5Y+R6Z+z6K+35rGC'
+    RowSpeechStatus = U '5bey5pKt5pS+IHByZWNpc2Ug55qE56a757q/5Y+R6Z+z'
+    RowAdd = U '5bCGIHByZWNpc2Ug5Yqg5YWl5a2m5Lmg'
+    RowAddStatus = U '5bey5bCGIHByZWNpc2Ug5Yqg5YWl5a2m5Lmg'
+    SearchMatch = U 'c2NydXB1bG91c++8m+mfs+aghyAvc2FtcGxlLTMv'
+    Paused = U '5a2m5Lmg5bey5pqC5YGc'
 }
 
 function Wait-ForElement {
@@ -80,6 +89,12 @@ function Find-PidName([System.Windows.Automation.AutomationElement]$Root, [int]$
     $condition = [System.Windows.Automation.AndCondition]::new((Pid-Condition $ProcessIdentifier), (Name-Condition $Name))
     Wait-ForElement $Root $condition "PID $ProcessIdentifier automation name '$Name'"
 }
+function Find-PidNameType([System.Windows.Automation.AutomationElement]$Root, [int]$ProcessIdentifier, [string]$Name,
+        [System.Windows.Automation.ControlType]$ControlType) {
+    $condition = [System.Windows.Automation.AndCondition]::new((Pid-Condition $ProcessIdentifier), (Name-Condition $Name),
+        [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ControlType))
+    Wait-ForElement $Root $condition "PID $ProcessIdentifier $ControlType '$Name'"
+}
 function Find-PidNamePrefix([System.Windows.Automation.AutomationElement]$Root, [int]$ProcessIdentifier, [string]$Prefix) {
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
@@ -99,6 +114,11 @@ function Assert-FocusPrefix([string]$Prefix) {
         $focused = $desktop.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id),
                 [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::HasKeyboardFocusProperty, $true)))
+    }
+    $candidate = $focused
+    for ($depth = 0; $null -ne $candidate -and $depth -lt 5; $depth++) {
+        if ($candidate.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal)) { return $candidate.Current.Name }
+        $candidate = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($candidate)
     }
     if ($null -eq $focused -or -not $focused.Current.Name.StartsWith($Prefix, [StringComparison]::Ordinal)) {
         throw "Expected Tab focus '$Prefix', got '$($focused.Current.Name)'."
@@ -138,14 +158,22 @@ try {
     $phonetic = Find-PidName $desktop $process.Id $n.Phonetic
     $chinese = Find-PidName $desktop $process.Id $n.Chinese
     if ($phonetic.Current.HelpText -ne $n.PhoneticValue -or $chinese.Current.HelpText -ne $n.ChineseValue) { throw "UIA phonetic/Chinese values are incomplete." }
-    $wordBefore = $word.Current.HelpText
+    $wordBefore = $word.Current.Name
     $mainBefore = $window.Current.BoundingRectangle
 
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]3, [IntPtr]0)
+    $pauseDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    $good = Find-PidNamePrefix $desktop $process.Id $n.Good
+    while ($good.Current.IsEnabled -and [DateTime]::UtcNow -lt $pauseDeadline) { Start-Sleep -Milliseconds 50 }
+    if ($good.Current.IsEnabled) { throw "Pause did not disable learning commands." }
+    $null = Find-PidName $desktop $process.Id $n.Paused
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]4, [IntPtr]0)
+    $resumeDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (-not $good.Current.IsEnabled -and [DateTime]::UtcNow -lt $resumeDeadline) { Start-Sleep -Milliseconds 50 }
+    if (-not $good.Current.IsEnabled) { throw "Resume did not restore learning commands." }
+
     $tabPrefixes = @($n.WordPrefix, $n.DetailsPrefix, $n.Again, $n.Hard, $n.Good, $n.Slash, $n.Synonyms, $n.Confusables)
-    $wordBounds = $word.Current.BoundingRectangle
-    $null = [WordFlowSmokeNative]::SetCursorPos([int]($wordBounds.Left + $wordBounds.Width / 2), [int]($wordBounds.Top + $wordBounds.Height / 2))
-    [WordFlowSmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-    [WordFlowSmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    $word.SetFocus()
     Start-Sleep -Milliseconds 200
     $tabNames = @((Assert-FocusPrefix $tabPrefixes[0]))
     for ($index = 1; $index -lt $tabPrefixes.Count; $index++) {
@@ -164,9 +192,34 @@ try {
     $null = [WordFlowSmokeNative]::SendMessage($nativeHandle, 0x0101, [IntPtr]9, [IntPtr]0)
     $tabNames += Assert-FocusPrefix $n.Undo
 
+    $word = Find-PidNamePrefix $desktop $process.Id $n.WordPrefix
     Invoke-Element $word
     $null = Find-PidName $desktop $process.Id $n.SpeechStatus
 
+    Invoke-Element (Find-PidName $desktop $process.Id $n.Synonyms)
+    $synonymResults = Find-PidName $desktop $process.Id $n.Results
+    $search = Find-PidName $desktop $process.Id $n.Search
+    if (-not $search.Current.HasKeyboardFocus) { throw "Opening a relation popup did not focus its search box." }
+    $valuePattern = [System.Windows.Automation.ValuePattern]$search.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    $valuePattern.SetValue("scrupulous")
+    $null = Find-PidNamePrefix $desktop $process.Id $n.SearchMatch
+    $valuePattern.SetValue("")
+    $search.SetFocus()
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $popupTabResults = Assert-FocusPrefix $n.Results
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $popupTabGroup = Assert-FocusPrefix $n.Group
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $popupTabRow = Assert-FocusPrefix $n.RowPrefix
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    $popupTabAction = Assert-FocusPrefix $n.RowSpeak
+    [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+    Start-Sleep -Milliseconds 200
+    $openAfterEscape = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id), (Name-Condition $n.Results))) |
+        Where-Object { -not $_.Current.IsOffscreen }
+    if ($openAfterEscape.Count -ne 0) { throw "Escape did not close the focused relation popup." }
+    $null = Assert-FocusPrefix $n.Synonyms
     Invoke-Element (Find-PidName $desktop $process.Id $n.Synonyms)
     $synonymResults = Find-PidName $desktop $process.Id $n.Results
     $row = Find-PidNamePrefix $desktop $process.Id $n.RowPrefix
@@ -176,12 +229,51 @@ try {
     Invoke-Element $rowSpeak
     $null = Find-PidName $desktop $process.Id $n.RowSpeechStatus
 
+    $rowBounds = $row.Current.BoundingRectangle
+    $null = [WordFlowSmokeNative]::SetCursorPos([int]($rowBounds.Left + $rowBounds.Width / 2), [int]($rowBounds.Top + $rowBounds.Height / 2))
+    [WordFlowSmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+    [WordFlowSmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+    $contextDetails = Find-PidNameType $desktop $process.Id $n.RowDetails ([System.Windows.Automation.ControlType]::MenuItem)
+    $null = Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem)
+    Invoke-Element $contextDetails
+    $null = Find-PidName $desktop $process.Id (U '5bey5omT5byAIHByZWNpc2Ug55qE5a6M5pW06K+N5p2h')
+    $null = [WordFlowSmokeNative]::SetCursorPos([int]($rowBounds.Left + $rowBounds.Width / 2), [int]($rowBounds.Top + $rowBounds.Height / 2))
+    [WordFlowSmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+    [WordFlowSmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+    Invoke-Element (Find-PidNameType $desktop $process.Id $n.RowAdd ([System.Windows.Automation.ControlType]::MenuItem))
+    $null = Find-PidName $desktop $process.Id $n.RowAddStatus
+
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]1, [IntPtr]0)
+    $hideDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (-not $window.Current.IsOffscreen -and [DateTime]::UtcNow -lt $hideDeadline) { Start-Sleep -Milliseconds 50 }
+    if (-not $window.Current.IsOffscreen) { throw "Hide seam did not hide the card." }
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]2, [IntPtr]0)
+    $showDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while ($window.Current.IsOffscreen -and [DateTime]::UtcNow -lt $showDeadline) { Start-Sleep -Milliseconds 50 }
+    if ($window.Current.IsOffscreen) { throw "Restore seam did not show the card." }
+    $visibleAfterRestore = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id), (Name-Condition $n.Results))) |
+        Where-Object { -not $_.Current.IsOffscreen }
+    if ($visibleAfterRestore.Count -ne 0) { throw "Tray-style hide/restore reopened a relation popup." }
+
     Invoke-Element (Find-PidName $desktop $process.Id $n.Confusables)
     Start-Sleep -Milliseconds 300
     $visibleResults = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id), (Name-Condition $n.Results))) |
         Where-Object { -not $_.Current.IsOffscreen }
     if ($visibleResults.Count -ne 1) { throw "Exactly one relation drawer must be visible." }
+    $resultsBounds = $visibleResults[0].Current.BoundingRectangle
+    $visibleRows = $desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.AndCondition]::new((Pid-Condition $process.Id),
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::ListItem))) |
+        Where-Object { -not $_.Current.IsOffscreen -and ([string]$_.Current.Name).Contains('/sample-') }
+    $completeRows = @($visibleRows | Where-Object {
+        $_.Current.BoundingRectangle.Top -ge $resultsBounds.Top - 8 -and $_.Current.BoundingRectangle.Bottom -le $resultsBounds.Bottom + 8 })
+    $clippedRows = @($visibleRows | Where-Object {
+        $_.Current.BoundingRectangle.Top -lt $resultsBounds.Top - 8 -or $_.Current.BoundingRectangle.Bottom -gt $resultsBounds.Bottom + 8 })
+    if ($clippedRows.Count -ne 0) { throw "Relation viewport exposed a clipped row fragment." }
+    if ($WorkAreaHeightPx -eq 0 -and $completeRows.Count -ne 5) { throw "Normal drawer must expose exactly five complete rows; got $($completeRows.Count)." }
+    if ($WorkAreaHeightPx -gt 0 -and $completeRows.Count -lt 1) { throw "Constrained drawer must expose at least one complete compact row." }
     $scroll = [System.Windows.Automation.ScrollPattern]$visibleResults[0].GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
     if (-not $scroll.Current.VerticallyScrollable) { throw "More-than-five results must scroll internally." }
     $scroll.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, 100)
@@ -189,7 +281,8 @@ try {
 
     $mainAfter = $window.Current.BoundingRectangle
     if ([Math]::Abs($mainBefore.Top - $mainAfter.Top) -gt 1 -or [Math]::Abs($mainBefore.Left - $mainAfter.Left) -gt 1) { throw "Opening the drawer moved the stable word block window." }
-    if ($wordBefore -ne $word.Current.HelpText) { throw "Opening and scrolling drawers changed the current word." }
+    $word = Find-PidNamePrefix $desktop $process.Id $n.WordPrefix
+    if ($wordBefore -ne $word.Current.Name) { throw "Opening and scrolling drawers changed the current word." }
     $scroll.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, 0)
     Start-Sleep -Milliseconds 200
 
@@ -210,6 +303,18 @@ try {
     $popupSurface = $nativeSurfaces | Select-Object -First 1
     if ($null -eq $popupSurface) { throw "Could not resolve the exact PID-owned popup HWND for capture." }
     $popupBounds = $popupSurface.Current.BoundingRectangle
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]5, [IntPtr]0)
+    Start-Sleep -Milliseconds 150
+    if (([WordFlowSmokeNative]::GetWindowLong($nativeHandle, -20) -band 8) -ne 0 -or
+        ([WordFlowSmokeNative]::GetWindowLong([IntPtr]$popupSurface.Current.NativeWindowHandle, -20) -band 8) -ne 0) {
+        throw "Fullscreen suppression seam did not demote both main and popup HWNDs."
+    }
+    $null = [WordFlowSmokeNative]::PostMessage($nativeHandle, 0x806F, [IntPtr]6, [IntPtr]0)
+    Start-Sleep -Milliseconds 150
+    if (([WordFlowSmokeNative]::GetWindowLong($nativeHandle, -20) -band 8) -eq 0 -or
+        ([WordFlowSmokeNative]::GetWindowLong([IntPtr]$popupSurface.Current.NativeWindowHandle, -20) -band 8) -eq 0) {
+        throw "Fullscreen restoration seam did not restore both main and popup HWNDs."
+    }
     $left = [int][Math]::Floor([Math]::Min($mainAfter.Left, $popupBounds.Left))
     $top = [int][Math]::Floor([Math]::Min($mainAfter.Top, $popupBounds.Top))
     $right = [int][Math]::Ceiling([Math]::Max($mainAfter.Right, $popupBounds.Right))
@@ -241,10 +346,12 @@ try {
 
     $result = [ordered]@{
         pid = $process.Id; executable = $executable; window = $window.Current.Name
-        word_before = $wordBefore; word_after = $word.Current.HelpText
+        word_before = $wordBefore; word_after = $word.Current.Name
         phonetic_name = $phonetic.Current.Name; chinese_name = $chinese.Current.Name
-        tab_order = $tabNames; contextual_row = $row.Current.Name
+        tab_order = $tabNames; popup_tab_order = @($search.Current.Name, $popupTabResults, $popupTabGroup, $popupTabRow, $popupTabAction); contextual_row = $row.Current.Name
         one_drawer_visible = $true; internal_scroll = $true; stable_window_bounds = $true
+        pause_gated = $true; escape_returned_to_main = $true; hide_restore_closed_popup = $true; popup_topmost_suppressed_and_restored = $true
+        complete_visible_rows = $completeRows.Count; clipped_visible_rows = $clippedRows.Count
         work_area_height_limit_px = $WorkAreaHeightPx; screenshot = $screenshot
     }
     $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $evidence -Encoding utf8

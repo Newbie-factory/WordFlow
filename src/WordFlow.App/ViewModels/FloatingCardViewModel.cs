@@ -20,12 +20,14 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private readonly FloatingCardOperations operations;
     private readonly ShortcutLabelMap shortcutLabels;
     private readonly DailyPlan plan;
+    private readonly IFloatingCardActionHost actionHost;
     private NextCard? current;
     private string? errorMessage;
     private string accessibleStatus = "准备学习";
     private bool isBusy;
     private Guid? lastEventId;
     private bool disposed;
+    private bool isPaused;
     private readonly CancellationTokenSource lifetime = new();
     private long generation;
 
@@ -34,12 +36,14 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         RelationDrawerViewModel synonyms,
         RelationDrawerViewModel confusables,
         ShortcutLabelMap shortcutLabels,
+        IFloatingCardActionHost? actionHost = null,
         DailyPlan? plan = null)
     {
         this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
         Synonyms = synonyms ?? throw new ArgumentNullException(nameof(synonyms));
         Confusables = confusables ?? throw new ArgumentNullException(nameof(confusables));
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
+        this.actionHost = actionHost ?? FloatingCardActionHost.Unavailable;
         this.plan = plan ?? DailyPlan.Default;
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
         Synonyms.ActionRequested += OnRelationActionRequested;
@@ -49,11 +53,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         HardCommand = Command(() => RateAsync(RatingShortcut.F2), () => CanRate);
         GoodCommand = Command(() => RateAsync(RatingShortcut.F3), () => CanRate);
         SlashCommand = Command(() => SlashAsync(), () => CanRate);
-        UndoCommand = Command(() => UndoAsync(), () => !IsBusy && lastEventId.HasValue);
-        ToggleSynonymsCommand = Command(() => ToggleDrawerAsync(Synonyms), () => HasCard && !IsBusy);
-        ToggleConfusablesCommand = Command(() => ToggleDrawerAsync(Confusables), () => HasCard && !IsBusy);
-        SpeakCurrentWordCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.Speak), () => HasCard && !IsBusy);
-        OpenCurrentDetailsCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.OpenDetails), () => HasCard && !IsBusy);
+        UndoCommand = Command(() => UndoAsync(), () => !IsPaused && !IsBusy && lastEventId.HasValue);
+        ToggleSynonymsCommand = Command(() => ToggleDrawerAsync(Synonyms), () => !IsPaused && HasCard && !IsBusy);
+        ToggleConfusablesCommand = Command(() => ToggleDrawerAsync(Confusables), () => !IsPaused && HasCard && !IsBusy);
+        SpeakCurrentWordCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.Speak), () => !IsPaused && HasCard && !IsBusy && CanSpeakCurrentWord);
+        OpenCurrentDetailsCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.OpenDetails), () => !IsPaused && HasCard && !IsBusy && CanOpenCurrentDetails);
     }
 
     public IReadOnlyList<string> ReadingOrder => StableReadingOrder;
@@ -64,7 +68,12 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public string Chinese => current?.Word.Chinese ?? "没有待学习的单词";
     public string ProgressText => current is null ? "今日队列已完成" : "专注当前词 · 提交后进入下一词";
     public bool HasCard => current is not null;
-    public bool CanRate => HasCard && !IsBusy;
+    public bool CanRate => HasCard && !IsBusy && !IsPaused;
+    public bool IsPaused => isPaused;
+    public bool CanSpeakCurrentWord => actionHost.Capability(RelationActionKind.Speak).IsAvailable;
+    public bool CanOpenCurrentDetails => actionHost.Capability(RelationActionKind.OpenDetails).IsAvailable;
+    public string SpeakAvailabilityHelp => actionHost.Capability(RelationActionKind.Speak).HelpText;
+    public string DetailsAvailabilityHelp => actionHost.Capability(RelationActionKind.OpenDetails).HelpText;
     public bool IsBusy
     {
         get => isBusy;
@@ -154,7 +163,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task UndoAsync(CancellationToken ct = default)
     {
-        if (IsBusy || lastEventId is not { } eventId) return;
+        if (IsPaused || IsBusy || lastEventId is not { } eventId) return;
         IsBusy = true;
         ErrorMessage = null;
         try
@@ -170,7 +179,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                     Synonyms.Reset();
                     Confusables.Reset();
                     AccessibleStatus = "已撤销上一学习操作";
-                    await ReloadAfterUndoAsync(linked.Token);
+                    await ReloadAfterUndoAsync(operationGeneration, linked.Token);
                     break;
                 case StorageFailure<CardState> failure: SetFailure("撤销失败", failure.Message); break;
                 case NotFound<CardState> failure: SetFailure("撤销失败", failure.Message); break;
@@ -184,6 +193,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task HandleShortcutAsync(ShortcutAction action, CancellationToken ct = default)
     {
+        if (IsPaused) { AccessibleStatus = "学习已暂停"; return; }
         switch (action)
         {
             case ShortcutAction.Again: await RateAsync(RatingShortcut.F1, ct); break;
@@ -250,7 +260,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task ToggleDrawerAsync(RelationDrawerViewModel drawer, CancellationToken ct = default)
     {
-        if (!HasCard || IsBusy || current is null) return;
+        if (IsPaused || !HasCard || IsBusy || current is null) return;
         if (drawer.IsOpen)
         {
             drawer.Close();
@@ -259,12 +269,13 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         var other = ReferenceEquals(drawer, Synonyms) ? Confusables : Synonyms;
         other.Close();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
-        await drawer.OpenAsync(current.Word.WordId, linked.Token);
+        await drawer.OpenAsync(current.Word.WordId, current.PrimarySense, linked.Token);
     }
 
-    private async Task ReloadAfterUndoAsync(CancellationToken ct)
+    private async Task ReloadAfterUndoAsync(long operationGeneration, CancellationToken ct)
     {
         var result = await operations.GetNextCard(plan, ct);
+        if (disposed || generation != operationGeneration) return;
         if (result is Success<NextCard?> success) SetCurrent(success.Value);
         else if (result is StorageFailure<NextCard?> failure) SetFailure("已撤销，但无法刷新学习卡", failure.Message);
     }
@@ -316,16 +327,38 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         if (isError) ErrorMessage = message;
     }
 
+    public void SetPaused(bool paused)
+    {
+        if (disposed || isPaused == paused) return;
+        isPaused = paused;
+        OnPropertyChanged(nameof(IsPaused));
+        OnPropertyChanged(nameof(CanRate));
+        if (paused)
+        {
+            Synonyms.Close();
+            Confusables.Close();
+            AccessibleStatus = "学习已暂停";
+        }
+        else AccessibleStatus = current is null ? "今日学习已完成" : $"当前单词 {current.Word.Lemma}";
+        RaiseCommandStates();
+    }
+
     private AsyncActionCommand Command(Func<Task> execute, Func<bool> canExecute) =>
         new(execute, canExecute, exception => { if (!disposed) SetFailure("操作失败", exception.Message); });
 
     private void PublishCurrent(RelationActionKind action)
     {
-        if (current is not { } card || IsBusy || disposed) return;
-        ActionRequested?.Invoke(this, new(action, card.Word.WordId, card.Word.Lemma));
+        if (current is not { } card || IsPaused || IsBusy || disposed) return;
+        Dispatch(new(action, card.Word.WordId, card.Word.Lemma));
     }
 
-    private void OnRelationActionRequested(object? sender, RelationActionRequestedEventArgs args) => ActionRequested?.Invoke(this, args);
+    private void OnRelationActionRequested(object? sender, RelationActionRequestedEventArgs args) => Dispatch(args);
+    private void Dispatch(RelationActionRequestedEventArgs args)
+    {
+        ActionRequested?.Invoke(this, args);
+        var result = actionHost.Dispatch(args);
+        ReportActionFeedback(result.AccessibleMessage, result.Status == FloatingCardActionStatus.Failed);
+    }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {

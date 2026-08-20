@@ -15,7 +15,8 @@ public static class FloatingCardComposition
         UndoLastAction undoLastAction,
         GetSynonyms getSynonyms,
         GetConfusables getConfusables,
-        ShortcutLabelMap shortcutLabels)
+        ShortcutLabelMap shortcutLabels,
+        IFloatingCardActionHost? actionHost = null)
     {
         ArgumentNullException.ThrowIfNull(getNextCard);
         ArgumentNullException.ThrowIfNull(submitRating);
@@ -24,6 +25,7 @@ public static class FloatingCardComposition
         ArgumentNullException.ThrowIfNull(getSynonyms);
         ArgumentNullException.ThrowIfNull(getConfusables);
         ArgumentNullException.ThrowIfNull(shortcutLabels);
+        actionHost ??= FloatingCardActionHost.Unavailable;
 
         var operations = new FloatingCardOperations(
             (plan, ct) => getNextCard.HandleAsync(new(plan), ct),
@@ -32,11 +34,11 @@ public static class FloatingCardComposition
             undoLastAction.HandleAsync);
         var synonyms = new RelationDrawerViewModel(
             "近义辨析", "暂无可靠近义词",
-            async (wordId, ct) => MapSynonyms(await getSynonyms.HandleAsync(new(wordId), ct)));
+            async (wordId, ct) => MapSynonyms(await getSynonyms.HandleAsync(new(wordId), ct)), actionHost, usesSenseGroups: true);
         var confusables = new RelationDrawerViewModel(
             "形近易混", "暂无可靠易混词",
-            async (wordId, ct) => MapConfusables(await getConfusables.HandleAsync(new(wordId), ct)));
-        return new(operations, synonyms, confusables, shortcutLabels);
+            async (wordId, ct) => MapConfusables(await getConfusables.HandleAsync(new(wordId), ct)), actionHost);
+        return new(operations, synonyms, confusables, shortcutLabels, actionHost);
     }
 
     private static UseCaseResult<IReadOnlyList<RelationItemData>> MapSynonyms(

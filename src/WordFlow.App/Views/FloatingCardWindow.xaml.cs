@@ -4,18 +4,21 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
 using WordFlow.Infrastructure.Windows;
+using WordFlow.App.Views.Controls;
 
 namespace WordFlow.App.Views;
 
 public partial class FloatingCardWindow : Window
 {
     private const int DpiChangedMessage = 0x02E0;
+    private const int UiSmokeLifecycleMessage = 0x806F;
     private readonly FloatingCardViewModel? viewModel;
     private readonly IShortcutService? shortcutService;
     private readonly FocusedShortcutBindingBridge? focusedShortcuts;
@@ -30,6 +33,7 @@ public partial class FloatingCardWindow : Window
     private bool applyingPlacement;
     private bool suppressTopmostForFullscreen = true;
     private bool closing;
+    private bool? uiSmokeTopmostOverride;
 
     public FloatingCardWindow() => InitializeComponent();
 
@@ -45,8 +49,12 @@ public partial class FloatingCardWindow : Window
         SizeChanged += OnSizeChanged;
         Closed += OnClosed;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
-        SynonymsPopup.Opened += (_, _) => ConfigureDrawer(SynonymsDrawer);
-        ConfusablesPopup.Opened += (_, _) => ConfigureDrawer(ConfusablesDrawer);
+        SynonymsPopup.Opened += (_, _) => OnDrawerOpened(SynonymsDrawer);
+        ConfusablesPopup.Opened += (_, _) => OnDrawerOpened(ConfusablesDrawer);
+        SynonymsDrawer.DesiredHeightChanged += (_, _) => ConfigureDrawer(SynonymsDrawer);
+        ConfusablesDrawer.DesiredHeightChanged += (_, _) => ConfigureDrawer(ConfusablesDrawer);
+        SynonymsDrawer.DismissRequested += (_, _) => DismissDrawer(SynonymsDrawer);
+        ConfusablesDrawer.DismissRequested += (_, _) => DismissDrawer(ConfusablesDrawer);
 
         placementSaveTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
         placementSaveTimer.Tick += (_, _) => { placementSaveTimer.Stop(); SavePlacement(); };
@@ -70,6 +78,7 @@ public partial class FloatingCardWindow : Window
     public event EventHandler<RelationActionRequestedEventArgs>? RelationActionRequested;
     public event EventHandler<FullscreenSuppressionChangedEventArgs>? FullscreenSuppressionChanged;
     public int? WorkAreaHeightLimitPx { get; set; }
+    public bool EnableUiSmokeControlMessages { get; set; }
     public bool SuppressTopmostForFullscreen
     {
         get => suppressTopmostForFullscreen;
@@ -84,9 +93,11 @@ public partial class FloatingCardWindow : Window
 
     public void SetPaused(bool paused)
     {
-        StableWordBlock.IsEnabled = !paused;
-        AccessibleStatus.Text = paused ? "学习已暂停" : viewModel?.AccessibleStatus;
+        viewModel?.SetPaused(paused);
+        if (paused) CloseDrawers();
     }
+
+    public void PrepareForHide() => CloseDrawers();
 
     public void PrepareUiSmokeFocus()
     {
@@ -107,8 +118,7 @@ public partial class FloatingCardWindow : Window
         if (closing) return;
         closing = true;
         lifetime.Cancel();
-        viewModel?.Synonyms.Close();
-        viewModel?.Confusables.Close();
+        CloseDrawers();
         placementSaveTimer?.Stop();
         SavePlacement();
         Task[] pending;
@@ -145,6 +155,19 @@ public partial class FloatingCardWindow : Window
     private nint WindowProcedure(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
         if (shortcutService?.ProcessWindowMessage(message, wParam, lParam) == true) handled = true;
+        if (EnableUiSmokeControlMessages && message == UiSmokeLifecycleMessage)
+        {
+            switch (wParam.ToInt32())
+            {
+                case 1: PrepareForHide(); Hide(); break;
+                case 2: Show(); Activate(); break;
+                case 3: SetPaused(true); break;
+                case 4: SetPaused(false); break;
+                case 5: uiSmokeTopmostOverride = false; RefreshTopmost(); break;
+                case 6: uiSmokeTopmostOverride = true; RefreshTopmost(); break;
+            }
+            handled = true;
+        }
         if (message == DpiChangedMessage && lParam != 0)
         {
             var native = Marshal.PtrToStructure<NativeRect>(lParam);
@@ -175,7 +198,7 @@ public partial class FloatingCardWindow : Window
     }
     private void OnShortcutActionInvoked(object? sender, ShortcutAction action)
     {
-        if (viewModel is not null) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
+        if (viewModel is not null && !viewModel.IsPaused) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
     }
     private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
 
@@ -246,15 +269,50 @@ public partial class FloatingCardWindow : Window
         var monitor = WindowPlacementService.MonitorFor(cardRect, monitors);
         int below = Math.Max(0, monitor.BottomPx - cardRect.BottomPx);
         int above = Math.Max(0, cardRect.TopPx - monitor.TopPx);
-        double availableDip = Math.Max(below, above) / monitor.ScaleY;
+        double belowDip = Math.Max(0, below / monitor.ScaleY - 8);
+        double aboveDip = Math.Max(0, above / monitor.ScaleY - 8);
         var popup = ReferenceEquals(drawer, SynonymsDrawer) ? SynonymsPopup : ConfusablesPopup;
-        popup.Placement = above >= below ? PlacementMode.Top : PlacementMode.Bottom;
-        drawer.MaxHeight = Math.Max(120, Math.Min(620, availableDip - 8));
-        if (drawer is Controls.RelationDrawer relationDrawer) relationDrawer.ScheduleViewportMeasure();
+        var relationDrawer = (RelationDrawer)drawer;
+        var plan = RelationDrawerPlacementPlanner.Plan(relationDrawer.DesiredFiveRowHeight(), belowDip, aboveDip);
+        popup.Placement = plan.Direction == RelationDrawerDirection.Below ? PlacementMode.Bottom : PlacementMode.Top;
+        drawer.MaxHeight = plan.MaxHeight;
+        relationDrawer.IsCompact = plan.UseCompactRows;
+        relationDrawer.ScheduleViewportMeasure();
+        SetPopupTopmost(relationDrawer, Topmost);
     }
 
-    private void RefreshTopmost() => Topmost = WindowPlacementService.ShouldBeTopmost(SuppressTopmostForFullscreen,
-        WindowPlacementService.IsForegroundFullscreen(handle));
+    private void RefreshTopmost()
+    {
+        Topmost = uiSmokeTopmostOverride ?? WindowPlacementService.ShouldBeTopmost(SuppressTopmostForFullscreen,
+            WindowPlacementService.IsForegroundFullscreen(handle));
+        SetPopupTopmost(SynonymsDrawer, Topmost);
+        SetPopupTopmost(ConfusablesDrawer, Topmost);
+    }
+
+    private void OnDrawerOpened(RelationDrawer drawer)
+    {
+        ConfigureDrawer(drawer);
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, drawer.FocusSearch);
+    }
+
+    private void DismissDrawer(RelationDrawer drawer)
+    {
+        if (ReferenceEquals(drawer, SynonymsDrawer)) { viewModel?.Synonyms.Close(); SynonymsButton.Focus(); }
+        else { viewModel?.Confusables.Close(); ConfusablesButton.Focus(); }
+    }
+
+    private void CloseDrawers()
+    {
+        viewModel?.Synonyms.Close();
+        viewModel?.Confusables.Close();
+    }
+
+    private static void SetPopupTopmost(Visual drawer, bool topmost)
+    {
+        if (PresentationSource.FromVisual(drawer) is not HwndSource popupSource) return;
+        NativePopup.SetWindowPos(popupSource.Handle, topmost ? new nint(-1) : new nint(-2), 0, 0, 0, 0,
+            NativePopup.NoMove | NativePopup.NoSize | NativePopup.NoActivate);
+    }
 
     private IReadOnlyList<MonitorWorkArea> CurrentMonitors()
     {
@@ -287,6 +345,14 @@ public partial class FloatingCardWindow : Window
     private static class NativeFocus
     {
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint window);
+    }
+
+    private static class NativePopup
+    {
+        public const uint NoSize = 0x0001;
+        public const uint NoMove = 0x0002;
+        public const uint NoActivate = 0x0010;
+        [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
     }
 }
 

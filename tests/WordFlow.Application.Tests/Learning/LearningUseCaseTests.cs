@@ -201,6 +201,45 @@ public sealed class LearningUseCaseTests
         Assert.DoesNotContain(Id(999), next.LastBuiltQueue);
     }
 
+    [Fact]
+    public async Task Next_card_projects_the_quality_gated_primary_definition_to_its_matching_sense()
+    {
+        var store = new FakeLearningStore([]);
+        var word = new VocabularyWord(Id(1), "abate", 1, true, "/əˈbeɪt/", "减轻", "to become less intense", "v");
+        var senses = new[]
+        {
+            new VocabularySense("sense-z", Id(1), "a legal reduction", "n"),
+            new VocabularySense("sense-a", Id(1), "to become less intense", "v"),
+        };
+        var queue = new GetNextCard(store, new FakeVocabularyRepository([word], senses), new QueuePolicy(new RecordingScheduler()), Clock());
+
+        var result = await queue.HandleAsync(new(DailyPlan.Default), default);
+
+        var primary = Assert.IsType<Success<NextCard?>>(result).Value!.PrimarySense!;
+        Assert.Equal("sense-a", primary.SenseId);
+        Assert.Equal("to become less intense", primary.Definition);
+        Assert.False(primary.IsDeterministicFallback);
+    }
+
+    [Fact]
+    public async Task Next_card_marks_a_deterministic_sense_fallback_when_actual_definition_has_no_match()
+    {
+        var store = new FakeLearningStore([]);
+        var word = new VocabularyWord(Id(1), "abate", 1, true, "", "减轻", "curated primary", "v");
+        var senses = new[]
+        {
+            new VocabularySense("sense-z", Id(1), "z", "v"),
+            new VocabularySense("sense-a", Id(1), "a", "n"),
+        };
+        var queue = new GetNextCard(store, new FakeVocabularyRepository([word], senses), new QueuePolicy(new RecordingScheduler()), Clock());
+
+        var primary = Assert.IsType<Success<NextCard?>>(await queue.HandleAsync(new(DailyPlan.Default), default)).Value!.PrimarySense!;
+
+        Assert.Equal("sense-a", primary.SenseId);
+        Assert.Equal("curated primary", primary.Definition);
+        Assert.True(primary.IsDeterministicFallback);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -317,15 +356,16 @@ public sealed class LearningUseCaseTests
         }
     }
 
-    private sealed class FakeVocabularyRepository(IEnumerable<VocabularyWord> words) : IVocabularyRepository
+    private sealed class FakeVocabularyRepository(IEnumerable<VocabularyWord> words, IEnumerable<VocabularySense>? senses = null) : IVocabularyRepository
     {
         private readonly VocabularyWord[] all = words.OrderBy(x => x.WordId).ToArray();
+        private readonly VocabularySense[] allSenses = (senses ?? []).ToArray();
         public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
             Task.FromResult(new Page<VocabularyWord>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length, page.Offset + Math.Min(page.Limit, Math.Max(0, all.Length - page.Offset)) < all.Length, "words:v1"));
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId));
         public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= all.Length, "words:v1"));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
-            Task.FromResult(new Page<VocabularySense>([], 0, false, "senses:v1"));
-        public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(true, "senses:v1"));
+            Task.FromResult(new Page<VocabularySense>(allSenses.Where(x => x.WordId == wordId).Skip(page.Offset).Take(page.Limit).ToArray(), allSenses.Count(x => x.WordId == wordId), false, "senses:v1"));
+        public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= allSenses.Count(x => x.WordId == wordId), "senses:v1"));
     }
 }

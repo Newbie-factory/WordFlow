@@ -1,5 +1,6 @@
 using WordFlow.App.ViewModels;
 using WordFlow.Application;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
 
 namespace WordFlow.App.Tests.ViewModels;
@@ -62,6 +63,71 @@ public sealed class RelationDrawerViewModelTests
         Assert.True(drawer.Groups[1].IsExpanded);
         Assert.Equal("folded", Assert.Single(drawer.FilteredItems).Word);
     }
+
+    [Fact]
+    public async Task Matching_primary_sense_is_expanded_even_when_groups_arrive_shuffled()
+    {
+        var rows = new[]
+        {
+            Row(Id(3), "secondary") with { SourceSenseId = "sense-z", PartOfSpeech = "v", SourceDefinition = "secondary" },
+            Row(Id(2), "primary") with { SourceSenseId = "sense-a", PartOfSpeech = "n", SourceDefinition = "actual primary" },
+            Row(Id(4), "other evidence") with { SourceSenseId = "sense-a", PartOfSpeech = "n", SourceDefinition = "actual primary" },
+        };
+        using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)), usesSenseGroups: true);
+
+        await drawer.OpenAsync(Id(1), new CurrentPrimarySense("sense-a", "actual primary", "n", false));
+
+        Assert.Equal("sense-a", drawer.Groups[0].SenseId);
+        Assert.True(drawer.Groups[0].IsExpanded);
+        Assert.Equal(2, drawer.Groups[0].Items.Count);
+        Assert.False(drawer.Groups[0].IsFallbackPrimary);
+        Assert.False(drawer.Groups[1].IsExpanded);
+    }
+
+    [Fact]
+    public async Task Missing_primary_sense_uses_a_deterministic_visibly_marked_fallback()
+    {
+        var rows = new[]
+        {
+            Row(Id(2), "z") with { SourceSenseId = "sense-z", PartOfSpeech = "v", SourceDefinition = "z definition" },
+            Row(Id(3), "a") with { SourceSenseId = "sense-a", PartOfSpeech = "n", SourceDefinition = "a definition" },
+        };
+        using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)), usesSenseGroups: true);
+
+        await drawer.OpenAsync(Id(1), new CurrentPrimarySense("missing", "primary definition", "n", true));
+
+        Assert.Equal("sense-a", drawer.Groups[0].SenseId);
+        Assert.True(drawer.Groups[0].IsFallbackPrimary);
+        Assert.Contains("默认", drawer.Groups[0].Header);
+    }
+
+    [Fact]
+    public async Task Projected_fallback_flag_remains_visible_when_its_deterministic_sense_id_matches()
+    {
+        var rows = new[] { Row(Id(2), "fallback") with { SourceSenseId = "sense-a", PartOfSpeech = "n", SourceDefinition = "fallback evidence" } };
+        using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)), usesSenseGroups: true);
+
+        await drawer.OpenAsync(Id(1), new CurrentPrimarySense("sense-a", "curated primary", "v", true));
+
+        Assert.True(drawer.Groups[0].IsFallbackPrimary);
+        Assert.Contains("默认", drawer.Groups[0].Header);
+    }
+
+    [Fact]
+    public async Task Search_normalizes_query_and_all_data_to_unicode_form_c()
+    {
+        var row = Row(Id(2), "café") with { SourceDefinition = "résumé" };
+        using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>([row])));
+        await drawer.OpenAsync(Id(1));
+
+        drawer.SearchText = "cafe\u0301";
+
+        Assert.Equal("café", Assert.Single(drawer.FilteredItems).Word);
+    }
     [Fact]
     public async Task Complete_results_are_preserved_while_search_filters_every_visible_detail()
     {
@@ -104,8 +170,10 @@ public sealed class RelationDrawerViewModelTests
     {
         var target = new RelationItemData(Id(2), "stimulate", "/ˈstɪmjuleɪt/", "刺激", "区别", "stimulate growth", "形近", false);
         var typo = new RelationItemData(null, "stimuate → stimulate", "", "拼写纠正", "错误拼写，只用于纠正", "", "误拼纠正", true);
+        var host = new FloatingCardActionHost(
+            new FakeActionPort(), new FakeActionPort(), new FakeActionPort());
         var drawer = new RelationDrawerViewModel("形近易混", "暂无可靠易混词",
-            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>([target, typo])));
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>([target, typo])), host);
         var requests = new List<RelationActionRequestedEventArgs>();
         drawer.ActionRequested += (_, args) => requests.Add(args);
         await drawer.OpenAsync(Id(1));
@@ -146,4 +214,8 @@ public sealed class RelationDrawerViewModelTests
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
     private static RelationItemData Row(Guid id, string word) =>
         new(id, word, "/test/", "释义", "辨析", "搭配", "近义", false);
+    private sealed class FakeActionPort : IFloatingCardActionPort
+    {
+        public FloatingCardActionResult Execute(Guid wordId, string word) => FloatingCardActionResult.Completed($"completed {word}");
+    }
 }

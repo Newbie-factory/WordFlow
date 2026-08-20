@@ -89,16 +89,12 @@ public partial class App : System.Windows.Application
         var placementPath = Path.Combine(Path.GetTempPath(), $"wordflow-ui-smoke-{Environment.ProcessId}.json");
         var smokeViewModel = UiSmokeCardFactory.CreateViewModel();
         card = new FloatingCardWindow(smokeViewModel, new WindowPlacementService(placementPath));
+        card.EnableUiSmokeControlMessages = true;
         card.SuppressTopmostForFullscreen = false;
         var workAreaArgument = Environment.GetCommandLineArgs().FirstOrDefault(argument => argument.StartsWith("--ui-smoke-work-area-height=", StringComparison.OrdinalIgnoreCase));
         if (workAreaArgument is not null && int.TryParse(workAreaArgument[(workAreaArgument.IndexOf('=') + 1)..], out var workAreaHeight))
             card.WorkAreaHeightLimitPx = workAreaHeight;
-        cardActionHost = new FloatingCardActionHost((_, _) => { }, (_, _) => { }, (_, _) => { });
-        card.RelationActionRequested += (_, request) =>
-        {
-            var result = cardActionHost.Dispatch(request);
-            smokeViewModel.ReportActionFeedback(result.AccessibleMessage, result.IsError);
-        };
+        card.RelationActionRequested += (_, request) => WriteLifecycle($"ui-smoke-card-action action={request.Action} word={request.Word}");
         MainWindow = card;
         card.Show();
         card.PrepareUiSmokeFocus();
@@ -111,6 +107,7 @@ public partial class App : System.Windows.Application
         var shortcutFaults = new ShortcutCallbackFaultHub();
         shortcutFaults.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
+        cardActionHost = FloatingCardActionHost.Unavailable;
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
             services.GetRequiredService<SubmitRating>(),
@@ -118,7 +115,8 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<UndoLastAction>(),
             services.GetRequiredService<GetSynonyms>(),
             services.GetRequiredService<GetConfusables>(),
-            new ShortcutLabelMap(shortcutService));
+            new ShortcutLabelMap(shortcutService),
+            cardActionHost);
         var paths = services.GetRequiredService<AppPaths>();
         card = new FloatingCardWindow(
             viewModel,
@@ -137,20 +135,15 @@ public partial class App : System.Windows.Application
             if (!appSettings.TrySetBoolean(FullscreenSuppressionSetting, args.Enabled, out var error) && error is not null)
                 WriteLifecycle($"app-setting-save-fault key={FullscreenSuppressionSetting} type={error.GetType().Name}");
         };
-        cardActionHost = new FloatingCardActionHost(
-            (_, word) => WriteLifecycle($"offline-tts-request word={word}"),
-            (_, word) => ShowLocalInformation("完整词条", $"{word} 的完整离线词条已交给控制中心打开。"),
-            (_, word) => ShowLocalInformation("加入学习", $"{word} 的加入学习请求已交给学习队列。"));
         card.RelationActionRequested += (_, request) =>
         {
-            var result = cardActionHost.Dispatch(request);
-            viewModel.ReportActionFeedback(result.AccessibleMessage, result.IsError);
-            WriteLifecycle($"card-action action={request.Action} word={request.Word} error={result.IsError}");
+            WriteLifecycle($"card-action-unavailable action={request.Action} word={request.Word}");
         };
         card.Closing += (_, args) =>
         {
             if (exiting) return;
             args.Cancel = true;
+            card.PrepareForHide();
             card.Hide();
             trayController?.SynchronizeCardVisibility(isVisible: false);
         };
@@ -183,7 +176,7 @@ public partial class App : System.Windows.Application
     {
         if (card is null) return;
         if (visible) { card.Show(); card.Activate(); }
-        else card.Hide();
+        else { card.PrepareForHide(); card.Hide(); }
         trayController?.SynchronizeCardVisibility(visible);
     }
 

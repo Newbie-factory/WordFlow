@@ -5,7 +5,9 @@ namespace WordFlow.Application.Learning;
 
 public sealed record GetNextCardRequest(DailyPlan Plan);
 
-public sealed record NextCard(CardState Card, Guid Revision, VocabularyWord Word);
+public sealed record CurrentPrimarySense(string SenseId, string Definition, string PartOfSpeech, bool IsDeterministicFallback);
+
+public sealed record NextCard(CardState Card, Guid Revision, VocabularyWord Word, CurrentPrimarySense? PrimarySense = null);
 
 public sealed class GetNextCard
 {
@@ -70,11 +72,35 @@ public sealed class GetNextCard
                 ?? new CardState(id, null, timeProvider.GetUtcNow());
             var projection = await ResolveProjectionAsync(id, ct).ConfigureAwait(false)
                 ?? throw new InvalidDataException($"Queue card {id:D} has no projection.");
-            return new Success<NextCard?>(new NextCard(projection.Card, projection.Revision, word));
+            var primarySense = await ResolvePrimarySenseAsync(word, ct).ConfigureAwait(false);
+            return new Success<NextCard?>(new NextCard(projection.Card, projection.Revision, word, primarySense));
         }
         catch (TransientStorageException exception)
         {
             return new StorageFailure<NextCard?>(exception.Message);
         }
+    }
+
+    private async Task<CurrentPrimarySense?> ResolvePrimarySenseAsync(VocabularyWord word, CancellationToken ct)
+    {
+        var senses = await PagedReads.AllAsync(
+            (page, token) => vocabulary.GetSensesAsync(word.WordId, page, token),
+            (offset, snapshot, token) => vocabulary.ProbeSensesEndAsync(word.WordId, offset, snapshot, token), ct).ConfigureAwait(false);
+        if (senses.Count == 0)
+            return string.IsNullOrWhiteSpace(word.PrimaryDefinition) ? null : new("", word.PrimaryDefinition, word.PrimaryPartOfSpeech, true);
+
+        static string Normalize(string? value) => (value ?? "").Trim().Normalize(System.Text.NormalizationForm.FormC);
+        var definition = Normalize(word.PrimaryDefinition);
+        var partOfSpeech = Normalize(word.PrimaryPartOfSpeech);
+        var matching = senses.FirstOrDefault(sense =>
+            definition.Length > 0 && string.Equals(Normalize(sense.Definition), definition, StringComparison.OrdinalIgnoreCase) &&
+            (partOfSpeech.Length == 0 || string.Equals(Normalize(sense.PartOfSpeech), partOfSpeech, StringComparison.OrdinalIgnoreCase)));
+        if (matching is not null) return new(matching.SenseId, matching.Definition, matching.PartOfSpeech ?? "", false);
+
+        var fallback = senses.OrderBy(sense => sense.SenseId, StringComparer.Ordinal).First();
+        return new(fallback.SenseId,
+            string.IsNullOrWhiteSpace(word.PrimaryDefinition) ? fallback.Definition : word.PrimaryDefinition,
+            string.IsNullOrWhiteSpace(word.PrimaryPartOfSpeech) ? fallback.PartOfSpeech ?? "" : word.PrimaryPartOfSpeech,
+            true);
     }
 }

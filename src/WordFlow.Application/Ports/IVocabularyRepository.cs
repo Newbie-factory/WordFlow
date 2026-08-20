@@ -29,7 +29,9 @@ public sealed record VocabularyWord(
     int? FrequencyRank,
     bool IsLearningHeadword = true,
     string Phonetic = "",
-    string Chinese = "");
+    string Chinese = "",
+    string PrimaryDefinition = "",
+    string PrimaryPartOfSpeech = "");
 
 public sealed record VocabularySense(string SenseId, Guid WordId, string Definition, string? PartOfSpeech = null);
 

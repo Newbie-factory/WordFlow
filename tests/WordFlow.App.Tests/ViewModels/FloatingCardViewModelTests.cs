@@ -130,7 +130,8 @@ public sealed class FloatingCardViewModelTests
     public async Task Current_word_actions_are_owned_and_publish_word_specific_requests()
     {
         using var labels = new ShortcutLabelMap(new FakeShortcutService());
-        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"));
+        var host = AvailableHost();
+        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"), actionHost: host);
         var requests = new List<RelationActionRequestedEventArgs>();
         viewModel.ActionRequested += (_, request) => requests.Add(request);
         await viewModel.InitializeAsync();
@@ -158,20 +159,34 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
-    public void Production_action_host_dispatches_every_advertised_action_to_an_owner_with_feedback()
+    public void Production_action_host_never_claims_success_without_a_registered_capability()
+    {
+        IFloatingCardActionHost host = FloatingCardActionHost.Unavailable;
+
+        var results = Enum.GetValues<RelationActionKind>()
+            .Select(action => host.Dispatch(new(action, Id(1), "abate"))).ToArray();
+
+        Assert.All(Enum.GetValues<RelationActionKind>(), action => Assert.False(host.Capability(action).IsAvailable));
+        Assert.All(results, result => Assert.Equal(FloatingCardActionStatus.Unavailable, result.Status));
+        Assert.All(results, result => Assert.Contains("功能将在对应离线模块就绪后可用", result.AccessibleMessage));
+        Assert.DoesNotContain(results, result => result.AccessibleMessage.Contains("已提交") || result.AccessibleMessage.Contains("已打开"));
+    }
+
+    [Fact]
+    public void Registered_action_ports_report_their_real_result_and_observable_side_effect()
     {
         var calls = new List<string>();
         IFloatingCardActionHost host = new FloatingCardActionHost(
-            (_, word) => calls.Add($"speak:{word}"),
-            (_, word) => calls.Add($"details:{word}"),
-            (_, word) => calls.Add($"add:{word}"));
+            new FakeActionPort((_, word) => { calls.Add($"speak:{word}"); return FloatingCardActionResult.Completed($"已播放 {word}"); }),
+            new FakeActionPort((_, word) => { calls.Add($"details:{word}"); return FloatingCardActionResult.Completed($"已打开 {word}"); }),
+            new FakeActionPort((_, word) => { calls.Add($"add:{word}"); return FloatingCardActionResult.Completed($"已加入 {word}"); }));
 
         var results = Enum.GetValues<RelationActionKind>()
             .Select(action => host.Dispatch(new(action, Id(1), "abate"))).ToArray();
 
         Assert.Equal(["speak:abate", "details:abate", "add:abate"], calls);
-        Assert.All(results, result => Assert.False(result.IsError));
-        Assert.All(results, result => Assert.Contains("abate", result.AccessibleMessage));
+        Assert.All(results, result => Assert.Equal(FloatingCardActionStatus.Completed, result.Status));
+        Assert.All(Enum.GetValues<RelationActionKind>(), action => Assert.True(host.Capability(action).IsAvailable));
     }
 
     [Fact]
@@ -190,10 +205,57 @@ public sealed class FloatingCardViewModelTests
         Assert.Equal("abate", viewModel.Word);
     }
 
+    [Fact]
+    public async Task Disposal_invalidates_an_ignored_cancellation_reload_after_undo()
+    {
+        var lateReload = new TaskCompletionSource<UseCaseResult<NextCard?>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loads = 0;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        var operations = new FloatingCardOperations(
+            (_, _) => ++loads == 1 ? Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)) : lateReload.Task,
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(new Success<LearningTransition>(new(initial.Card, initial))),
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(new Success<LearningTransition>(new(initial.Card, initial))),
+            (_, _) => Task.FromResult<UseCaseResult<CardState>>(new Success<CardState>(initial.Card)));
+        var viewModel = new FloatingCardViewModel(operations, EmptyDrawer("近义辨析", "暂无可靠近义词"), EmptyDrawer("形近易混", "暂无可靠易混词"), labels);
+        await viewModel.InitializeAsync();
+        await viewModel.RateAsync(RatingShortcut.F3);
+        var undo = viewModel.UndoAsync();
+
+        viewModel.Dispose();
+        lateReload.SetResult(new Success<NextCard?>(Card(2, "late", "/late/", "迟")));
+        await undo;
+
+        Assert.Equal("abate", viewModel.Word);
+    }
+
+    [Fact]
+    public async Task Pause_closes_drawers_and_gates_commands_and_shortcuts_without_learning_writes()
+    {
+        var writes = 0;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"),
+            submit: (_, _) => { writes++; throw new InvalidOperationException("must remain gated"); });
+        await viewModel.InitializeAsync();
+        await viewModel.HandleShortcutAsync(ShortcutAction.ToggleSynonyms);
+
+        viewModel.SetPaused(true);
+        await viewModel.HandleShortcutAsync(ShortcutAction.Good);
+        viewModel.GoodCommand.Execute(null);
+
+        Assert.True(viewModel.IsPaused);
+        Assert.False(viewModel.CanRate);
+        Assert.False(viewModel.Synonyms.IsOpen);
+        Assert.False(viewModel.ToggleSynonymsCommand.CanExecute(null));
+        Assert.Equal(0, writes);
+        Assert.Equal("学习已暂停", viewModel.AccessibleStatus);
+    }
+
     private static FloatingCardViewModel CreateViewModel(
         ShortcutLabelMap labels,
         NextCard initial,
-        Func<SubmitRatingRequest, CancellationToken, Task<UseCaseResult<LearningTransition>>>? submit = null)
+        Func<SubmitRatingRequest, CancellationToken, Task<UseCaseResult<LearningTransition>>>? submit = null,
+        IFloatingCardActionHost? actionHost = null)
     {
         var operations = new FloatingCardOperations(
             (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)),
@@ -202,8 +264,13 @@ public sealed class FloatingCardViewModelTests
             (_, _) => Task.FromResult<UseCaseResult<CardState>>(new Success<CardState>(initial.Card)));
         var synonyms = EmptyDrawer("近义辨析", "暂无可靠近义词");
         var confusables = EmptyDrawer("形近易混", "暂无可靠易混词");
-        return new FloatingCardViewModel(operations, synonyms, confusables, labels);
+        return new FloatingCardViewModel(operations, synonyms, confusables, labels, actionHost);
     }
+
+    private static IFloatingCardActionHost AvailableHost() => new FloatingCardActionHost(
+        new FakeActionPort((_, word) => FloatingCardActionResult.Completed($"played {word}")),
+        new FakeActionPort((_, word) => FloatingCardActionResult.Completed($"opened {word}")),
+        new FakeActionPort((_, word) => FloatingCardActionResult.Completed($"added {word}")));
 
     private static RelationDrawerViewModel EmptyDrawer(string title, string emptyMessage) =>
         new(title, emptyMessage, (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>([])));
@@ -237,5 +304,10 @@ public sealed class FloatingCardViewModelTests
             bindings[action] = binding;
             BindingChanged?.Invoke(this, new(action, binding));
         }
+    }
+
+    private sealed class FakeActionPort(Func<Guid, string, FloatingCardActionResult> execute) : IFloatingCardActionPort
+    {
+        public FloatingCardActionResult Execute(Guid wordId, string word) => execute(wordId, word);
     }
 }
