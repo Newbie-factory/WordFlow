@@ -187,7 +187,8 @@ public sealed class GlobalShortcutServiceTests
         var recreatedId = fixture.Native.IdFor((nint)84, ShortcutChord.Parse("F1"));
         Assert.False(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)originalId,
             (nint)((0x72 << 16) | 0)));
-        Assert.True(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)recreatedId));
+        Assert.True(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)recreatedId,
+            (nint)(0x70 << 16)));
         Assert.Equal(ShortcutAction.Again, invoked);
     }
 
@@ -308,7 +309,8 @@ public sealed class GlobalShortcutServiceTests
         fixture.Service.ActionInvoked += (_, action) => later = action;
         int id = fixture.Native.IdFor(fixture.Handle, ShortcutChord.Parse("F1"));
 
-        Assert.True(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)id));
+        Assert.True(fixture.Service.ProcessWindowMessage(GlobalShortcutService.WmHotKey, (nint)id,
+            (nint)(0x70 << 16)));
 
         Assert.IsType<InvalidOperationException>(reported);
         Assert.Equal(ShortcutAction.Again, later);
@@ -335,6 +337,7 @@ public sealed class GlobalShortcutServiceTests
 
         Assert.True(recovered.Succeeded);
         Assert.Equal(1, fixture.Native.CountRegistrations(fixture.Handle, candidate));
+        Assert.Equal(ShortcutLifecycleState.Ready, fixture.Service.Lifecycle.State);
     }
 
     private static ShortcutBinding Binding(string chord, ShortcutScope scope, bool enabled = true) =>

@@ -11,15 +11,17 @@ public partial class MainWindow : Window
 {
     private readonly IShortcutService? shortcutService;
     private readonly FocusedShortcutBindingBridge? focusedShortcuts;
+    private readonly IDisposable? shortcutFaultConnection;
     private HwndSource? source;
 
     public MainWindow() => InitializeComponent();
 
-    public MainWindow(IShortcutService shortcutService)
+    public MainWindow(IShortcutService shortcutService, ShortcutCallbackFaultHub? faultHub = null)
     {
         this.shortcutService = shortcutService ?? throw new ArgumentNullException(nameof(shortcutService));
-        focusedShortcuts = new FocusedShortcutBindingBridge(shortcutService);
         InitializeComponent();
+        focusedShortcuts = new FocusedShortcutBindingBridge(shortcutService);
+        shortcutFaultConnection = (faultHub ?? new ShortcutCallbackFaultHub()).Connect(shortcutService, focusedShortcuts);
         SourceInitialized += OnSourceInitialized;
         PreviewKeyDown += OnPreviewKeyDown;
         Closed += OnClosed;
@@ -69,6 +71,7 @@ public partial class MainWindow : Window
         if (focusedShortcuts is not null)
         {
             focusedShortcuts.ActionInvoked -= OnShortcutActionInvoked;
+            shortcutFaultConnection?.Dispose();
             focusedShortcuts.Dispose();
         }
     }

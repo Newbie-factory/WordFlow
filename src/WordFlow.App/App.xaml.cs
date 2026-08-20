@@ -77,9 +77,10 @@ public partial class App : System.Windows.Application
     {
         shortcutService = services?.GetRequiredService<IShortcutService>()
             ?? throw new InvalidOperationException("Primary services are not available.");
-        shortcutService.CallbackFaulted += (_, args) =>
+        var shortcutFaults = new ShortcutCallbackFaultHub();
+        shortcutFaults.CallbackFaulted += (_, args) =>
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
-        card = new MainWindow(shortcutService);
+        card = new MainWindow(shortcutService, shortcutFaults);
         card.Closing += (_, args) =>
         {
             if (exiting) return;

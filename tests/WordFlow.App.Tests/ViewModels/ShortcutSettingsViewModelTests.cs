@@ -225,6 +225,24 @@ public sealed class ShortcutSettingsViewModelTests
         Assert.Contains(nameof(ShortcutSettingsViewModel.ResetConflictReason), resetNotifications);
     }
 
+    [Fact]
+    public void Shared_fault_hub_reports_global_and_focused_faults_contains_observers_and_continues()
+    {
+        var service = new FakeShortcutService();
+        using var bridge = new FocusedShortcutBindingBridge(service);
+        var hub = new ShortcutCallbackFaultHub();
+        using var connection = hub.Connect(service, bridge);
+        var reported = new List<string>();
+        hub.CallbackFaulted += (_, _) => throw new InvalidOperationException("fault observer failed");
+        hub.CallbackFaulted += (_, args) => reported.Add(args.Exception.Message);
+        bridge.ActionInvoked += (_, _) => throw new InvalidOperationException("focused consumer failed");
+
+        service.PublishFault(new InvalidOperationException("global consumer failed"));
+        Assert.True(bridge.TryInvoke(ShortcutDefaults.For(ShortcutAction.Undo).Chord));
+
+        Assert.Equal(["global consumer failed", "focused consumer failed"], reported);
+    }
+
     private sealed class FakeShortcutService : IShortcutService
     {
         private readonly Dictionary<ShortcutAction, ShortcutBinding> bindings =
@@ -236,7 +254,7 @@ public sealed class ShortcutSettingsViewModelTests
         public List<(ShortcutAction Action, ShortcutBinding Candidate)> Replacements { get; } = [];
         public ShortcutRegistrationResult? NextFailure { get; set; }
         public event EventHandler<ShortcutAction>? ActionInvoked { add { } remove { } }
-        public event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted { add { } remove { } }
+        public event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted;
         public event EventHandler<ShortcutBindingChangedEventArgs>? BindingChanged;
 
         public ShortcutRegistrationResult TryReplace(ShortcutAction action, ShortcutBinding candidate)
@@ -277,5 +295,6 @@ public sealed class ShortcutSettingsViewModelTests
             if (commit) bindings[action] = binding;
             BindingChanged?.Invoke(this, new(action, binding, version));
         }
+        public void PublishFault(Exception exception) => CallbackFaulted?.Invoke(this, new(exception));
     }
 }

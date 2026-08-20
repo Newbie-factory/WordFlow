@@ -288,3 +288,42 @@ public sealed class FocusedShortcutBindingBridge : IDisposable
         }
     }
 }
+
+public sealed class ShortcutCallbackFaultHub
+{
+    public event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted;
+
+    public IDisposable Connect(IShortcutService service, FocusedShortcutBindingBridge focusedBridge)
+    {
+        ArgumentNullException.ThrowIfNull(service);
+        ArgumentNullException.ThrowIfNull(focusedBridge);
+        service.CallbackFaulted += OnCallbackFaulted;
+        focusedBridge.CallbackFaulted += OnCallbackFaulted;
+        return new Connection(service, focusedBridge, OnCallbackFaulted);
+    }
+
+    private void OnCallbackFaulted(object? sender, ShortcutCallbackFaultedEventArgs args)
+    {
+        if (CallbackFaulted is not { } handlers) return;
+        foreach (EventHandler<ShortcutCallbackFaultedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try { handler(this, args); }
+            catch { }
+        }
+    }
+
+    private sealed class Connection(
+        IShortcutService service,
+        FocusedShortcutBindingBridge focusedBridge,
+        EventHandler<ShortcutCallbackFaultedEventArgs> handler) : IDisposable
+    {
+        private bool disposed;
+        public void Dispose()
+        {
+            if (disposed) return;
+            service.CallbackFaulted -= handler;
+            focusedBridge.CallbackFaulted -= handler;
+            disposed = true;
+        }
+    }
+}

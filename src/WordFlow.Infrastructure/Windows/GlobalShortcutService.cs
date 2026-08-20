@@ -18,6 +18,8 @@ public sealed class GlobalShortcutService : IShortcutService
     public const int WmHotKey = 0x0312;
     private const int DefaultMaximumRegistrationId = 0xBFFF;
     private const int RegistrationIdExhausted = -2;
+    private const string PendingCleanupCause = "native-cleanup";
+    private const string TransactionDisposeCause = "persistence-transaction-dispose";
     private readonly object gate = new();
     private readonly IHotKeyNative native;
     private readonly IShortcutBindingStore store;
@@ -29,6 +31,8 @@ public sealed class GlobalShortcutService : IShortcutService
     private readonly HashSet<int> reservedIds = [];
     private readonly HashSet<int> retiredIds = [];
     private readonly List<ShortcutRestoreIssue> restoreIssues = [];
+    private readonly Queue<ShortcutBindingChangedEventArgs> queuedChanges = [];
+    private readonly Dictionary<string, string> degradationCauses = [];
     private readonly Dictionary<ShortcutAction, long> bindingVersions =
         Enum.GetValues<ShortcutAction>().ToDictionary(action => action, _ => 0L);
     private ShortcutLifecycleSnapshot lifecycle = new(ShortcutLifecycleState.Ready);
@@ -74,15 +78,16 @@ public sealed class GlobalShortcutService : IShortcutService
     public event EventHandler<ShortcutBindingChangedEventArgs>? BindingChanged;
     public event EventHandler<ShortcutCallbackFaultedEventArgs>? CallbackFaulted;
 
-    public ShortcutRegistrationResult AttachWindowHandle(nint handle) => dispatcher.Invoke(() => AttachCore(handle));
-    public ShortcutRestoreResult RestorePersisted() => dispatcher.Invoke(RestoreCore);
+    public ShortcutRegistrationResult AttachWindowHandle(nint handle) =>
+        dispatcher.Invoke(() => ExecuteWithEventDrain(() => AttachCore(handle)));
+    public ShortcutRestoreResult RestorePersisted() => dispatcher.Invoke(() => ExecuteWithEventDrain(RestoreCore));
     public ShortcutRegistrationResult TryReplace(ShortcutAction action, ShortcutBinding candidate)
     {
         ArgumentNullException.ThrowIfNull(candidate);
-        return dispatcher.Invoke(() => ReplaceCore(action, candidate));
+        return dispatcher.Invoke(() => ExecuteWithEventDrain(() => ReplaceCore(action, candidate)));
     }
-    public ShortcutRegistrationResult ResetAll() => dispatcher.Invoke(ResetCore);
-    public bool ProcessWindowMessage(int message, nint id, nint chordData = default) =>
+    public ShortcutRegistrationResult ResetAll() => dispatcher.Invoke(() => ExecuteWithEventDrain(ResetCore));
+    public bool ProcessWindowMessage(int message, nint id, nint chordData) =>
         dispatcher.Invoke(() => ProcessMessageCore(message, id, chordData));
     public void Dispose() => dispatcher.Invoke(DisposeCore);
 
@@ -109,30 +114,29 @@ public sealed class GlobalShortcutService : IShortcutService
             foreach (var pair in old)
             {
                 if (!TryRemoveActive(pair.Key, out var registration, out var error))
-                    return RollBack(previous, removed, staged,
+                    return ResolveRollback(RollBack(previous, removed, staged,
                         $"Windows could not release {pair.Value.Chord} from the previous window (error {error}).",
-                        ShortcutConflictKind.OperatingSystem, oldHandle);
+                        ShortcutConflictKind.OperatingSystem, oldHandle));
                 removed.Add(pair.Key, registration);
             }
             foreach (var pair in removed)
             {
                 if (!TryRegisterSpecificStaged(handle, pair.Value.Id, pair.Key, pair.Value.Chord, out var candidate, out var error))
-                    return RollBack(previous, removed, staged,
+                    return ResolveRollback(RollBack(previous, removed, staged,
                         $"Windows could not register {pair.Value.Chord} on the recreated window (error {error}).",
-                        ShortcutConflictKind.OperatingSystem, oldHandle);
+                        ShortcutConflictKind.OperatingSystem, oldHandle));
                 staged.Add(candidate);
             }
             windowHandle = handle;
             foreach (var registration in staged) registrations[registration.Action] = registration;
             retiredIds.Clear();
-            SetReadyIfRecovered();
+            RecomputeLifecycle();
             return ShortcutRegistrationResult.Success();
         }
     }
 
     private ShortcutRestoreResult RestoreCore()
     {
-        List<ShortcutBindingChangedEventArgs> changes;
         List<ShortcutRestoreIssue> issues = [];
         lock (gate)
         {
@@ -151,7 +155,8 @@ public sealed class GlobalShortcutService : IShortcutService
                     var rollback = RollBack(previous, removed, staged,
                         $"Could not release an active shortcut during restore (error {error}).",
                         ShortcutConflictKind.OperatingSystem, windowHandle);
-                    throw new InvalidOperationException(rollback.ConflictReason);
+                    if (rollback.FatalFailure is { } fatal) throw fatal;
+                    throw new InvalidOperationException(rollback.Result.ConflictReason);
                 }
                 removed.Add(action, registration);
             }
@@ -166,31 +171,35 @@ public sealed class GlobalShortcutService : IShortcutService
                             : $"Windows rejected {pair.Value.DisplayText} (error {error})."));
                 }
             }
-            Exception? persistenceDisposeFailure;
-            try { persistenceDisposeFailure = Persist(target); }
-            catch (Exception exception) when (IsPersistenceException(exception))
+            var persistence = Persist(target);
+            if (!persistence.Committed)
             {
-                var rollback = RollBack(previous, removed, staged, $"Could not persist restored shortcuts: {exception.Message}",
+                var rollback = RollBack(previous, removed, staged,
+                    $"Could not persist restored shortcuts: {persistence.OperationFailure?.Message ?? "unknown persistence failure"}",
                     ShortcutConflictKind.Persistence, windowHandle);
-                throw new InvalidOperationException(rollback.ConflictReason, exception);
+                rollback = PreserveTransactionDisposeFailure(rollback, persistence.DisposeFailure,
+                    "The failed restore transaction could not be closed");
+                var fatal = FirstUnexpected(persistence.OperationFailure, persistence.DisposeFailure) ?? rollback.FatalFailure;
+                if (fatal is not null) throw fatal;
+                throw new InvalidOperationException(rollback.Result.ConflictReason, persistence.OperationFailure);
             }
             foreach (var registration in staged) registrations[registration.Action] = registration;
-            changes = ApplyBindings(target);
+            QueueChanges(ApplyBindings(target));
             restoreIssues.Clear();
             restoreIssues.AddRange(issues);
             restored = true;
-            SetReadyIfRecovered();
-            if (persistenceDisposeFailure is not null)
-                SetLifecycle(ShortcutLifecycleState.Degraded,
-                    $"Restored shortcuts were committed, but closing their persistence transaction failed: {persistenceDisposeFailure.Message}");
+            RecomputeLifecycle();
+            if (persistence.DisposeFailure is not null)
+                SetDegradation(TransactionDisposeCause,
+                    $"Restored shortcuts were committed, but closing their persistence transaction failed: {persistence.DisposeFailure.Message}");
+            else ClearDegradation(TransactionDisposeCause);
+            if (FirstUnexpected(persistence.DisposeFailure) is { } fatalDispose) throw fatalDispose;
         }
-        PublishChanges(changes);
         return new(issues);
     }
 
     private ShortcutRegistrationResult ReplaceCore(ShortcutAction action, ShortcutBinding candidate)
     {
-        ShortcutBindingChangedEventArgs? change = null;
         ShortcutRegistrationResult result;
         lock (gate)
         {
@@ -225,10 +234,10 @@ public sealed class GlobalShortcutService : IShortcutService
             target[action] = candidate;
             IShortcutBindingStoreTransaction transaction;
             try { transaction = store.BeginReplace(ToStored(target)); }
-            catch (Exception exception) when (IsPersistenceException(exception))
+            catch (Exception exception)
             {
-                CleanupStaged(staged);
-                return FailureAfterCleanup(ShortcutConflictKind.Persistence, $"Could not stage setting: {exception.Message}", previousBinding);
+                return ResolveRollback(RollBack(previous, new Dictionary<ShortcutAction, Registration>(), staged,
+                    $"Could not stage setting: {exception.Message}", ShortcutConflictKind.Persistence, windowHandle), exception);
             }
             var removed = new Dictionary<ShortcutAction, Registration>();
             string? nativeFailure = null;
@@ -246,32 +255,39 @@ public sealed class GlobalShortcutService : IShortcutService
                 if (nativeFailure is null)
                 {
                     try { transaction.Commit(); committed = true; }
-                    catch (Exception exception) when (IsPersistenceException(exception)) { commitFailure = exception; }
+                    catch (Exception exception) { commitFailure = exception; }
                 }
             }
             finally
             {
                 try { transaction.Dispose(); }
-                catch (Exception exception) when (IsPersistenceException(exception)) { disposeFailure = exception; }
+                catch (Exception exception) { disposeFailure = exception; }
             }
             if (!committed)
             {
                 string failure = nativeFailure ?? $"Could not commit setting: {commitFailure?.Message ?? disposeFailure?.Message ?? "unknown persistence failure"}";
                 if (disposeFailure is not null) failure += $" Transaction disposal also failed: {disposeFailure.Message}";
-                return RollBack(previous, removed, staged, failure,
-                    nativeFailure is null ? ShortcutConflictKind.Persistence : ShortcutConflictKind.OperatingSystem, windowHandle);
+                var rollback = PreserveTransactionDisposeFailure(
+                    RollBack(previous, removed, staged, failure,
+                        nativeFailure is null ? ShortcutConflictKind.Persistence : ShortcutConflictKind.OperatingSystem, windowHandle),
+                    disposeFailure, "The failed replacement transaction could not be closed");
+                return ResolveRollback(rollback,
+                    commitFailure, disposeFailure);
             }
             foreach (var registration in staged) registrations[action] = registration;
             bindings[action] = candidate;
             restoreIssues.RemoveAll(issue => issue.Action == action);
-            change = new(action, candidate, ++bindingVersion);
+            var change = new ShortcutBindingChangedEventArgs(action, candidate, ++bindingVersion);
             bindingVersions[action] = change.Version;
+            QueueChanges([change]);
+            ClearDegradation(BindingDegradationCause(action));
             if (disposeFailure is not null)
-                SetLifecycle(ShortcutLifecycleState.Degraded,
+                SetDegradation(TransactionDisposeCause,
                     $"The shortcut was committed, but closing its persistence transaction failed: {disposeFailure.Message}");
+            else ClearDegradation(TransactionDisposeCause);
             result = ShortcutRegistrationResult.Success(candidate);
+            if (FirstUnexpected(disposeFailure) is { } fatalDispose) throw fatalDispose;
         }
-        if (change is not null) PublishChange(change);
         return result;
     }
 
@@ -291,8 +307,11 @@ public sealed class GlobalShortcutService : IShortcutService
             var previous = CopyBindings();
             IShortcutBindingStoreTransaction transaction;
             try { transaction = store.BeginReplace(ToStored(target)); }
-            catch (Exception exception) when (IsPersistenceException(exception))
-            { return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Persistence, exception.Message); }
+            catch (Exception exception)
+            {
+                return ResolveRollback(RollBack(previous, new Dictionary<ShortcutAction, Registration>(), [],
+                    $"Could not stage reset: {exception.Message}", ShortcutConflictKind.Persistence, windowHandle), exception);
+            }
             var removed = new Dictionary<ShortcutAction, Registration>();
             var staged = new List<Registration>();
             string? nativeFailure = null;
@@ -320,31 +339,38 @@ public sealed class GlobalShortcutService : IShortcutService
                 if (nativeFailure is null)
                 {
                     try { transaction.Commit(); committed = true; }
-                    catch (Exception exception) when (IsPersistenceException(exception)) { commitFailure = exception; }
+                    catch (Exception exception) { commitFailure = exception; }
                 }
             }
             finally
             {
                 try { transaction.Dispose(); }
-                catch (Exception exception) when (IsPersistenceException(exception)) { disposeFailure = exception; }
+                catch (Exception exception) { disposeFailure = exception; }
             }
             if (!committed)
             {
                 string failure = nativeFailure ?? $"Could not commit reset: {commitFailure?.Message ?? disposeFailure?.Message ?? "unknown persistence failure"}";
                 if (disposeFailure is not null) failure += $" Transaction disposal also failed: {disposeFailure.Message}";
-                return RollBack(previous, removed, staged, failure,
-                    nativeFailure is null ? ShortcutConflictKind.Persistence : ShortcutConflictKind.OperatingSystem, windowHandle);
+                var rollback = PreserveTransactionDisposeFailure(
+                    RollBack(previous, removed, staged, failure,
+                        nativeFailure is null ? ShortcutConflictKind.Persistence : ShortcutConflictKind.OperatingSystem, windowHandle),
+                    disposeFailure, "The failed reset transaction could not be closed");
+                return ResolveRollback(rollback,
+                    commitFailure, disposeFailure);
             }
             foreach (var registration in staged) registrations[registration.Action] = registration;
             changes = ApplyBindings(target);
+            QueueChanges(changes);
             restoreIssues.Clear();
-            SetReadyIfRecovered();
+            ClearBindingDegradations();
+            RecomputeLifecycle();
             if (disposeFailure is not null)
-                SetLifecycle(ShortcutLifecycleState.Degraded,
+                SetDegradation(TransactionDisposeCause,
                     $"The reset was committed, but closing its persistence transaction failed: {disposeFailure.Message}");
+            else ClearDegradation(TransactionDisposeCause);
             result = ShortcutRegistrationResult.Success();
+            if (FirstUnexpected(disposeFailure) is { } fatalDispose) throw fatalDispose;
         }
-        PublishChanges(changes);
         return result;
     }
 
@@ -356,12 +382,10 @@ public sealed class GlobalShortcutService : IShortcutService
             if (disposed || message != WmHotKey) return false;
             var match = registrations.FirstOrDefault(pair => pair.Value.Id == idValue.ToInt32());
             if (match.Equals(default(KeyValuePair<ShortcutAction, Registration>))) return false;
-            if (chordData != 0)
-            {
-                long encoded = chordData.ToInt64();
-                if ((int)(encoded & 0xFFFF) != (int)match.Value.Chord.Modifiers ||
-                    (int)((encoded >> 16) & 0xFFFF) != match.Value.Chord.VirtualKey) return false;
-            }
+            if (chordData == 0) return false;
+            long encoded = chordData.ToInt64();
+            if ((int)(encoded & 0xFFFF) != (int)match.Value.Chord.Modifiers ||
+                (int)((encoded >> 16) & 0xFFFF) != match.Value.Chord.VirtualKey) return false;
             action = match.Key;
         }
         PublishAction(action);
@@ -383,14 +407,14 @@ public sealed class GlobalShortcutService : IShortcutService
             }
             RetryPendingCore();
             foreach (var pending in pendingCleanup) failures.Add(new Win32Exception($"Could not clean up {pending.Chord} registration {pending.Id}."));
-            if (failures.Count > 0) SetLifecycle(ShortcutLifecycleState.Terminal,
+            if (failures.Count > 0) SetTerminal(
                 "Disposal could not release every Windows shortcut; remaining IDs are non-routable and tracked.");
-            else { disposed = true; SetLifecycle(ShortcutLifecycleState.Disposed, "All Windows shortcuts were released."); }
+            else { disposed = true; degradationCauses.Clear(); lifecycle = new(ShortcutLifecycleState.Disposed, "All Windows shortcuts were released."); }
         }
         if (failures.Count > 0) throw new AggregateException("One or more Windows shortcut registrations could not be released.", failures);
     }
 
-    private ShortcutRegistrationResult RollBack(IReadOnlyDictionary<ShortcutAction, ShortcutBinding> previous,
+    private RollbackOutcome RollBack(IReadOnlyDictionary<ShortcutAction, ShortcutBinding> previous,
         IReadOnlyDictionary<ShortcutAction, Registration> removed, IReadOnlyCollection<Registration> staged,
         string failure, ShortcutConflictKind originalKind, nint restoreHandle)
     {
@@ -404,42 +428,38 @@ public sealed class GlobalShortcutService : IShortcutService
             reconstructionFailures.Add($"{pair.Key}/{pair.Value.Chord} (error {error})");
         }
         windowHandle = restoreHandle;
-        Exception? reconciliationDisposeFailure;
-        try { reconciliationDisposeFailure = Persist(reconciled); }
-        catch (Exception exception) when (IsPersistenceException(exception))
+        var reconciliation = Persist(reconciled);
+        if (!reconciliation.Committed)
         {
             var terminalChanges = ApplyBindings(reconciled);
-            SetLifecycle(ShortcutLifecycleState.Terminal,
-                $"{failure} SQLite reconciliation failed after Windows rollback: {exception.Message}");
-            PublishChanges(terminalChanges);
-            return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!,
-                removed.Count == 1 ? reconciled[removed.Keys.Single()] : null);
+            SetTerminal(
+                $"{failure} SQLite reconciliation failed after Windows rollback: {reconciliation.OperationFailure?.Message ?? "unknown persistence failure"}");
+            QueueChanges(terminalChanges);
+            return new(ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!,
+                    removed.Count == 1 ? reconciled[removed.Keys.Single()] : null),
+                FirstUnexpected(reconciliation.OperationFailure, reconciliation.DisposeFailure));
         }
         if (reconstructionFailures.Count > 0)
         {
             var changes = ApplyBindings(reconciled);
-            SetLifecycle(ShortcutLifecycleState.Degraded,
-                $"{failure} Disabled bindings Windows could not reconstruct: {string.Join(", ", reconstructionFailures)}.");
-            PublishChanges(changes);
+            foreach (var pair in removed.Where(pair => !registrations.ContainsKey(pair.Key)))
+                SetDegradation(BindingDegradationCause(pair.Key),
+                    $"{failure} Disabled {pair.Key}; Windows could not reconstruct {pair.Value.Chord}.");
+            QueueChanges(changes);
         }
         else if (pendingCleanup.Count > 0)
-            SetLifecycle(ShortcutLifecycleState.Degraded, $"{failure} Candidate cleanup remains tracked and non-routable.");
-        else if (reconciliationDisposeFailure is not null)
-            SetLifecycle(ShortcutLifecycleState.Degraded,
-                $"{failure} The reconciled snapshot was committed, but closing its persistence transaction failed: {reconciliationDisposeFailure.Message}");
+            SetDegradation(PendingCleanupCause, $"{failure} Candidate cleanup remains tracked and non-routable.");
+        if (reconciliation.DisposeFailure is not null)
+            SetDegradation(TransactionDisposeCause,
+                $"{failure} The reconciled snapshot was committed, but closing its persistence transaction failed: {reconciliation.DisposeFailure.Message}");
+        else ClearDegradation(TransactionDisposeCause);
 
-        if (reconstructionFailures.Count > 0 || pendingCleanup.Count > 0 || reconciliationDisposeFailure is not null)
-            return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!,
-                removed.Count == 1 ? reconciled[removed.Keys.Single()] : null);
-        return ShortcutRegistrationResult.Conflict(originalKind, failure,
-            removed.Count == 1 ? previous[removed.Keys.Single()] : null);
-    }
-
-    private ShortcutRegistrationResult FailureAfterCleanup(ShortcutConflictKind kind, string reason, ShortcutBinding actual)
-    {
-        if (pendingCleanup.Count == 0) return ShortcutRegistrationResult.Conflict(kind, reason, actual);
-        SetLifecycle(ShortcutLifecycleState.Degraded, $"{reason} Candidate cleanup remains tracked and non-routable.");
-        return ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!, actual);
+        var result = reconstructionFailures.Count > 0 || pendingCleanup.Count > 0 || reconciliation.DisposeFailure is not null
+            ? ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!,
+                removed.Count == 1 ? reconciled[removed.Keys.Single()] : null)
+            : ShortcutRegistrationResult.Conflict(originalKind, failure,
+                removed.Count == 1 ? previous[removed.Keys.Single()] : null);
+        return new(result, FirstUnexpected(reconciliation.DisposeFailure));
     }
 
     private Dictionary<ShortcutAction, ShortcutBinding> ParseAndSanitize(IReadOnlyList<StoredShortcutBinding> rows, List<ShortcutRestoreIssue> issues)
@@ -543,6 +563,7 @@ public sealed class GlobalShortcutService : IShortcutService
         reservedIds.Add(registration.Id);
         restoreIssues.RemoveAll(issue => issue.Action is null && issue.Kind == ShortcutConflictKind.Lifecycle);
         restoreIssues.Add(new(null, ShortcutConflictKind.Lifecycle, $"Windows cleanup is pending for {registration.Chord} (error {error})."));
+        SetDegradation(PendingCleanupCause, $"Windows cleanup is pending for {registration.Chord} (error {error}).");
     }
 
     private void RetryPendingCore()
@@ -554,7 +575,11 @@ public sealed class GlobalShortcutService : IShortcutService
             pendingCleanup.RemoveAt(index);
             Retire(registration.Id);
         }
-        if (pendingCleanup.Count == 0) restoreIssues.RemoveAll(issue => issue.Action is null && issue.Kind == ShortcutConflictKind.Lifecycle);
+        if (pendingCleanup.Count == 0)
+        {
+            restoreIssues.RemoveAll(issue => issue.Action is null && issue.Kind == ShortcutConflictKind.Lifecycle);
+            ClearDegradation(PendingCleanupCause);
+        }
     }
 
     private bool TryAllocateId(out int id)
@@ -574,22 +599,46 @@ public sealed class GlobalShortcutService : IShortcutService
     }
 
     private void Retire(int id) { reservedIds.Remove(id); retiredIds.Add(id); }
-    private Exception? Persist(IReadOnlyDictionary<ShortcutAction, ShortcutBinding> snapshot)
+    private PersistenceAttempt Persist(IReadOnlyDictionary<ShortcutAction, ShortcutBinding> snapshot)
     {
-        var transaction = store.BeginReplace(ToStored(snapshot));
+        IShortcutBindingStoreTransaction transaction;
+        try { transaction = store.BeginReplace(ToStored(snapshot)); }
+        catch (Exception exception) { return new(false, exception, null); }
         Exception? commitFailure = null;
         Exception? disposeFailure = null;
-        try { transaction.Commit(); }
+        bool committed = false;
+        try { transaction.Commit(); committed = true; }
         catch (Exception exception) { commitFailure = exception; }
         try { transaction.Dispose(); }
         catch (Exception exception) { disposeFailure = exception; }
-        if (commitFailure is not null) throw commitFailure;
-        return disposeFailure;
+        return new(committed, commitFailure, disposeFailure);
     }
     private Dictionary<ShortcutAction, ShortcutBinding> CopyBindings() => bindings.ToDictionary(pair => pair.Key, pair => pair.Value);
-    private void SetLifecycle(ShortcutLifecycleState state, string? reason) => lifecycle = new(state, reason);
-    private void SetReadyIfRecovered()
-    { if (pendingCleanup.Count == 0 && lifecycle.State != ShortcutLifecycleState.Terminal) SetLifecycle(ShortcutLifecycleState.Ready, null); }
+    private static string BindingDegradationCause(ShortcutAction action) => $"binding-reconstruction:{action}";
+    private void SetDegradation(string cause, string reason)
+    {
+        degradationCauses[cause] = reason;
+        RecomputeLifecycle();
+    }
+    private void ClearDegradation(string cause)
+    {
+        degradationCauses.Remove(cause);
+        RecomputeLifecycle();
+    }
+    private void ClearBindingDegradations()
+    {
+        foreach (string cause in degradationCauses.Keys.Where(key => key.StartsWith("binding-reconstruction:", StringComparison.Ordinal)).ToArray())
+            degradationCauses.Remove(cause);
+        RecomputeLifecycle();
+    }
+    private void RecomputeLifecycle()
+    {
+        if (lifecycle.State is ShortcutLifecycleState.Terminal or ShortcutLifecycleState.Disposed) return;
+        lifecycle = degradationCauses.Count == 0
+            ? new(ShortcutLifecycleState.Ready)
+            : new(ShortcutLifecycleState.Degraded, string.Join(" ", degradationCauses.OrderBy(pair => pair.Key).Select(pair => $"[{pair.Key}] {pair.Value}")));
+    }
+    private void SetTerminal(string reason) => lifecycle = new(ShortcutLifecycleState.Terminal, reason);
     private ShortcutRegistrationResult TerminalResult() => ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle,
         lifecycle.Reason ?? "The shortcut service is terminal.");
     private static ShortcutRegistrationResult DisposedResult() => ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle,
@@ -601,6 +650,26 @@ public sealed class GlobalShortcutService : IShortcutService
 
     private void PublishChanges(IEnumerable<ShortcutBindingChangedEventArgs>? changes)
     { if (changes is not null) foreach (var change in changes) PublishChange(change); }
+    private T ExecuteWithEventDrain<T>(Func<T> action)
+    {
+        try { return action(); }
+        finally { DrainQueuedChanges(); }
+    }
+    private void QueueChanges(IEnumerable<ShortcutBindingChangedEventArgs>? changes)
+    {
+        if (changes is null) return;
+        foreach (var change in changes) queuedChanges.Enqueue(change);
+    }
+    private void DrainQueuedChanges()
+    {
+        List<ShortcutBindingChangedEventArgs> changes;
+        lock (gate)
+        {
+            changes = queuedChanges.ToList();
+            queuedChanges.Clear();
+        }
+        PublishChanges(changes);
+    }
     private void PublishAction(ShortcutAction action)
     {
         if (ActionInvoked is not { } handlers) return;
@@ -630,9 +699,29 @@ public sealed class GlobalShortcutService : IShortcutService
     private static IReadOnlyCollection<StoredShortcutBinding> ToStored(IReadOnlyDictionary<ShortcutAction, ShortcutBinding> source) =>
         source.OrderBy(pair => pair.Key).Select(pair => StoredShortcutBinding.From(pair.Key, pair.Value)).ToArray();
     private static bool IsActiveGlobal(ShortcutBinding binding) => binding.IsEnabled && binding.Scope == ShortcutScope.Global;
-    private static bool IsPersistenceException(Exception exception) => exception is IOException or SqliteException or UnauthorizedAccessException;
-    private static Win32Exception NativeFailure(string operation, int error) => new(error, $"Could not {operation} (Win32 error {error}).");
+    private static bool IsExpectedPersistenceException(Exception exception) =>
+        exception is IOException or SqliteException or UnauthorizedAccessException;
+    private static Exception? FirstUnexpected(params Exception?[] failures) =>
+        failures.FirstOrDefault(failure => failure is not null && !IsExpectedPersistenceException(failure));
+    private static ShortcutRegistrationResult ResolveRollback(RollbackOutcome outcome, params Exception?[] failures)
+    {
+        var fatal = FirstUnexpected(failures) ?? outcome.FatalFailure;
+        if (fatal is not null) throw fatal;
+        return outcome.Result;
+    }
+    private RollbackOutcome PreserveTransactionDisposeFailure(RollbackOutcome outcome, Exception? disposeFailure, string context)
+    {
+        if (disposeFailure is null) return outcome;
+        SetDegradation(TransactionDisposeCause, $"{context}: {disposeFailure.Message}.");
+        if (lifecycle.State == ShortcutLifecycleState.Terminal) return outcome;
+        return outcome with
+        {
+            Result = ShortcutRegistrationResult.Conflict(ShortcutConflictKind.Lifecycle, lifecycle.Reason!, outcome.Result.Binding),
+        };
+    }
     private readonly record struct Registration(nint Handle, int Id, ShortcutAction Action, ShortcutChord Chord);
+    private readonly record struct PersistenceAttempt(bool Committed, Exception? OperationFailure, Exception? DisposeFailure);
+    private sealed record RollbackOutcome(ShortcutRegistrationResult Result, Exception? FatalFailure = null);
 }
 
 public sealed class OwnerThreadShortcutDispatcher : IShortcutDispatcher

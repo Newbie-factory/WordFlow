@@ -180,3 +180,68 @@ Results:
 ### Remaining concern
 
 No user-space design can prevent another process from claiming the old chord after its required `UnregisterHotKey` and before rollback reconstruction. That external theft is now an explicit modeled outcome: the action is disabled, OS/SQLite/memory are reconciled, and lifecycle is Degraded. If SQLite reconciliation also fails, lifecycle becomes Terminal; the service never reports the hidden old binding as active.
+
+## Second re-review remediation (C1, I1-I3)
+
+### Additional RED evidence
+
+- Non-allowlisted `InvalidOperationException`-derived boundary faults from `BeginReplace`, `Commit`, and transaction `Dispose` escaped before candidate cleanup, old reconstruction, or committed-state adoption. Focused tests observed staged registrations left native, old registrations missing, and memory disagreeing with persisted state.
+- A restore `BeginReplace` fault left newly staged registrations native but non-routable. A reconciliation `BeginReplace` fault left lifecycle Ready while Windows could no longer reconstruct the advertised binding.
+- Pending cleanup recovery followed by a successful replacement left lifecycle Degraded. Conversely, recreating the HWND cleared an unrelated persistence-transaction-dispose degradation.
+- Degraded and Terminal rollback `BindingChanged` callbacks synchronously waiting for a worker-thread `Bindings` snapshot timed out because rollback invoked them while holding the mutation gate.
+- `WM_HOTKEY` with zero lParam routed by ID alone.
+- The shared production focused/global fault hub test initially failed compilation because no composition-level reporter existed.
+
+All failures were observed under focused filters before production changes.
+
+### Unconditional persistence-boundary compensation
+
+- The store boundary now captures every `Exception` from staging, commit, and dispose. Expected IO/SQLite/access failures remain result-based. Unexpected programmer/boundary failures are retained and rethrown only after cleanup, transaction-dispose observation, exact old reconstruction, complete-snapshot reconciliation, state/event queuing, and lifecycle calculation.
+- Begin/stage failure no longer assumes persistence was untouched: the staged native candidate is cleaned or tracked and the prior complete snapshot is explicitly reconciled before either returning or rethrowing.
+- Commit failure, including a fake that writes then throws, cleans the candidate, reconstructs removed exact registrations, and overwrites ambiguous persistence with the reconciled snapshot.
+- A post-commit dispose failure adopts the committed OS/SQLite/memory truth before propagating an unexpected exception. A pre-commit dispose failure rolls back first. A failed original transaction close remains its own degradation cause even when a separate reconciliation transaction closes successfully.
+- Reconciliation failure applies and queues the actual disabled binding, enters Terminal, and only then propagates a non-allowlisted reconciliation exception. Tests cover Replace, Reset, Restore, commit-after-write ambiguity, pre/post-commit dispose, and reconciliation failure.
+
+### Cause-aware lifecycle
+
+Lifecycle degradation is recomputed from independent reason tokens:
+
+- `[native-cleanup]` exists only while a non-routable staged registration remains pending. Successful retry clears only this token.
+- `[persistence-transaction-dispose]` records transaction-close ambiguity and survives same/different HWND attachment. A later successful persistence operation with a clean close clears it.
+- `[binding-reconstruction:<Action>]` records an action Windows could not reconstruct. A successful replacement for that action clears only its token; successful Reset clears reconstructed-binding tokens as a batch.
+
+Ready is reported only when no degradation causes remain. Tests exercise pending recovery through Replace and same/recreated HWND, transaction recovery through Replace/Reset/Restore, unrelated-cause survival through HWND changes, and final disposal.
+
+### Callback and message boundaries
+
+- Mutations queue versioned `BindingChanged` records while holding the gate. The public dispatcher operation drains the queue in `finally` only after the core method has unwound the lock, including degraded, Terminal, and fatal-rethrow rollback paths.
+- Cross-thread snapshot tests now complete from both degraded and Terminal callbacks. Reentrant rollback callbacks commit their later version after the outer result is constructed; current-version checks suppress stale delivery and final labels/bindings agree.
+- `ShortcutCallbackFaultHub` connects both `IShortcutService.CallbackFaulted` and the private `FocusedShortcutBindingBridge.CallbackFaulted`. `MainWindow` owns the connection and `App` attaches the same `LocalLifecycleLog` sink once. Hub observers are individually contained and later observers receive both global and focused faults.
+- Production `ProcessWindowMessage` now requires the real WM_HOTKEY lParam and rejects zero. Tests pass explicit encoded modifiers/VK; WPF already forwards the native lParam.
+
+### Fresh second re-review verification
+
+Commands:
+
+```powershell
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~GlobalShortcut|FullyQualifiedName~ShortcutPersistenceIntegration"
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~ShortcutSettings|FullyQualifiedName~Shared_fault_hub"
+dotnet test WordFlow.sln -c Release --no-restore
+dotnet build WordFlow.sln -c Release --no-restore
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+git diff --check
+```
+
+Results:
+
+- Shortcut lifecycle/persistence/real HWND focused: 71/71 passed.
+- Shortcut settings and shared fault composition focused: 18/18 passed.
+- Full Release: 382/382 passed (129 Domain, 44 Application, 164 Infrastructure, 45 App).
+- Release build: 0 warnings, 0 errors.
+- Python vocabulary: 54/54 passed.
+- Diff check: no whitespace errors; only informational LF-to-CRLF notices.
+- The guarded real message-only HWND/RegisterHotKey test ran inside the focused and full suites and again proved exact `Ctrl+Alt+Shift+F23` release/reacquisition with `finally` cleanup.
+
+### Remaining concern
+
+The irreducible external chord-theft race remains unchanged and explicitly modeled as disabled plus `[binding-reconstruction:<Action>]` Degraded state. Unexpected store exceptions are deliberately rethrown after compensation so programming faults stay visible; if reconciliation cannot establish persistence truth, Terminal accurately marks the unresolved boundary.

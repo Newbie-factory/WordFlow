@@ -64,7 +64,7 @@ public interface IShortcutService : IDisposable
     ShortcutRegistrationResult ResetAll();
     ShortcutRestoreResult RestorePersisted();
     ShortcutRegistrationResult AttachWindowHandle(nint handle);
-    bool ProcessWindowMessage(int message, nint id, nint chordData = default);
+    bool ProcessWindowMessage(int message, nint id, nint chordData);
 }
 
 public interface IShortcutDispatcher
