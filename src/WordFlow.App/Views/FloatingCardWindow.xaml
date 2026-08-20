@@ -7,7 +7,8 @@
         ShowInTaskbar="False" Topmost="True" WindowStartupLocation="Manual"
         SnapsToDevicePixels="True" UseLayoutRounding="True"
         AutomationProperties.Name="WordFlow 悬浮学习卡">
-    <Border x:Name="WindowSurface" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+    <Grid>
+    <Border x:Name="WindowSurface" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.ControlBorder}"
             BorderThickness="1" CornerRadius="{StaticResource Radius.Card}" Effect="{StaticResource Shadow.Card}">
         <Grid>
             <Grid.RowDefinitions>
@@ -41,21 +42,30 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <TextBlock x:Name="WordText" Text="{Binding Word}" FontFamily="{StaticResource Font.Display}"
-                               FontSize="{StaticResource Type.Word}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                               AutomationProperties.Name="当前单词" AutomationProperties.HelpText="{Binding Word}" />
+                    <Button x:Name="WordText" Command="{Binding SpeakCurrentWordCommand}" HorizontalAlignment="Left" Padding="0"
+                            Background="Transparent" BorderThickness="0" FocusVisualStyle="{StaticResource Focus.Ring}" TabIndex="0"
+                            AutomationProperties.Name="{Binding Word, StringFormat=播放当前单词 {0} 离线发音}"
+                            AutomationProperties.HelpText="{Binding Word}">
+                        <TextBlock Text="{Binding Word}" FontFamily="{StaticResource Font.Display}" FontSize="{StaticResource Type.Word}"
+                                   FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    </Button>
+                    <Button x:Name="CurrentDetailsButton" Command="{Binding OpenCurrentDetailsCommand}" HorizontalAlignment="Right"
+                            VerticalAlignment="Top" Style="{StaticResource Button.Base}" MinHeight="28" Padding="9,4" TabIndex="1"
+                            AutomationProperties.Name="{Binding Word, StringFormat=打开当前单词 {0} 完整词条}">词条</Button>
                     <TextBlock x:Name="PhoneticText" Grid.Row="1" Text="{Binding Phonetic}" Margin="1,2,0,0"
                                FontSize="15" Foreground="{StaticResource Brush.AccentStrong}"
-                               AutomationProperties.Name="当前单词音标" />
+                               AutomationProperties.Name="{Binding Phonetic, StringFormat=当前单词音标 {0}}"
+                               AutomationProperties.HelpText="{Binding Phonetic}" />
                     <TextBlock x:Name="ChineseText" Grid.Row="2" Text="{Binding Chinese}" Margin="1,10,0,0"
                                FontSize="16" FontWeight="Medium" TextWrapping="Wrap" MaxHeight="46"
-                               AutomationProperties.Name="当前单词中文释义" />
+                               AutomationProperties.Name="{Binding Chinese, StringFormat=当前单词中文释义 {0}}"
+                               AutomationProperties.HelpText="{Binding Chinese}" />
                     <StackPanel Grid.Row="3" VerticalAlignment="Bottom">
                         <DockPanel Margin="0,14,0,8">
                             <TextBlock Text="{Binding ProgressText}" TextTrimming="CharacterEllipsis" FontSize="{StaticResource Type.Caption}"
                                        Foreground="{StaticResource Brush.InkMuted}" />
                             <Button x:Name="UndoButton" DockPanel.Dock="Right" Style="{StaticResource Button.Base}"
-                                    Command="{Binding UndoCommand}" Padding="9,4" MinHeight="28" TabIndex="7"
+                                    Command="{Binding UndoCommand}" Padding="9,4" MinHeight="28" TabIndex="8"
                                     AutomationProperties.Name="撤销上一学习操作">
                                 <TextBlock><Run Text="撤销 "/><Run Text="{Binding UndoGesture, Mode=OneWay}" /></TextBlock>
                             </Button>
@@ -71,19 +81,19 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Button x:Name="AgainButton" Grid.Column="0" Style="{StaticResource Button.Base}" Command="{Binding AgainCommand}"
-                                    TabIndex="1" AutomationProperties.Name="不认识，提交评分">
+                                    TabIndex="2" AutomationProperties.Name="不认识，提交评分">
                                 <StackPanel><TextBlock Text="不认识" HorizontalAlignment="Center" /><TextBlock Text="{Binding AgainGesture}" HorizontalAlignment="Center" FontSize="10" Foreground="{StaticResource Brush.InkMuted}" /></StackPanel>
                             </Button>
                             <Button x:Name="HardButton" Grid.Column="2" Style="{StaticResource Button.Base}" Command="{Binding HardCommand}"
-                                    TabIndex="2" AutomationProperties.Name="模糊，提交评分">
+                                    TabIndex="3" AutomationProperties.Name="模糊，提交评分">
                                 <StackPanel><TextBlock Text="模糊" HorizontalAlignment="Center" /><TextBlock Text="{Binding HardGesture}" HorizontalAlignment="Center" FontSize="10" Foreground="{StaticResource Brush.InkMuted}" /></StackPanel>
                             </Button>
                             <Button x:Name="GoodButton" Grid.Column="4" Style="{StaticResource Button.Primary}" Command="{Binding GoodCommand}"
-                                    TabIndex="3" AutomationProperties.Name="认识，提交评分">
+                                    TabIndex="4" AutomationProperties.Name="认识，提交评分">
                                 <StackPanel><TextBlock Text="认识" HorizontalAlignment="Center" Foreground="White" /><TextBlock Text="{Binding GoodGesture}" HorizontalAlignment="Center" FontSize="10" Foreground="White" Opacity="0.86" /></StackPanel>
                             </Button>
                             <Button x:Name="SlashButton" Grid.Column="6" Style="{StaticResource Button.Base}" Command="{Binding SlashCommand}"
-                                    TabIndex="4" AutomationProperties.Name="斩词并移出学习队列">
+                                    TabIndex="5" AutomationProperties.Name="斩词并移出学习队列">
                                 <StackPanel><TextBlock Text="斩" HorizontalAlignment="Center" /><TextBlock Text="{Binding SlashGesture}" HorizontalAlignment="Center" FontSize="10" Foreground="{StaticResource Brush.InkMuted}" /></StackPanel>
                             </Button>
                         </Grid>
@@ -98,11 +108,11 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Button x:Name="SynonymsButton" Grid.Column="0" Style="{StaticResource Button.Base}"
-                        Command="{Binding ToggleSynonymsCommand}" TabIndex="5" AutomationProperties.Name="展开或收起近义辨析">
+                        Command="{Binding ToggleSynonymsCommand}" TabIndex="6" AutomationProperties.Name="展开或收起近义辨析">
                     <DockPanel><TextBlock Text="近义辨析" /><TextBlock Text="{Binding SynonymsGesture}" Margin="8,0,0,0" Foreground="{StaticResource Brush.InkMuted}" /></DockPanel>
                 </Button>
                 <Button x:Name="ConfusablesButton" Grid.Column="2" Style="{StaticResource Button.Base}"
-                        Command="{Binding ToggleConfusablesCommand}" TabIndex="6" AutomationProperties.Name="展开或收起形近易混">
+                        Command="{Binding ToggleConfusablesCommand}" TabIndex="7" AutomationProperties.Name="展开或收起形近易混">
                     <DockPanel><TextBlock Text="形近易混" /><TextBlock Text="{Binding ConfusablesGesture}" Margin="8,0,0,0" Foreground="{StaticResource Brush.InkMuted}" /></DockPanel>
                 </Button>
             </Grid>
@@ -116,11 +126,16 @@
                 </Border>
                 <TextBlock x:Name="AccessibleStatus" Text="{Binding AccessibleStatus}" Height="1" Opacity="0"
                            AutomationProperties.LiveSetting="Polite" />
-                <controls:RelationDrawer x:Name="SynonymsDrawer" DataContext="{Binding Synonyms}"
-                                         Visibility="{Binding DataContext.Synonyms.IsOpen, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVisibility}}" />
-                <controls:RelationDrawer x:Name="ConfusablesDrawer" DataContext="{Binding Confusables}"
-                                         Visibility="{Binding DataContext.Confusables.IsOpen, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolVisibility}}" />
             </StackPanel>
         </Grid>
     </Border>
+    <Popup x:Name="SynonymsPopup" PlacementTarget="{Binding ElementName=WindowSurface}" Placement="Bottom" StaysOpen="True"
+           AllowsTransparency="True" IsOpen="{Binding Synonyms.IsOpen, Mode=OneWay}" PopupAnimation="None">
+        <controls:RelationDrawer x:Name="SynonymsDrawer" DataContext="{Binding Synonyms}" />
+    </Popup>
+    <Popup x:Name="ConfusablesPopup" PlacementTarget="{Binding ElementName=WindowSurface}" Placement="Bottom" StaysOpen="True"
+           AllowsTransparency="True" IsOpen="{Binding Confusables.IsOpen, Mode=OneWay}" PopupAnimation="None">
+        <controls:RelationDrawer x:Name="ConfusablesDrawer" DataContext="{Binding Confusables}" />
+    </Popup>
+    </Grid>
 </Window>

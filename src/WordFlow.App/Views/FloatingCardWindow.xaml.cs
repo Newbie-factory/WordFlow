@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using WordFlow.App.ViewModels;
@@ -20,46 +22,43 @@ public partial class FloatingCardWindow : Window
     private readonly IDisposable? shortcutFaultConnection;
     private readonly WindowPlacementService? placementService;
     private readonly DispatcherTimer? fullscreenTimer;
+    private readonly DispatcherTimer? placementSaveTimer;
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly HashSet<Task> pendingOperations = [];
     private HwndSource? source;
+    private nint handle;
     private bool applyingPlacement;
     private bool suppressTopmostForFullscreen = true;
+    private bool closing;
 
     public FloatingCardWindow() => InitializeComponent();
 
-    public FloatingCardWindow(
-        FloatingCardViewModel viewModel,
-        WindowPlacementService placementService)
+    public FloatingCardWindow(FloatingCardViewModel viewModel, WindowPlacementService placementService)
     {
         this.viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         this.placementService = placementService ?? throw new ArgumentNullException(nameof(placementService));
         InitializeComponent();
         DataContext = viewModel;
-
-        viewModel.Synonyms.ActionRequested += OnRelationActionRequested;
-        viewModel.Confusables.ActionRequested += OnRelationActionRequested;
+        viewModel.ActionRequested += OnActionRequested;
         ContentRendered += OnContentRendered;
         LocationChanged += OnLocationChanged;
         SizeChanged += OnSizeChanged;
         Closed += OnClosed;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        SynonymsPopup.Opened += (_, _) => ConfigureDrawer(SynonymsDrawer);
+        ConfusablesPopup.Opened += (_, _) => ConfigureDrawer(ConfusablesDrawer);
 
-        fullscreenTimer = new(DispatcherPriority.Background, Dispatcher)
-        {
-            Interval = TimeSpan.FromSeconds(1),
-        };
-        fullscreenTimer.Tick += OnFullscreenTimerTick;
+        placementSaveTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
+        placementSaveTimer.Tick += (_, _) => { placementSaveTimer.Stop(); SavePlacement(); };
+        fullscreenTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
+        fullscreenTimer.Tick += (_, _) => RefreshTopmost();
         fullscreenTimer.Start();
     }
 
-    public FloatingCardWindow(
-        FloatingCardViewModel viewModel,
-        IShortcutService shortcutService,
-        WindowPlacementService placementService,
-        ShortcutCallbackFaultHub? faultHub = null)
-        : this(viewModel, placementService)
+    public FloatingCardWindow(FloatingCardViewModel viewModel, IShortcutService shortcutService,
+        WindowPlacementService placementService, ShortcutCallbackFaultHub? faultHub = null) : this(viewModel, placementService)
     {
         this.shortcutService = shortcutService ?? throw new ArgumentNullException(nameof(shortcutService));
-
         focusedShortcuts = new(shortcutService);
         shortcutFaultConnection = (faultHub ?? new ShortcutCallbackFaultHub()).Connect(shortcutService, focusedShortcuts);
         shortcutService.ActionInvoked += OnShortcutActionInvoked;
@@ -69,14 +68,17 @@ public partial class FloatingCardWindow : Window
     }
 
     public event EventHandler<RelationActionRequestedEventArgs>? RelationActionRequested;
-
+    public event EventHandler<FullscreenSuppressionChangedEventArgs>? FullscreenSuppressionChanged;
+    public int? WorkAreaHeightLimitPx { get; set; }
     public bool SuppressTopmostForFullscreen
     {
         get => suppressTopmostForFullscreen;
         set
         {
+            if (suppressTopmostForFullscreen == value) return;
             suppressTopmostForFullscreen = value;
             RefreshTopmost();
+            FullscreenSuppressionChanged?.Invoke(this, new(value));
         }
     }
 
@@ -86,19 +88,56 @@ public partial class FloatingCardWindow : Window
         AccessibleStatus.Text = paused ? "学习已暂停" : viewModel?.AccessibleStatus;
     }
 
-    private async void OnContentRendered(object? sender, EventArgs args)
+    public void PrepareUiSmokeFocus()
     {
+        EnsureHandle();
+        Activate();
+        Topmost = true;
+        NativeFocus.SetForegroundWindow(handle);
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+        {
+            Activate();
+            WordText.Focus();
+            Keyboard.Focus(WordText);
+        });
+    }
+
+    public async Task CloseAsync()
+    {
+        if (closing) return;
+        closing = true;
+        lifetime.Cancel();
+        viewModel?.Synonyms.Close();
+        viewModel?.Confusables.Close();
+        placementSaveTimer?.Stop();
+        SavePlacement();
+        Task[] pending;
+        lock (pendingOperations) pending = pendingOperations.ToArray();
+        try { await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(2)); }
+        catch (Exception exception) when (exception is OperationCanceledException or TimeoutException) { }
+        Close();
+    }
+
+    private void OnContentRendered(object? sender, EventArgs args)
+    {
+        EnsureHandle();
         RepairPlacement(useSavedPlacement: true);
-        if (viewModel is not null) await viewModel.InitializeAsync();
+        if (viewModel is not null) Track(viewModel.InitializeAsync(lifetime.Token));
     }
 
     private void OnSourceInitialized(object? sender, EventArgs args)
     {
+        EnsureHandle();
         if (shortcutService is null) return;
-        var handle = new WindowInteropHelper(this).Handle;
         var attach = shortcutService.AttachWindowHandle(handle);
         if (!attach.Succeeded) throw new InvalidOperationException(attach.ConflictReason);
         shortcutService.RestorePersisted();
+    }
+
+    private void EnsureHandle()
+    {
+        if (handle != 0) return;
+        handle = new WindowInteropHelper(this).Handle;
         source = HwndSource.FromHwnd(handle);
         source?.AddHook(WindowProcedure);
     }
@@ -106,7 +145,21 @@ public partial class FloatingCardWindow : Window
     private nint WindowProcedure(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
         if (shortcutService?.ProcessWindowMessage(message, wParam, lParam) == true) handled = true;
-        if (message == DpiChangedMessage) Dispatcher.BeginInvoke(() => RepairPlacement(useSavedPlacement: false));
+        if (message == DpiChangedMessage && lParam != 0)
+        {
+            var native = Marshal.PtrToStructure<NativeRect>(lParam);
+            var suggested = new PhysicalWindowRect(native.Left, native.Top, native.Right - native.Left, native.Bottom - native.Top);
+            var monitors = CurrentMonitors();
+            if (monitors.Count > 0)
+            {
+                var monitor = WindowPlacementService.MonitorFor(suggested, monitors);
+                applyingPlacement = true;
+                try { WindowPlacementService.SetWindowRectangle(hwnd, WindowPlacementService.ResolveSuggested(suggested, monitor)); }
+                finally { applyingPlacement = false; }
+                SchedulePlacementSave();
+                handled = true;
+            }
+        }
         return 0;
     }
 
@@ -114,79 +167,109 @@ public partial class FloatingCardWindow : Window
     {
         if (args.ChangedButton == MouseButton.Left && args.ButtonState == MouseButtonState.Pressed) DragMove();
     }
-
     private void OnPreviewKeyDown(object sender, KeyEventArgs args)
     {
         if (focusedShortcuts is null) return;
         var key = args.Key == Key.System ? args.SystemKey : args.Key;
         args.Handled = focusedShortcuts.TryInvoke(WpfShortcutChordCapture.FromKey(key, Keyboard.Modifiers));
     }
-
-    private async void OnShortcutActionInvoked(object? sender, ShortcutAction action)
+    private void OnShortcutActionInvoked(object? sender, ShortcutAction action)
     {
-        if (viewModel is not null) await viewModel.HandleShortcutAsync(action);
+        if (viewModel is not null) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
+    }
+    private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
+
+    private void Track(Task operation)
+    {
+        lock (pendingOperations) pendingOperations.Add(operation);
+        _ = ObserveAsync(operation);
+    }
+    private async Task ObserveAsync(Task operation)
+    {
+        try { await operation; }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { viewModel?.ReportActionFeedback($"操作失败：{exception.Message}", true); }
+        finally { lock (pendingOperations) pendingOperations.Remove(operation); }
     }
 
-    private void OnRelationActionRequested(object? sender, RelationActionRequestedEventArgs args) =>
-        RelationActionRequested?.Invoke(this, args);
-
-    private void OnLocationChanged(object? sender, EventArgs args) => SavePlacement();
-
+    private void OnLocationChanged(object? sender, EventArgs args) => SchedulePlacementSave();
     private void OnSizeChanged(object sender, SizeChangedEventArgs args)
     {
         if (!IsLoaded || applyingPlacement) return;
         Dispatcher.BeginInvoke(DispatcherPriority.Background, () => RepairPlacement(useSavedPlacement: false));
     }
-
-    private void OnDisplaySettingsChanged(object? sender, EventArgs args) =>
-        Dispatcher.BeginInvoke(() => RepairPlacement(useSavedPlacement: false));
+    private void OnDisplaySettingsChanged(object? sender, EventArgs args) => Dispatcher.BeginInvoke(() => RepairPlacement(useSavedPlacement: false));
 
     private void RepairPlacement(bool useSavedPlacement)
     {
         if (placementService is null) return;
-        var monitors = WindowPlacementService.CaptureCurrentMonitors();
+        EnsureHandle();
+        var monitors = CurrentMonitors();
         if (monitors.Count == 0) return;
-        var height = Math.Max(MinHeight, ActualHeight);
-        WindowPlacement? candidate = useSavedPlacement
-            ? placementService.Load()
-            : new(WindowPlacementService.MonitorFor(Left, Top, Width, height, monitors), Left, Top);
-        var resolved = WindowPlacementService.Resolve(candidate, monitors, Width, height);
+        var current = WindowPlacementService.GetWindowRectangle(handle);
+        var candidate = useSavedPlacement ? placementService.Load() : WindowPlacementService.Capture(current, monitors);
+        var resolved = WindowPlacementService.Resolve(candidate, monitors, Width, Math.Max(MinHeight, ActualHeight));
         applyingPlacement = true;
-        try
-        {
-            Left = resolved.LeftDip;
-            Top = resolved.TopDip;
-        }
+        try { WindowPlacementService.SetWindowRectangle(handle, resolved.Rect); }
         finally { applyingPlacement = false; }
-        placementService.Save(resolved);
+        TryPersist(WindowPlacementService.Capture(resolved.Rect, monitors));
     }
 
+    private void SchedulePlacementSave()
+    {
+        if (placementService is null || applyingPlacement || !IsLoaded || closing) return;
+        placementSaveTimer?.Stop();
+        placementSaveTimer?.Start();
+    }
     private void SavePlacement()
     {
-        if (placementService is null || applyingPlacement || !IsLoaded || !double.IsFinite(Left) || !double.IsFinite(Top)) return;
-        var monitors = WindowPlacementService.CaptureCurrentMonitors();
-        if (monitors.Count == 0) return;
-        var monitor = WindowPlacementService.MonitorFor(Left, Top, Width, Math.Max(MinHeight, ActualHeight), monitors);
-        placementService.Save(new(monitor, Left, Top));
+        if (placementService is null || applyingPlacement || handle == 0) return;
+        try
+        {
+            var monitors = CurrentMonitors();
+            if (monitors.Count > 0) TryPersist(WindowPlacementService.Capture(WindowPlacementService.GetWindowRectangle(handle), monitors));
+        }
+        catch (Exception exception) { viewModel?.ReportActionFeedback($"窗口位置未保存：{exception.Message}", true); }
+    }
+    private void TryPersist(WindowPlacement placement)
+    {
+        if (placementService?.TrySave(placement, out var error) == false && error is not null)
+            viewModel?.ReportActionFeedback($"窗口位置未保存：{error.Message}", true);
     }
 
-    private void OnFullscreenTimerTick(object? sender, EventArgs args) => RefreshTopmost();
-
-    private void RefreshTopmost()
+    private void ConfigureDrawer(FrameworkElement drawer)
     {
-        bool fullscreen = WindowPlacementService.IsForegroundFullscreen();
-        Topmost = WindowPlacementService.ShouldBeTopmost(SuppressTopmostForFullscreen, fullscreen);
+        if (handle == 0) return;
+        var monitors = CurrentMonitors();
+        if (monitors.Count == 0) return;
+        var cardRect = WindowPlacementService.GetWindowRectangle(handle);
+        var monitor = WindowPlacementService.MonitorFor(cardRect, monitors);
+        int below = Math.Max(0, monitor.BottomPx - cardRect.BottomPx);
+        int above = Math.Max(0, cardRect.TopPx - monitor.TopPx);
+        double availableDip = Math.Max(below, above) / monitor.ScaleY;
+        var popup = ReferenceEquals(drawer, SynonymsDrawer) ? SynonymsPopup : ConfusablesPopup;
+        popup.Placement = above >= below ? PlacementMode.Top : PlacementMode.Bottom;
+        drawer.MaxHeight = Math.Max(120, Math.Min(620, availableDip - 8));
+        if (drawer is Controls.RelationDrawer relationDrawer) relationDrawer.ScheduleViewportMeasure();
+    }
+
+    private void RefreshTopmost() => Topmost = WindowPlacementService.ShouldBeTopmost(SuppressTopmostForFullscreen,
+        WindowPlacementService.IsForegroundFullscreen(handle));
+
+    private IReadOnlyList<MonitorWorkArea> CurrentMonitors()
+    {
+        var monitors = WindowPlacementService.CaptureCurrentMonitors();
+        if (WorkAreaHeightLimitPx is not { } limit || limit <= 0) return monitors;
+        return monitors.Select(monitor => monitor with { HeightPx = Math.Min(monitor.HeightPx, limit) }).ToArray();
     }
 
     private void OnClosed(object? sender, EventArgs args)
     {
+        lifetime.Cancel();
+        placementSaveTimer?.Stop();
         fullscreenTimer?.Stop();
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
-        if (source is not null)
-        {
-            source.RemoveHook(WindowProcedure);
-            source = null;
-        }
+        if (source is not null) { source.RemoveHook(WindowProcedure); source = null; }
         if (shortcutService is not null) shortcutService.ActionInvoked -= OnShortcutActionInvoked;
         if (focusedShortcuts is not null)
         {
@@ -194,11 +277,20 @@ public partial class FloatingCardWindow : Window
             shortcutFaultConnection?.Dispose();
             focusedShortcuts.Dispose();
         }
-        if (viewModel is not null)
-        {
-            viewModel.Synonyms.ActionRequested -= OnRelationActionRequested;
-            viewModel.Confusables.ActionRequested -= OnRelationActionRequested;
-            viewModel.Dispose();
-        }
+        if (viewModel is not null) { viewModel.ActionRequested -= OnActionRequested; viewModel.Dispose(); }
+        lifetime.Dispose();
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    private static class NativeFocus
+    {
+        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint window);
+    }
+}
+
+public sealed class FullscreenSuppressionChangedEventArgs(bool enabled) : EventArgs
+{
+    public bool Enabled { get; } = enabled;
 }

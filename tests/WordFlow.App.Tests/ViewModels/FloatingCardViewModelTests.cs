@@ -126,6 +126,70 @@ public sealed class FloatingCardViewModelTests
         Assert.Equal("Ctrl+Shift+Z", viewModel.UndoGesture);
     }
 
+    [Fact]
+    public async Task Current_word_actions_are_owned_and_publish_word_specific_requests()
+    {
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"));
+        var requests = new List<RelationActionRequestedEventArgs>();
+        viewModel.ActionRequested += (_, request) => requests.Add(request);
+        await viewModel.InitializeAsync();
+
+        viewModel.SpeakCurrentWordCommand.Execute(null);
+        viewModel.OpenCurrentDetailsCommand.Execute(null);
+
+        Assert.Equal([RelationActionKind.Speak, RelationActionKind.OpenDetails], requests.Select(x => x.Action));
+        Assert.All(requests, request => Assert.Equal("abate", request.Word));
+    }
+
+    [Fact]
+    public async Task Unexpected_and_cancelled_command_failures_are_observed_and_announced()
+    {
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"),
+            submit: (_, _) => throw new InvalidOperationException("boom"));
+        await viewModel.InitializeAsync();
+
+        var exception = await Record.ExceptionAsync(() => viewModel.RateAsync(RatingShortcut.F1));
+
+        Assert.Null(exception);
+        Assert.Contains("boom", viewModel.AccessibleStatus);
+        Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public void Production_action_host_dispatches_every_advertised_action_to_an_owner_with_feedback()
+    {
+        var calls = new List<string>();
+        IFloatingCardActionHost host = new FloatingCardActionHost(
+            (_, word) => calls.Add($"speak:{word}"),
+            (_, word) => calls.Add($"details:{word}"),
+            (_, word) => calls.Add($"add:{word}"));
+
+        var results = Enum.GetValues<RelationActionKind>()
+            .Select(action => host.Dispatch(new(action, Id(1), "abate"))).ToArray();
+
+        Assert.Equal(["speak:abate", "details:abate", "add:abate"], calls);
+        Assert.All(results, result => Assert.False(result.IsError));
+        Assert.All(results, result => Assert.Contains("abate", result.AccessibleMessage));
+    }
+
+    [Fact]
+    public async Task Disposal_invalidates_an_ignored_cancellation_mutation_completion()
+    {
+        var pending = new TaskCompletionSource<UseCaseResult<LearningTransition>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var viewModel = CreateViewModel(labels, Card(1, "abate", "/əˈbeɪt/", "减轻"), submit: (_, _) => pending.Task);
+        await viewModel.InitializeAsync();
+        var operation = viewModel.RateAsync(RatingShortcut.F3);
+
+        viewModel.Dispose();
+        pending.SetResult(new Success<LearningTransition>(new(new CardState(Id(2), null, DateTimeOffset.UtcNow), Card(2, "late", "/late/", "迟"))));
+        await operation;
+
+        Assert.Equal("abate", viewModel.Word);
+    }
+
     private static FloatingCardViewModel CreateViewModel(
         ShortcutLabelMap labels,
         NextCard initial,

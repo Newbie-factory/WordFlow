@@ -14,6 +14,7 @@ namespace WordFlow.App;
 
 public partial class App : System.Windows.Application
 {
+    private const string FullscreenSuppressionSetting = "floating_card.suppress_topmost_fullscreen";
     private readonly CancellationTokenSource lifetime = new();
     private SingleInstanceCoordinator? coordinator;
     private ServiceProvider? services;
@@ -24,6 +25,7 @@ public partial class App : System.Windows.Application
     private Task? coordinatorMonitor;
     private FloatingCardWindow? card;
     private IShortcutService? shortcutService;
+    private IFloatingCardActionHost? cardActionHost;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -85,9 +87,21 @@ public partial class App : System.Windows.Application
     {
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         var placementPath = Path.Combine(Path.GetTempPath(), $"wordflow-ui-smoke-{Environment.ProcessId}.json");
-        card = new FloatingCardWindow(UiSmokeCardFactory.CreateViewModel(), new WindowPlacementService(placementPath));
+        var smokeViewModel = UiSmokeCardFactory.CreateViewModel();
+        card = new FloatingCardWindow(smokeViewModel, new WindowPlacementService(placementPath));
+        card.SuppressTopmostForFullscreen = false;
+        var workAreaArgument = Environment.GetCommandLineArgs().FirstOrDefault(argument => argument.StartsWith("--ui-smoke-work-area-height=", StringComparison.OrdinalIgnoreCase));
+        if (workAreaArgument is not null && int.TryParse(workAreaArgument[(workAreaArgument.IndexOf('=') + 1)..], out var workAreaHeight))
+            card.WorkAreaHeightLimitPx = workAreaHeight;
+        cardActionHost = new FloatingCardActionHost((_, _) => { }, (_, _) => { }, (_, _) => { });
+        card.RelationActionRequested += (_, request) =>
+        {
+            var result = cardActionHost.Dispatch(request);
+            smokeViewModel.ReportActionFeedback(result.AccessibleMessage, result.IsError);
+        };
         MainWindow = card;
         card.Show();
+        card.PrepareUiSmokeFocus();
     }
 
     private void CreateCardAndTray()
@@ -111,6 +125,28 @@ public partial class App : System.Windows.Application
             shortcutService,
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults);
+        var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
+        try { card.SuppressTopmostForFullscreen = appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, lifetime.Token).GetAwaiter().GetResult(); }
+        catch (Exception exception)
+        {
+            card.SuppressTopmostForFullscreen = true;
+            WriteLifecycle($"app-setting-read-fault key={FullscreenSuppressionSetting} type={exception.GetType().Name}");
+        }
+        card.FullscreenSuppressionChanged += (_, args) =>
+        {
+            if (!appSettings.TrySetBoolean(FullscreenSuppressionSetting, args.Enabled, out var error) && error is not null)
+                WriteLifecycle($"app-setting-save-fault key={FullscreenSuppressionSetting} type={error.GetType().Name}");
+        };
+        cardActionHost = new FloatingCardActionHost(
+            (_, word) => WriteLifecycle($"offline-tts-request word={word}"),
+            (_, word) => ShowLocalInformation("完整词条", $"{word} 的完整离线词条已交给控制中心打开。"),
+            (_, word) => ShowLocalInformation("加入学习", $"{word} 的加入学习请求已交给学习队列。"));
+        card.RelationActionRequested += (_, request) =>
+        {
+            var result = cardActionHost.Dispatch(request);
+            viewModel.ReportActionFeedback(result.AccessibleMessage, result.IsError);
+            WriteLifecycle($"card-action action={request.Action} word={request.Word} error={result.IsError}");
+        };
         card.Closing += (_, args) =>
         {
             if (exiting) return;
@@ -202,11 +238,11 @@ public partial class App : System.Windows.Application
         return ValueTask.CompletedTask;
     }
 
-    private ValueTask CloseCardAsync()
+    private async ValueTask CloseCardAsync()
     {
-        card?.Close();
+        if (card is not null) await card.CloseAsync();
         card = null;
-        return ValueTask.CompletedTask;
+        cardActionHost = null;
     }
 
     private ValueTask DisposeServicesAsync()

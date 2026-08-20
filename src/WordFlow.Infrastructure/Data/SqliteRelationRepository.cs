@@ -20,7 +20,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
         if (sourceWordId == Guid.Empty) throw new ArgumentException("A source word ID cannot be empty.", nameof(sourceWordId));
         ArgumentNullException.ThrowIfNull(page);
         var source = sourceWordId.ToString("D");
-        var merged = new Dictionary<(Guid Target, string Type, string? SourceSense, string? TargetSense, string? Pos), WordRelation>();
+        var merged = new Dictionary<(Guid Target, string Type, string? SourceSense, string? TargetSense, string? Pos, string Contrast, string Collocation), WordRelation>();
 
         await using (var corpus = await factory.OpenRelationsAsync(ct).ConfigureAwait(false))
         {
@@ -52,7 +52,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
                 var pos = reader.IsDBNull(5) ? null : reader.GetString(5);
                 var contrast = reader.GetString(6);
                 var collocation = reader.GetString(7);
-                merged[(target, type, sourceSense, targetSense, pos)] = new WordRelation(
+                merged[(target, type, sourceSense, targetSense, pos, contrast, collocation)] = new WordRelation(
                     sourceWordId, target, type, direction, sourceSense, targetSense, pos, contrast, collocation);
             }
         }
@@ -71,7 +71,7 @@ public sealed class SqliteRelationRepository : IRelationRepository
                 {
                     foreach (var key in merged.Keys.Where(key => key.Target == target && key.Type == type).ToArray()) merged.Remove(key);
                 }
-                else merged[(target, type, null, null, null)] = new WordRelation(sourceWordId, target, type, RelationDirection.Forward);
+                else merged[(target, type, null, null, null, "", "")] = new WordRelation(sourceWordId, target, type, RelationDirection.Forward);
             }
         }
 

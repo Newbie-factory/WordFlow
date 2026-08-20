@@ -23,11 +23,12 @@ public sealed class FloatingCardAccessibilityTests
             .Select(button => int.Parse((string?)button.Attribute("TabIndex") ?? throw new Xunit.Sdk.XunitException("Every card button requires an explicit TabIndex.")))
             .OrderBy(index => index)
             .ToArray();
-        Assert.Equal([1, 2, 3, 4, 5, 6, 7], tabOrder);
+        Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7, 8], tabOrder);
 
         var drawer = XDocument.Load(Path.Combine(project, "Views", "Controls", "RelationDrawer.xaml"));
-        var list = drawer.Descendants(presentation + "ListBox").Single();
-        Assert.Equal("420", (string?)list.Attribute("MaxHeight"));
-        Assert.Equal("Auto", (string?)list.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+        var scroll = drawer.Descendants(presentation + "ScrollViewer").Single();
+        Assert.Equal("Auto", (string?)scroll.Attribute("VerticalScrollBarVisibility"));
+        Assert.All(drawer.Descendants(presentation + "ListBoxItem"), item =>
+            Assert.False(string.IsNullOrWhiteSpace((string?)item.Attribute("AutomationProperties.Name"))));
     }
 }

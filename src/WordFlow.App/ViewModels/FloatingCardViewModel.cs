@@ -26,6 +26,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private bool isBusy;
     private Guid? lastEventId;
     private bool disposed;
+    private readonly CancellationTokenSource lifetime = new();
+    private long generation;
 
     public FloatingCardViewModel(
         FloatingCardOperations operations,
@@ -40,14 +42,18 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
         this.plan = plan ?? DailyPlan.Default;
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
+        Synonyms.ActionRequested += OnRelationActionRequested;
+        Confusables.ActionRequested += OnRelationActionRequested;
 
-        AgainCommand = new AsyncActionCommand(() => RateAsync(RatingShortcut.F1), () => CanRate);
-        HardCommand = new AsyncActionCommand(() => RateAsync(RatingShortcut.F2), () => CanRate);
-        GoodCommand = new AsyncActionCommand(() => RateAsync(RatingShortcut.F3), () => CanRate);
-        SlashCommand = new AsyncActionCommand(() => SlashAsync(), () => CanRate);
-        UndoCommand = new AsyncActionCommand(() => UndoAsync(), () => !IsBusy && lastEventId.HasValue);
-        ToggleSynonymsCommand = new AsyncActionCommand(() => ToggleDrawerAsync(Synonyms), () => HasCard && !IsBusy);
-        ToggleConfusablesCommand = new AsyncActionCommand(() => ToggleDrawerAsync(Confusables), () => HasCard && !IsBusy);
+        AgainCommand = Command(() => RateAsync(RatingShortcut.F1), () => CanRate);
+        HardCommand = Command(() => RateAsync(RatingShortcut.F2), () => CanRate);
+        GoodCommand = Command(() => RateAsync(RatingShortcut.F3), () => CanRate);
+        SlashCommand = Command(() => SlashAsync(), () => CanRate);
+        UndoCommand = Command(() => UndoAsync(), () => !IsBusy && lastEventId.HasValue);
+        ToggleSynonymsCommand = Command(() => ToggleDrawerAsync(Synonyms), () => HasCard && !IsBusy);
+        ToggleConfusablesCommand = Command(() => ToggleDrawerAsync(Confusables), () => HasCard && !IsBusy);
+        SpeakCurrentWordCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.Speak), () => HasCard && !IsBusy);
+        OpenCurrentDetailsCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.OpenDetails), () => HasCard && !IsBusy);
     }
 
     public IReadOnlyList<string> ReadingOrder => StableReadingOrder;
@@ -100,8 +106,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public ICommand UndoCommand { get; }
     public ICommand ToggleSynonymsCommand { get; }
     public ICommand ToggleConfusablesCommand { get; }
+    public ICommand SpeakCurrentWordCommand { get; }
+    public ICommand OpenCurrentDetailsCommand { get; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+    public event EventHandler<RelationActionRequestedEventArgs>? ActionRequested;
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -110,7 +119,9 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         ErrorMessage = null;
         try
         {
-            var result = await operations.GetNextCard(plan, ct);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
+            var result = await operations.GetNextCard(plan, linked.Token);
+            if (disposed) return;
             switch (result)
             {
                 case Success<NextCard?> success:
@@ -128,18 +139,18 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                     break;
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) { if (!disposed) AccessibleStatus = "操作已取消"; }
         catch (Exception exception) { SetFailure("无法加载学习卡", exception.Message); }
-        finally { IsBusy = false; }
+        finally { if (!disposed) IsBusy = false; }
     }
 
     public Task RateAsync(RatingShortcut rating, CancellationToken ct = default) =>
-        MutateAsync((card, commandId, eventId) => operations.SubmitRating(
-            new(commandId, eventId, card.Card, card.Revision, rating, plan), ct), eventIdOnSuccess: true);
+        MutateAsync((card, commandId, eventId, token) => operations.SubmitRating(
+            new(commandId, eventId, card.Card, card.Revision, rating, plan), token), eventIdOnSuccess: true, ct);
 
     public Task SlashAsync(CancellationToken ct = default) =>
-        MutateAsync((card, commandId, eventId) => operations.SlashWord(
-            new(commandId, eventId, card.Card, card.Revision, plan), ct), eventIdOnSuccess: true);
+        MutateAsync((card, commandId, eventId, token) => operations.SlashWord(
+            new(commandId, eventId, card.Card, card.Revision, plan), token), eventIdOnSuccess: true, ct);
 
     public async Task UndoAsync(CancellationToken ct = default)
     {
@@ -148,7 +159,10 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         ErrorMessage = null;
         try
         {
-            var result = await operations.UndoLastAction(new(Guid.NewGuid(), eventId), ct);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
+            var operationGeneration = generation;
+            var result = await operations.UndoLastAction(new(Guid.NewGuid(), eventId), linked.Token);
+            if (disposed || generation != operationGeneration) return;
             switch (result)
             {
                 case Success<CardState>:
@@ -156,14 +170,16 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                     Synonyms.Reset();
                     Confusables.Reset();
                     AccessibleStatus = "已撤销上一学习操作";
-                    await ReloadAfterUndoAsync(ct);
+                    await ReloadAfterUndoAsync(linked.Token);
                     break;
                 case StorageFailure<CardState> failure: SetFailure("撤销失败", failure.Message); break;
                 case NotFound<CardState> failure: SetFailure("撤销失败", failure.Message); break;
                 case Conflict<CardState> failure: SetFailure("撤销失败", failure.Message); break;
             }
         }
-        finally { IsBusy = false; }
+        catch (OperationCanceledException) { if (!disposed) AccessibleStatus = "撤销已取消"; }
+        catch (Exception exception) { if (!disposed) SetFailure("撤销失败", exception.Message); }
+        finally { if (!disposed) IsBusy = false; }
     }
 
     public async Task HandleShortcutAsync(ShortcutAction action, CancellationToken ct = default)
@@ -184,22 +200,33 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        shortcutLabels.PropertyChanged -= OnShortcutLabelsChanged;
-        shortcutLabels.Dispose();
         disposed = true;
+        generation++;
+        lifetime.Cancel();
+        shortcutLabels.PropertyChanged -= OnShortcutLabelsChanged;
+        Synonyms.ActionRequested -= OnRelationActionRequested;
+        Confusables.ActionRequested -= OnRelationActionRequested;
+        Synonyms.Dispose();
+        Confusables.Dispose();
+        shortcutLabels.Dispose();
+        lifetime.Dispose();
     }
 
     private async Task MutateAsync(
-        Func<NextCard, Guid, Guid, Task<UseCaseResult<LearningTransition>>> submit,
-        bool eventIdOnSuccess)
+        Func<NextCard, Guid, Guid, CancellationToken, Task<UseCaseResult<LearningTransition>>> submit,
+        bool eventIdOnSuccess,
+        CancellationToken ct)
     {
         if (!CanRate || current is not { } captured) return;
         IsBusy = true;
         ErrorMessage = null;
         var eventId = Guid.NewGuid();
+        var operationGeneration = generation;
         try
         {
-            var result = await submit(captured, Guid.NewGuid(), eventId);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
+            var result = await submit(captured, Guid.NewGuid(), eventId, linked.Token);
+            if (disposed || generation != operationGeneration) return;
             switch (result)
             {
                 case Success<LearningTransition> success:
@@ -216,9 +243,9 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                 case Conflict<LearningTransition> failure: SetFailure("学习记录未保存", failure.Message); break;
             }
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception exception) { SetFailure("学习记录未保存", exception.Message); }
-        finally { IsBusy = false; }
+        catch (OperationCanceledException) { if (!disposed) AccessibleStatus = "学习操作已取消，当前卡片未改变"; }
+        catch (Exception exception) { if (!disposed) SetFailure("学习记录未保存", exception.Message); }
+        finally { if (!disposed) IsBusy = false; }
     }
 
     private async Task ToggleDrawerAsync(RelationDrawerViewModel drawer, CancellationToken ct = default)
@@ -231,7 +258,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         }
         var other = ReferenceEquals(drawer, Synonyms) ? Confusables : Synonyms;
         other.Close();
-        await drawer.OpenAsync(current.Word.WordId, ct);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
+        await drawer.OpenAsync(current.Word.WordId, linked.Token);
     }
 
     private async Task ReloadAfterUndoAsync(CancellationToken ct)
@@ -243,6 +271,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     private void SetCurrent(NextCard? next)
     {
+        generation++;
         current = next;
         OnPropertyChanged(nameof(Word));
         OnPropertyChanged(nameof(Phonetic));
@@ -276,7 +305,27 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var command in new[] { AgainCommand, HardCommand, GoodCommand, SlashCommand, UndoCommand, ToggleSynonymsCommand, ToggleConfusablesCommand })
             if (command is AsyncActionCommand asyncCommand) asyncCommand.RaiseCanExecuteChanged();
+        foreach (var command in new[] { SpeakCurrentWordCommand, OpenCurrentDetailsCommand })
+            if (command is ActionCommand actionCommand) actionCommand.RaiseCanExecuteChanged();
     }
+
+    public void ReportActionFeedback(string message, bool isError = false)
+    {
+        if (disposed) return;
+        AccessibleStatus = message;
+        if (isError) ErrorMessage = message;
+    }
+
+    private AsyncActionCommand Command(Func<Task> execute, Func<bool> canExecute) =>
+        new(execute, canExecute, exception => { if (!disposed) SetFailure("操作失败", exception.Message); });
+
+    private void PublishCurrent(RelationActionKind action)
+    {
+        if (current is not { } card || IsBusy || disposed) return;
+        ActionRequested?.Invoke(this, new(action, card.Word.WordId, card.Word.Lemma));
+    }
+
+    private void OnRelationActionRequested(object? sender, RelationActionRequestedEventArgs args) => ActionRequested?.Invoke(this, args);
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
@@ -290,10 +339,24 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         PropertyChanged?.Invoke(this, new(propertyName));
 }
 
-internal sealed class AsyncActionCommand(Func<Task> execute, Func<bool> canExecute) : ICommand
+internal sealed class AsyncActionCommand(Func<Task> execute, Func<bool> canExecute, Action<Exception> report) : ICommand
 {
     public event EventHandler? CanExecuteChanged;
     public bool CanExecute(object? parameter) => canExecute();
-    public async void Execute(object? parameter) => await execute();
+    public async void Execute(object? parameter) => await ExecuteAsync();
+    internal async Task ExecuteAsync()
+    {
+        try { await execute(); }
+        catch (OperationCanceledException) { }
+        catch (Exception exception) { report(exception); }
+    }
+    public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+}
+
+internal sealed class ActionCommand(Action execute, Func<bool> canExecute) : ICommand
+{
+    public event EventHandler? CanExecuteChanged;
+    public bool CanExecute(object? parameter) => canExecute();
+    public void Execute(object? parameter) { if (CanExecute(parameter)) execute(); }
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }

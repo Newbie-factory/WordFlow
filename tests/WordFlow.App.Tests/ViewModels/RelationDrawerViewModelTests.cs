@@ -7,6 +7,62 @@ namespace WordFlow.App.Tests.ViewModels;
 public sealed class RelationDrawerViewModelTests
 {
     [Fact]
+    public async Task Stale_completion_cannot_overwrite_the_new_word_after_reset_and_reopen()
+    {
+        var first = new TaskCompletionSource<UseCaseResult<IReadOnlyList<RelationItemData>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource<UseCaseResult<IReadOnlyList<RelationItemData>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词", (wordId, _) => wordId == Id(1) ? first.Task : second.Task);
+
+        var oldLoad = drawer.OpenAsync(Id(1));
+        drawer.Reset();
+        var newLoad = drawer.OpenAsync(Id(2));
+        second.SetResult(new Success<IReadOnlyList<RelationItemData>>([Row(Id(22), "new")]));
+        await newLoad;
+        first.SetResult(new Success<IReadOnlyList<RelationItemData>>([Row(Id(11), "stale")]));
+        await oldLoad;
+
+        Assert.True(drawer.IsOpen);
+        Assert.Equal(Id(2), drawer.CurrentWordId);
+        Assert.Equal("new", Assert.Single(drawer.AllItems).Word);
+        Assert.False(drawer.IsLoading);
+    }
+
+    [Fact]
+    public async Task Close_and_dispose_invalidate_ignored_cancellation_completions()
+    {
+        var pending = new TaskCompletionSource<UseCaseResult<IReadOnlyList<RelationItemData>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词", (_, _) => pending.Task);
+        var load = drawer.OpenAsync(Id(1));
+
+        drawer.Close();
+        drawer.Dispose();
+        pending.SetResult(new Success<IReadOnlyList<RelationItemData>>([Row(Id(2), "late")]));
+        await load;
+
+        Assert.False(drawer.IsOpen);
+        Assert.Empty(drawer.AllItems);
+    }
+
+    [Fact]
+    public async Task Sense_groups_keep_primary_open_and_search_reveals_folded_evidence()
+    {
+        var rows = new[]
+        {
+            Row(Id(2), "primary") with { SourceSenseId = "sense-a", PartOfSpeech = "n", SourceDefinition = "primary definition" },
+            Row(Id(3), "folded") with { SourceSenseId = "sense-b", PartOfSpeech = "v", SourceDefinition = "secondary evidence" },
+        };
+        using var drawer = new RelationDrawerViewModel("近义辨析", "暂无可靠近义词",
+            (_, _) => Task.FromResult<UseCaseResult<IReadOnlyList<RelationItemData>>>(new Success<IReadOnlyList<RelationItemData>>(rows)));
+
+        await drawer.OpenAsync(Id(1));
+
+        Assert.True(drawer.Groups[0].IsExpanded);
+        Assert.False(drawer.Groups[1].IsExpanded);
+        drawer.SearchText = "secondary evidence";
+        Assert.True(drawer.Groups[1].IsExpanded);
+        Assert.Equal("folded", Assert.Single(drawer.FilteredItems).Word);
+    }
+    [Fact]
     public async Task Complete_results_are_preserved_while_search_filters_every_visible_detail()
     {
         var rows = Enumerable.Range(1, 12)
@@ -88,4 +144,6 @@ public sealed class RelationDrawerViewModelTests
     }
 
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
+    private static RelationItemData Row(Guid id, string word) =>
+        new(id, word, "/test/", "释义", "辨析", "搭配", "近义", false);
 }

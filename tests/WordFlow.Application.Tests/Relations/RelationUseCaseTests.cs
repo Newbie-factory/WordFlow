@@ -48,6 +48,30 @@ public sealed class RelationUseCaseTests
     }
 
     [Fact]
+    public async Task Synonyms_preserve_duplicate_target_senses_and_every_curated_evidence_row()
+    {
+        var source = Word(1, "run");
+        var target = Word(2, "operate");
+        var relations = new[]
+        {
+            new WordRelation(source.WordId, target.WordId, RelationKinds.Synonym, RelationDirection.Bidirectional,
+                "source-sense", "target-sense-a", "v", "machines", "operate machinery"),
+            new WordRelation(source.WordId, target.WordId, RelationKinds.Synonym, RelationDirection.Bidirectional,
+                "source-sense", "target-sense-b", "v", "events", "run an event"),
+        };
+        var senses = new[] { new VocabularySense("source-sense", source.WordId, "to manage or function", "v") };
+
+        var result = await new GetSynonyms(new FakeRelations(relations), new FakeVocabulary([source, target], senses), TimeProvider.System)
+            .HandleAsync(new(source.WordId), default);
+
+        var words = Assert.Single(Assert.IsType<Success<IReadOnlyList<SynonymGroup>>>(result).Value).Words;
+        Assert.Equal(2, words.Count);
+        Assert.Equal(["target-sense-a", "target-sense-b"], words.Select(x => x.TargetSenseId));
+        Assert.Equal(["machines", "events"], words.Select(x => x.Contrast));
+        Assert.Equal(["operate machinery", "run an event"], words.Select(x => x.Collocation));
+    }
+
+    [Fact]
     public async Task Confusables_return_all_verified_kinds_and_targeted_misspellings_without_flattening()
     {
         var source = Word(1, "stimulate");
@@ -194,11 +218,16 @@ public sealed class RelationUseCaseTests
 
         public Task<Page<WordRelation>> GetRelationsAsync(Guid sourceWordId, PageRequest page, CancellationToken ct)
         {
-            var merged = corpus.Where(x => x.SourceWordId == sourceWordId).ToDictionary(x => (x.TargetWordId, x.RelationType));
+            var merged = corpus.Where(x => x.SourceWordId == sourceWordId).ToDictionary(
+                x => (x.TargetWordId, x.RelationType, x.SourceSenseId, x.TargetSenseId, x.Contrast, x.Collocation));
             foreach (var item in Overrides.Where(x => x.SourceWordId == sourceWordId))
             {
-                if (item.IsEnabled) merged[(item.TargetWordId, item.RelationType)] = new(sourceWordId, item.TargetWordId, item.RelationType, RelationDirection.Forward);
-                else merged.Remove((item.TargetWordId, item.RelationType));
+                foreach (var key in merged.Keys.Where(key => key.TargetWordId == item.TargetWordId && key.RelationType == item.RelationType).ToArray()) merged.Remove(key);
+                if (item.IsEnabled)
+                {
+                    var relation = new WordRelation(sourceWordId, item.TargetWordId, item.RelationType, RelationDirection.Forward);
+                    merged[(relation.TargetWordId, relation.RelationType, relation.SourceSenseId, relation.TargetSenseId, relation.Contrast, relation.Collocation)] = relation;
+                }
             }
             var all = merged.Values.OrderBy(x => x.RelationType, StringComparer.Ordinal).ThenBy(x => x.TargetWordId).ToArray();
             var items = all.Skip(page.Offset).Take(page.Limit).ToArray();

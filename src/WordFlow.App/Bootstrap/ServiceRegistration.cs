@@ -21,6 +21,7 @@ public static class ServiceRegistration
         services.AddSingleton(provider => new MigrationRunner(
             provider.GetRequiredService<SqliteConnectionFactory>(), backupDirectory: paths.BackupsDirectory));
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
+        services.AddSingleton<SqliteAppSettingStore>();
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
         services.AddSingleton(TimeProvider.System);

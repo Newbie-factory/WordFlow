@@ -6,6 +6,7 @@ public sealed record GetSynonymsRequest(Guid WordId);
 
 public sealed record RelationWord(
     Guid WordId,
+    string TargetSenseId,
     string Lemma,
     string Phonetic,
     string Chinese,
@@ -70,14 +71,15 @@ public sealed class GetSynonyms
                         group.Key.Item1,
                         group.Key.Item2,
                         sense.Definition,
-                        group.GroupBy(x => x.TargetWordId)
-                            .Select(x => x.First())
-                            .OrderBy(x => targetWords[x.TargetWordId].Lemma, StringComparer.Ordinal)
+                        group.OrderBy(x => targetWords[x.TargetWordId].Lemma, StringComparer.Ordinal)
                             .ThenBy(x => x.TargetWordId)
+                            .ThenBy(x => x.TargetSenseId, StringComparer.Ordinal)
+                            .ThenBy(x => x.Contrast, StringComparer.Ordinal)
+                            .ThenBy(x => x.Collocation, StringComparer.Ordinal)
                             .Select(x =>
                             {
                                 var word = targetWords[x.TargetWordId];
-                                return new RelationWord(word.WordId, word.Lemma, word.Phonetic, word.Chinese, x.Contrast, x.Collocation);
+                                return new RelationWord(word.WordId, x.TargetSenseId!, word.Lemma, word.Phonetic, word.Chinese, x.Contrast, x.Collocation);
                             }).ToArray());
                 }).ToArray();
             return new Success<IReadOnlyList<SynonymGroup>>(groups);
