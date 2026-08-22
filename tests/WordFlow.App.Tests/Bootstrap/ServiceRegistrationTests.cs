@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
 using WordFlow.App.ViewModels;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
 using WordFlow.Infrastructure.Data;
 
@@ -41,6 +42,22 @@ public sealed class ServiceRegistrationTests : IDisposable
         Assert.Same(service, services.GetRequiredService<IPronunciationService>());
         Assert.Same(settings, services.GetRequiredService<PronunciationSettingsViewModel>());
         Assert.DoesNotContain("http", service.Availability.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Primary_services_wire_one_durable_daily_queue_coordinator_into_learning_use_cases()
+    {
+        var paths = new AppPaths(Path.Combine(root, "daily-queue"), Path.Combine(root, "bundle"));
+        paths.Initialize();
+        using ServiceProvider services = ServiceRegistration.BuildPrimaryServices(paths);
+
+        Assert.Same(
+            services.GetRequiredService<DailyQueueCoordinator>(),
+            services.GetRequiredService<DailyQueueCoordinator>());
+        Assert.NotNull(services.GetRequiredService<GetNextCard>());
+        Assert.NotNull(services.GetRequiredService<SubmitRating>());
+        Assert.NotNull(services.GetRequiredService<SlashWord>());
+        Assert.NotNull(services.GetRequiredService<UndoLastAction>());
     }
 
     private static string FindRepositoryRoot()

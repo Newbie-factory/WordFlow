@@ -67,6 +67,71 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Rating_forwards_the_exact_current_queue_item_identity()
+    {
+        var queueItemId = Guid.NewGuid();
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻") with { QueueItemId = queueItemId };
+        SubmitRatingRequest? captured = null;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, initial,
+            submit: (request, _) =>
+            {
+                captured = request;
+                return Task.FromResult<UseCaseResult<LearningTransition>>(
+                    new Success<LearningTransition>(new(initial.Card, initial)));
+            });
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F3);
+
+        Assert.Equal(queueItemId, captured!.QueueItemId);
+    }
+
+    [Fact]
+    public void View_model_contract_removes_progress_copy_but_retains_undo_command_and_gesture()
+    {
+        Assert.Null(typeof(FloatingCardViewModel).GetProperty("ProgressText"));
+        Assert.NotNull(typeof(FloatingCardViewModel).GetProperty(nameof(FloatingCardViewModel.UndoCommand)));
+        Assert.NotNull(typeof(FloatingCardViewModel).GetProperty(nameof(FloatingCardViewModel.UndoGesture)));
+    }
+
+    [Fact]
+    public async Task Undo_uses_a_distinct_compensating_event_identity_after_a_successful_rating()
+    {
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        Guid? ratingEventId = null;
+        UndoLastActionRequest? undoRequest = null;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var operations = new FloatingCardOperations(
+            (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)),
+            (request, _) =>
+            {
+                ratingEventId = request.EventId;
+                return Task.FromResult<UseCaseResult<LearningTransition>>(
+                    new Success<LearningTransition>(new(initial.Card, initial)));
+            },
+            (_, _) => throw new NotSupportedException(),
+            (request, _) =>
+            {
+                undoRequest = request;
+                return Task.FromResult<UseCaseResult<CardState>>(new Success<CardState>(initial.Card));
+            });
+        using var viewModel = new FloatingCardViewModel(
+            operations,
+            EmptyDrawer("近义辨析", "暂无可靠近义词"),
+            EmptyDrawer("形近易混", "暂无可靠易混词"),
+            labels);
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F3);
+        await viewModel.UndoAsync();
+
+        Assert.NotNull(ratingEventId);
+        Assert.NotNull(undoRequest);
+        Assert.NotEqual(ratingEventId, undoRequest!.EventId);
+    }
+
+    [Fact]
     public async Task Unexpected_initial_load_failure_is_announced_instead_of_escaping_the_window_event()
     {
         using var labels = new ShortcutLabelMap(new FakeShortcutService());
@@ -349,7 +414,8 @@ public sealed class FloatingCardViewModelTests
     private static NextCard Card(int index, string word, string phonetic, string chinese)
     {
         var state = new CardState(Id(index), null, DateTimeOffset.UtcNow);
-        return new(state, Guid.NewGuid(), new VocabularyWord(Id(index), word, index, true, phonetic, chinese));
+        return new(state, Guid.NewGuid(), new VocabularyWord(Id(index), word, index, true, phonetic, chinese),
+            null, Id(1000 + index), DailyQueueItemKind.New);
     }
 
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);

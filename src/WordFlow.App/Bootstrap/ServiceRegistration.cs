@@ -41,6 +41,7 @@ public static class ServiceRegistration
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IFsrsScheduler, Fsrs6Scheduler>();
         services.AddSingleton<QueuePolicy>();
+        services.AddSingleton<DailyQueueCoordinator>();
         services.AddSingleton<GetNextCard>();
         services.AddSingleton<SubmitRating>();
         services.AddSingleton<SlashWord>();

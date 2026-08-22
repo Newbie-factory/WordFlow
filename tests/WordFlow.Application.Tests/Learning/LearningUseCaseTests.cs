@@ -30,8 +30,9 @@ public sealed class LearningUseCaseTests
         var store = new FakeLearningStore([current, next]);
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
+        await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current, CardProjection.InitialRevision, shortcut), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current, CardProjection.InitialRevision, QueueItem(current.Id), shortcut), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(expected, Assert.Single(store.Applied).Event.Action switch
@@ -41,6 +42,7 @@ public sealed class LearningUseCaseTests
             LearningAction.Good => Rating.Good,
             _ => throw new Xunit.Sdk.XunitException("Slash or Easy-like behavior entered rating mapping."),
         });
+        Assert.Equal((QueueItem(current.Id), DailyQueueItemStatus.Completed), Assert.Single(store.QueuedApplications));
         Assert.Equal(next.Id, success.Value.NextCard!.Card.Id);
     }
 
@@ -52,7 +54,7 @@ public sealed class LearningUseCaseTests
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => handler.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, (RatingShortcut)99), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), (RatingShortcut)99), default));
 
         Assert.Empty(store.Applied);
         Assert.Equal(0, store.CardPageReads);
@@ -65,7 +67,7 @@ public sealed class LearningUseCaseTests
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3), default);
 
         Assert.IsType<StorageFailure<LearningTransition>>(result);
         Assert.Equal(0, store.CardPageReads);
@@ -75,13 +77,16 @@ public sealed class LearningUseCaseTests
     public async Task Slash_is_a_separate_action_and_advances_only_after_commit()
     {
         var store = new FakeLearningStore([Card(1), Card(2)]);
-        var handler = new SlashWord(store, Queue(store, [Word(1), Word(2)]), Clock());
+        var queue = Queue(store, [Word(1), Word(2)]);
+        var handler = new SlashWord(store, queue, Clock());
+        await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1))), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(LearningAction.Slash, Assert.Single(store.Applied).Event.Action);
         Assert.True(store.Applied[0].Event.After.Slash.IsSlashed);
+        Assert.Equal((QueueItem(Id(1)), DailyQueueItemStatus.Slashed), Assert.Single(store.QueuedApplications));
         Assert.Equal(Id(2), success.Value.NextCard!.Card.Id);
     }
 
@@ -149,12 +154,12 @@ public sealed class LearningUseCaseTests
         var submit = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         Assert.IsType<NotFound<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1), default));
 
         store.Cards[Id(1)] = Card(1);
         store.ApplyFailure = new LearningConcurrencyException(Id(1));
         Assert.IsType<Conflict<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1), default));
     }
 
     [Fact]
@@ -163,8 +168,9 @@ public sealed class LearningUseCaseTests
         var store = new FakeLearningStore([]);
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
+        await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), new CardState(Id(1), null, Now), CardProjection.InitialRevision, RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), new CardState(Id(1), null, Now), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3), default);
 
         var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
         Assert.Equal(Id(1), transition.Card.Id);
@@ -211,7 +217,7 @@ public sealed class LearningUseCaseTests
             new VocabularySense("sense-z", Id(1), "a legal reduction", "n"),
             new VocabularySense("sense-a", Id(1), "to become less intense", "v"),
         };
-        var queue = new GetNextCard(store, new FakeVocabularyRepository([word], senses), new QueuePolicy(new RecordingScheduler()), Clock());
+        var queue = Queue(store, [word], senses);
 
         var result = await queue.HandleAsync(new(DailyPlan.Default), default);
 
@@ -231,7 +237,7 @@ public sealed class LearningUseCaseTests
             new VocabularySense("sense-z", Id(1), "z", "v"),
             new VocabularySense("sense-a", Id(1), "a", "n"),
         };
-        var queue = new GetNextCard(store, new FakeVocabularyRepository([word], senses), new QueuePolicy(new RecordingScheduler()), Clock());
+        var queue = Queue(store, [word], senses);
 
         var primary = Assert.IsType<Success<NextCard?>>(await queue.HandleAsync(new(DailyPlan.Default), default)).Value!.PrimarySense!;
 
@@ -250,21 +256,39 @@ public sealed class LearningUseCaseTests
         store.Events.Add(new ReviewEvent(Id(91), original.Id, Now, LearningAction.Good, original, original));
         var queue = Queue(store, [Word(1), Word(2)]);
         UseCaseResult<LearningTransition> result = slash
-            ? await new SlashWord(store, queue, Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision), default)
-            : await new SubmitRating(store, queue, new RecordingScheduler(), Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, RatingShortcut.F3), default);
+            ? await new SlashWord(store, queue, Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id)), default)
+            : await new SubmitRating(store, queue, new RecordingScheduler(), Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id), RatingShortcut.F3), default);
 
         Assert.IsType<Conflict<LearningTransition>>(result);
         Assert.Equal(0, store.CardPageReads);
         Assert.Single(store.Events);
     }
 
-    private static GetNextCard Queue(FakeLearningStore store, IEnumerable<VocabularyWord> words) =>
-        new(store, new FakeVocabularyRepository(words), new QueuePolicy(new RecordingScheduler()), Clock());
+    private static GetNextCard Queue(
+        FakeLearningStore store,
+        IEnumerable<VocabularyWord> words,
+        IEnumerable<VocabularySense>? senses = null)
+    {
+        var daily = new FakeDailyQueueStore();
+        store.QueueStore = daily;
+        return new GetNextCard(new DailyQueueCoordinator(
+            store,
+            new FakeVocabularyRepository(words, senses),
+            daily,
+            new QueuePolicy(new RecordingScheduler()),
+            Clock()));
+    }
 
     private static FakeTimeProvider Clock() => new(Now);
     private static CardState Card(int value) => new(Id(value), null, Now.AddMinutes(-value));
     private static VocabularyWord Word(int value) => new(Id(value), $"word-{value:000}", value, true);
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
+    private static Guid QueueItem(Guid cardId)
+    {
+        var bytes = cardId.ToByteArray();
+        bytes[^1] ^= 0x7f;
+        return new Guid(bytes);
+    }
 
     private sealed class FakeTimeProvider(DateTimeOffset now) : TimeProvider
     {
@@ -284,10 +308,12 @@ public sealed class LearningUseCaseTests
     {
         public Dictionary<Guid, CardState> Cards { get; } = cards.ToDictionary(x => x.Id);
         public List<LearningCommand> Applied { get; } = [];
+        public List<(Guid QueueItemId, DailyQueueItemStatus Status)> QueuedApplications { get; } = [];
         public List<ReviewEvent> Events { get; } = [];
         public Exception? ApplyFailure { get; set; }
         public Exception? GetCardFailure { get; set; }
         public int CardPageReads { get; private set; }
+        public FakeDailyQueueStore? QueueStore { get; set; }
 
         public Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct)
         {
@@ -307,11 +333,20 @@ public sealed class LearningUseCaseTests
             return Task.FromResult(new CommitResult(true, command.Event.EventId, command.Event.After));
         }
 
-        public Task<CommitResult> ApplyQueuedAsync(
+        public async Task<CommitResult> ApplyQueuedAsync(
             LearningCommand command,
             Guid queueItemId,
             DailyQueueItemStatus terminalStatus,
-            CancellationToken ct) => ApplyAsync(command, ct);
+            CancellationToken ct)
+        {
+            var result = await ApplyAsync(command, ct);
+            if (result.Applied)
+            {
+                QueuedApplications.Add((queueItemId, terminalStatus));
+                QueueStore?.Complete(queueItemId, terminalStatus, command.Event.EventId, command.Event.OccurredAt);
+            }
+            return result;
+        }
 
         public Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct)
         {
@@ -365,6 +400,42 @@ public sealed class LearningUseCaseTests
             UndoLearningCommand command,
             DateOnly localDay,
             CancellationToken ct) => UndoLatestAsync(command, ct);
+    }
+
+    private sealed class FakeDailyQueueStore : IDailyQueueStore
+    {
+        private DailySessionSnapshot? session;
+
+        public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct)
+        {
+            if (session is not null) return Task.FromResult(session);
+            var items = seed.OrderedReviewCandidates.Select(id => (Id: id, Kind: DailyQueueItemKind.Review))
+                .Concat(seed.OrderedNewCandidates.Select(id => (Id: id, Kind: DailyQueueItemKind.New)))
+                .Select((entry, ordinal) => new DailyQueueItem(
+                    QueueItem(entry.Id), seed.LocalDay, ordinal, entry.Id, entry.Kind, seed.LocalDay,
+                    null, DailyQueueItemStatus.Pending, null, null))
+                .ToArray();
+            session = new(seed.LocalDay, seed.ConfiguredPlan, seed.ConfiguredPlan, null, items);
+            return Task.FromResult(session);
+        }
+
+        public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
+            Task.FromResult(session?.Items.FirstOrDefault(item => item.Status == DailyQueueItemStatus.Pending));
+        public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => Task.CompletedTask;
+        public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<DailyHistoryEntry>>([]);
+        public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Task.FromResult(new GoalProgress(0, 0));
+
+        public void Complete(Guid itemId, DailyQueueItemStatus status, Guid eventId, DateTimeOffset at)
+        {
+            if (session is null) throw new LearningNotFoundException("The daily queue was not created.");
+            session = session with
+            {
+                Items = session.Items.Select(item => item.ItemId == itemId
+                    ? item with { Status = status, CompletedEventId = eventId, CompletedAt = at }
+                    : item).ToArray(),
+            };
+        }
     }
 
     private sealed class FakeVocabularyRepository(IEnumerable<VocabularyWord> words, IEnumerable<VocabularySense>? senses = null) : IVocabularyRepository

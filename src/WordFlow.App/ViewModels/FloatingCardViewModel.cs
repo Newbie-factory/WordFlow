@@ -72,7 +72,6 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public string Word => current?.Word.Lemma ?? "今日学习已完成";
     public string Phonetic => current?.Word.Phonetic ?? "";
     public string Chinese => current?.Word.Chinese ?? "没有待学习的单词";
-    public string ProgressText => current is null ? "今日队列已完成" : "专注当前词 · 提交后进入下一词";
     public bool HasCard => current is not null;
     public bool CanRate => HasCard && !IsBusy && !IsPaused;
     public bool IsPaused => isPaused;
@@ -162,22 +161,22 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     public Task RateAsync(RatingShortcut rating, CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SubmitRating(
-            new(commandId, eventId, card.Card, card.Revision, rating, planProvider()), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, rating, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public Task SlashAsync(CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SlashWord(
-            new(commandId, eventId, card.Card, card.Revision, planProvider()), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public async Task UndoAsync(CancellationToken ct = default)
     {
-        if (IsPaused || IsBusy || lastEventId is not { } eventId) return;
+        if (IsPaused || IsBusy || !lastEventId.HasValue) return;
         IsBusy = true;
         ErrorMessage = null;
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
             var operationGeneration = generation;
-            var result = await operations.UndoLastAction(new(Guid.NewGuid(), eventId), linked.Token);
+            var result = await operations.UndoLastAction(new(Guid.NewGuid(), Guid.NewGuid()), linked.Token);
             if (disposed || generation != operationGeneration) return;
             switch (result)
             {
@@ -301,7 +300,6 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(Word));
         OnPropertyChanged(nameof(Phonetic));
         OnPropertyChanged(nameof(Chinese));
-        OnPropertyChanged(nameof(ProgressText));
         OnPropertyChanged(nameof(HasCard));
         OnPropertyChanged(nameof(CanRate));
         RaiseCommandStates();

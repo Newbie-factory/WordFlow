@@ -3,7 +3,13 @@ using WordFlow.Domain.Learning;
 
 namespace WordFlow.Application.Learning;
 
-public sealed record SlashWordRequest(Guid CommandId, Guid EventId, CardState ExpectedCard, Guid ExpectedRevision, DailyPlan? Plan = null);
+public sealed record SlashWordRequest(
+    Guid CommandId,
+    Guid EventId,
+    CardState ExpectedCard,
+    Guid ExpectedRevision,
+    Guid QueueItemId,
+    DailyPlan? Plan = null);
 
 public sealed class SlashWord
 {
@@ -23,6 +29,7 @@ public sealed class SlashWord
         ArgumentNullException.ThrowIfNull(request);
         return LearningMutation.CommitAndAdvanceAsync(
             store, nextCard, request.CommandId, request.EventId, request.ExpectedCard, request.ExpectedRevision,
+            request.QueueItemId, DailyQueueItemStatus.Slashed,
             card => actions.Slash(request.EventId, card), request.Plan ?? DailyPlan.Default, ct);
     }
 }

@@ -13,6 +13,8 @@ internal static class LearningMutation
         Guid eventId,
         CardState expectedCard,
         Guid expectedRevision,
+        Guid queueItemId,
+        DailyQueueItemStatus terminalStatus,
         Func<CardState, ReviewEvent> createEvent,
         DailyPlan plan,
         CancellationToken ct)
@@ -29,7 +31,11 @@ internal static class LearningMutation
             {
                 var known = await nextCard.ResolveProjectionAsync(expectedCard.Id, ct).ConfigureAwait(false);
                 if (known is null) return new NotFound<LearningTransition>($"Card {expectedCard.Id:D} was not found.");
-                commit = await store.ApplyAsync(new LearningCommand(commandId, createEvent(expectedCard), expectedRevision), ct).ConfigureAwait(false);
+                commit = await store.ApplyQueuedAsync(
+                    new LearningCommand(commandId, createEvent(expectedCard), expectedRevision),
+                    queueItemId,
+                    terminalStatus,
+                    ct).ConfigureAwait(false);
             }
 
             var next = await nextCard.HandleAsync(new GetNextCardRequest(plan), ct).ConfigureAwait(false);

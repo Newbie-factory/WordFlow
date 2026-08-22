@@ -11,6 +11,7 @@ public sealed record SubmitRatingRequest(
     Guid EventId,
     CardState ExpectedCard,
     Guid ExpectedRevision,
+    Guid QueueItemId,
     RatingShortcut Shortcut,
     DailyPlan? Plan = null);
 
@@ -41,6 +42,7 @@ public sealed class SubmitRating
         };
         return await LearningMutation.CommitAndAdvanceAsync(
             store, nextCard, request.CommandId, request.EventId, request.ExpectedCard, request.ExpectedRevision,
+            request.QueueItemId, DailyQueueItemStatus.Completed,
             card => actions.Review(request.EventId, card, rating), request.Plan ?? DailyPlan.Default, ct).ConfigureAwait(false);
     }
 }

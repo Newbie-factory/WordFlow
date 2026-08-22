@@ -21,8 +21,10 @@ public sealed class UndoLastAction
         ArgumentNullException.ThrowIfNull(request);
         try
         {
-            var commit = await store.UndoLatestAsync(new UndoLearningCommand(
-                request.CommandId, request.EventId, timeProvider.GetUtcNow()), ct).ConfigureAwait(false);
+            var localNow = timeProvider.GetLocalNow();
+            var commit = await store.UndoLatestQueuedAsync(new UndoLearningCommand(
+                request.CommandId, request.EventId, localNow.ToUniversalTime()),
+                DateOnly.FromDateTime(localNow.DateTime), ct).ConfigureAwait(false);
             return new Success<CardState>(commit.Card);
         }
         catch (LearningNotFoundException exception) { return new NotFound<CardState>(exception.Message); }
