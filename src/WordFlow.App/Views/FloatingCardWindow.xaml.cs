@@ -248,7 +248,7 @@ public partial class FloatingCardWindow : Window
         if (viewModel is not null && !viewModel.IsPaused) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
     }
     private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
-    private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? PngTheme.Default);
+    private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? ImageTheme.Default);
     private void OnThemeFeedback(string message) { }
 
     private void ThemeOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
@@ -256,7 +256,7 @@ public partial class FloatingCardWindow : Window
         if (!updatingThemeControls && themeSettings is not null) themeSettings.Opacity = args.NewValue;
     }
 
-    private void ApplyTheme(PngTheme theme)
+    private void ApplyTheme(ImageTheme theme)
     {
         ImageBrush? brush = null;
         if (!theme.IsDefault)

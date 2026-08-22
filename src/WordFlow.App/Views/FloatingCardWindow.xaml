@@ -126,7 +126,7 @@
 
             <StackPanel Grid.Row="2">
                 <Border Margin="20,0,20,10" Padding="8" Background="{StaticResource Brush.SurfaceRaised}" CornerRadius="{StaticResource Radius.Control}">
-                    <Slider x:Name="ThemeOpacitySlider" Minimum="0.15" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="False" ValueChanged="ThemeOpacity_Changed" TabIndex="12" AutomationProperties.Name="卡片背景透明度" />
+                    <Slider x:Name="ThemeOpacitySlider" Minimum="0" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="False" ValueChanged="ThemeOpacity_Changed" TabIndex="12" AutomationProperties.Name="卡片背景透明度" />
                 </Border>
                 <Border Margin="20,0,20,12" Padding="10,8" Background="{StaticResource Brush.ErrorSurface}"
                         CornerRadius="{StaticResource Radius.Control}"

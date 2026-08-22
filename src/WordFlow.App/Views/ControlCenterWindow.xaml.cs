@@ -219,10 +219,10 @@ public partial class ControlCenterWindow : Window
 
     private async void Import_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "PNG 图片|*.png", Title = "选择 PNG 背景" };
+        var dialog = new OpenFileDialog { Filter = "图片文件|*.png;*.jpg;*.jpeg", Title = "选择图片背景" };
         if (dialog.ShowDialog(this) != true) return;
         try { await viewModel.Theme.ImportAsync(dialog.FileName, viewModel.Theme.Opacity); ThemeStatus.Text = $"已使用：{viewModel.Theme.DisplayName}"; }
-        catch (Exception ex) { ThemeStatus.Text = $"PNG 无法使用：{ex.Message}"; }
+        catch (Exception ex) { ThemeStatus.Text = $"图片无法使用：{ex.Message}"; }
     }
 
     private async void Reset_Click(object sender, RoutedEventArgs e)
