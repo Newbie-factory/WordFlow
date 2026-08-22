@@ -351,6 +351,28 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Hiding_the_card_cancels_pending_autoplay_without_changing_the_saved_preference()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync())
+        {
+            Autoplay = true,
+            AutoplayRepeatCount = 10,
+        };
+
+        settings.OnCardChanged(Guid.NewGuid(), "alpha", isPaused: false);
+        await service.WaitForCallsAsync(1);
+        service.Complete(0, PronunciationPlaybackResult.Completed("alpha"));
+        await service.WaitForCallsAsync(2);
+
+        settings.OnCardHidden();
+
+        Assert.True(service.Pending[1].CancellationToken.IsCancellationRequested);
+        Assert.True(settings.Autoplay);
+        Assert.Equal(10, settings.AutoplayRepeatCount);
+    }
+
+    [Fact]
     public async Task Autoplay_count_ten_completes_exactly_ten_calls_in_order_with_one_active_and_one_final_publish()
     {
         var service = new FakePronunciationService { DelayCompletion = true };

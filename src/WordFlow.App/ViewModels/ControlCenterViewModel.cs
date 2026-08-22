@@ -21,6 +21,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private readonly GetConfusables? getConfusables;
     private readonly ILearningStore? learningStore;
     private readonly RestoreSlashedWords? restoreSlashedWords;
+    private readonly LearningDataChangeNotifier? dataChanges;
     private IReadOnlyList<VocabularyWord>? vocabularyCache;
     private int reviewedToday;
     private int slashedTotal;
@@ -36,6 +37,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private SlashedWordRow? selectedSlashedWord;
     private bool dailyPlanSubscribed;
     private bool alwaysOnTopEnabled;
+    private CancellationTokenSource? dataChangeRefreshCancellation;
+    private bool disposed;
 
     public ControlCenterViewModel(
         DailyPlanSettingsViewModel dailyPlan,
@@ -50,7 +53,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         RestoreSlashedWords? restoreSlashedWords = null,
         IDailyQueueStore? dailyQueueStore = null,
         TimeProvider? clock = null,
-        bool alwaysOnTopEnabled = true)
+        bool alwaysOnTopEnabled = true,
+        LearningDataChangeNotifier? dataChanges = null)
     {
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         Shortcuts = shortcuts ?? throw new ArgumentNullException(nameof(shortcuts));
@@ -64,7 +68,9 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         this.learningStore = learningStore;
         this.restoreSlashedWords = restoreSlashedWords;
         this.alwaysOnTopEnabled = alwaysOnTopEnabled;
+        this.dataChanges = dataChanges;
         LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, this.clock, context);
+        if (dataChanges is not null) dataChanges.CommittedDataChanged += OnCommittedDataChanged;
     }
 
     public DailyPlanSettingsViewModel DailyPlan { get; }
@@ -137,7 +143,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
             });
             await historyLoad.ConfigureAwait(false);
         }
-        finally { IsLoading = false; }
+        finally { Publish(() => IsLoading = false); }
     }
 
     public Task SaveDailyPlanAsync(CancellationToken ct = default) => DailyPlan.SaveAsync(ct);
@@ -232,6 +238,15 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
 
     public void Dispose()
     {
+        if (disposed) return;
+        disposed = true;
+        if (dataChanges is not null) dataChanges.CommittedDataChanged -= OnCommittedDataChanged;
+        var cancellation = Interlocked.Exchange(ref dataChangeRefreshCancellation, null);
+        if (cancellation is not null)
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
         if (dailyPlanSubscribed) DailyPlan.PropertyChanged -= OnDailyPlanChanged;
         Shortcuts.Dispose();
         Pronunciation.Dispose();
@@ -260,10 +275,51 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         { Raise(nameof(DailyTarget)); Raise(nameof(RemainingToday)); Raise(nameof(ProgressRatio)); Raise(nameof(EstimatedMinutes)); }
     }
 
+    private void OnCommittedDataChanged(object? sender, EventArgs args)
+    {
+        if (disposed) return;
+        if (context is not null && context != SynchronizationContext.Current)
+        {
+            context.Post(_ => ScheduleDataChangeRefresh(), null);
+            return;
+        }
+        ScheduleDataChangeRefresh();
+    }
+
+    private void ScheduleDataChangeRefresh()
+    {
+        if (disposed) return;
+        var next = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref dataChangeRefreshCancellation, next);
+        previous?.Cancel();
+        _ = RefreshAfterDataChangeAsync(next);
+    }
+
+    private async Task RefreshAfterDataChangeAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(75), cancellation.Token);
+            await RefreshProgressAsync(cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch { }
+        finally
+        {
+            Interlocked.CompareExchange(ref dataChangeRefreshCancellation, null, cancellation);
+            cancellation.Dispose();
+        }
+    }
+
     internal static DateOnly GetDashboardDay(TimeProvider clock) =>
         DateOnly.FromDateTime((clock ?? throw new ArgumentNullException(nameof(clock))).GetLocalNow().DateTime);
 
-    private void Publish(Action action) { if (context is null || context == SynchronizationContext.Current) action(); else context.Post(_ => action(), null); }
+    private void Publish(Action action)
+    {
+        if (disposed) return;
+        if (context is null || context == SynchronizationContext.Current) action();
+        else context.Post(_ => { if (!disposed) action(); }, null);
+    }
     private bool Set<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Raise(name); return true; }
     private void Raise(string? name) => PropertyChanged?.Invoke(this, new(name));
 }

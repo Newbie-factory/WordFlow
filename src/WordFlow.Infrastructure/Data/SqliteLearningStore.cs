@@ -48,13 +48,15 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
     public Task<DailyLearningStatistics> GetDailyStatisticsAsync(DateOnly day, CancellationToken ct) =>
         TranslateAsync(async () =>
         {
-            var start = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
-            var end = start.AddDays(1);
             await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
             await using var reviewed = connection.CreateCommand();
-            reviewed.CommandText = "SELECT COUNT(*) FROM review_event WHERE action <> 'Undo' AND occurred_at_utc >= $start AND occurred_at_utc < $end";
-            reviewed.Parameters.AddWithValue("$start", MigrationRunner.UtcText(start));
-            reviewed.Parameters.AddWithValue("$end", MigrationRunner.UtcText(end));
+            reviewed.CommandText = """
+                SELECT COUNT(*)
+                FROM daily_queue_items q
+                INNER JOIN daily_sessions s ON s.local_day=q.local_day
+                WHERE q.local_day=$day AND q.status IN ('Completed','Slashed')
+                """;
+            reviewed.Parameters.AddWithValue("$day", day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             var reviewedToday = Convert.ToInt32(await reviewed.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
             await using var slashed = connection.CreateCommand();
             slashed.CommandText = "SELECT COUNT(*) FROM card_state WHERE is_slashed=1";

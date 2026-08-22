@@ -81,7 +81,7 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
         string dayText = day.ToString("yyyy年M月d日", CultureInfo.CurrentCulture);
         string detail = entry is null or { WasStarted: false }
             ? "当天未创建学习计划"
-            : $"新词 {entry.NewCompleted}/{entry.NewTarget}，复习 {entry.ReviewCompleted}/{entry.ReviewTarget}";
+            : $"新词 {entry.NewCompleted}/{entry.NewTarget}，复习 {entry.ReviewCompleted}/{entry.ReviewTarget}，待重学 {entry.PendingRelearning}";
         string tooltip = $"{dayText}：{status}（{detail}）";
         return new LearningDayCellViewModel(day, status, $"{dayText}，{status}，{detail}", tooltip, fillKey, day == today);
     }

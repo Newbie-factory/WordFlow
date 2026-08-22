@@ -18,7 +18,8 @@ public static class FloatingCardComposition
         ShortcutLabelMap shortcutLabels,
         IFloatingCardActionHost? actionHost = null,
         ICardPronunciationPlayback? pronunciation = null,
-        DailyPlanSettingsViewModel? dailyPlanSettings = null)
+        DailyPlanSettingsViewModel? dailyPlanSettings = null,
+        LearningDataChangeNotifier? dataChanges = null)
     {
         ArgumentNullException.ThrowIfNull(getNextCard);
         ArgumentNullException.ThrowIfNull(submitRating);
@@ -42,7 +43,8 @@ public static class FloatingCardComposition
             "形近易混", "暂无可靠易混词",
             async (wordId, ct) => MapConfusables(await getConfusables.HandleAsync(new(wordId), ct)), actionHost);
         return new(operations, synonyms, confusables, shortcutLabels, actionHost,
-            pronunciation: pronunciation, planProvider: dailyPlanSettings is null ? null : () => dailyPlanSettings.Plan);
+            pronunciation: pronunciation, planProvider: dailyPlanSettings is null ? null : () => dailyPlanSettings.Plan,
+            dataChanges: dataChanges);
     }
 
     private static UseCaseResult<IReadOnlyList<RelationItemData>> MapSynonyms(

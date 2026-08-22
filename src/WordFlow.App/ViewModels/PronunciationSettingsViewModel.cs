@@ -10,6 +10,7 @@ public interface ICardPronunciationPlayback
 {
     event EventHandler<PronunciationPlaybackResult>? PlaybackFeedback;
     void OnCardChanged(Guid? wordId, string? word, bool isPaused);
+    void OnCardHidden();
     void SetPaused(bool paused);
     void Stop();
 }
@@ -251,6 +252,12 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         EnqueuePlayback(
             value ? CancelPlaybackAsync : NoPlaybackWorkAsync,
             () => paused = value);
+    }
+
+    public void OnCardHidden()
+    {
+        if (disposed) return;
+        EnqueuePlayback(CancelPlaybackAsync);
     }
 
     public void Stop()

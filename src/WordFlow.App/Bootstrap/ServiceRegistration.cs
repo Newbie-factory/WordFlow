@@ -29,6 +29,7 @@ public static class ServiceRegistration
         services.AddSingleton<IDailyQueueStore>(provider => provider.GetRequiredService<SqliteDailyQueueStore>());
         services.AddSingleton<SqliteAppSettingStore>();
         services.AddSingleton<DailyPlanSettingsViewModel>();
+        services.AddSingleton<LearningDataChangeNotifier>();
         services.AddSingleton<ImageThemeService>();
         services.AddSingleton<ThemeSettingsViewModel>();
         services.AddSingleton<IPronunciationService, WindowsSpeechPronunciationService>();

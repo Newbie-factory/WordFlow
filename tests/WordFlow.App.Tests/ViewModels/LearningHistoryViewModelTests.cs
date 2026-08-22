@@ -16,7 +16,7 @@ public sealed class LearningHistoryViewModelTests
             new GoalProgress(3, 12046),
             [
                 new DailyHistoryEntry(completedDay, 10, 10, 20, 20, 0, true, true),
-                new DailyHistoryEntry(today.AddDays(-1), 2, 10, 3, 20, 0, true, false),
+                new DailyHistoryEntry(today.AddDays(-1), 2, 10, 3, 20, 4, true, false),
             ]);
         var viewModel = new LearningHistoryViewModel(store, new FixedTimeProvider(
             new DateTimeOffset(2026, 8, 21, 16, 30, 0, TimeSpan.Zero),
@@ -43,6 +43,8 @@ public sealed class LearningHistoryViewModelTests
         Assert.Equal("Incomplete", incomplete.FillKey);
         Assert.Contains("未完成", incomplete.Tooltip);
         Assert.Contains("新词 2/10", incomplete.AutomationName);
+        Assert.Contains("待重学 4", incomplete.Tooltip);
+        Assert.Contains("待重学 4", incomplete.AutomationName);
 
         var absent = Assert.Single(viewModel.Days, x => x.Day == today.AddDays(-3));
         Assert.Equal("未开始", absent.StatusText);
@@ -50,6 +52,7 @@ public sealed class LearningHistoryViewModelTests
         Assert.True(absent.IsToday is false);
         Assert.Contains("未开始", absent.Tooltip);
         Assert.Contains("当天未创建学习计划", absent.AutomationName);
+        Assert.True(Assert.Single(viewModel.Days, x => x.Day == today).IsToday);
     }
 
     [Fact]

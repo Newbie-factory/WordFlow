@@ -164,7 +164,8 @@ public partial class App : System.Windows.Application
             new ShortcutLabelMap(shortcutService),
             cardActionHost,
             pronunciation,
-            dailyPlanSettings);
+            dailyPlanSettings,
+            services.GetRequiredService<LearningDataChangeNotifier>());
         var paths = services.GetRequiredService<AppPaths>();
         themeSettings = services.GetRequiredService<ThemeSettingsViewModel>();
         await themeSettings.RestoreAsync(cancellationToken);
@@ -199,7 +200,8 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<RestoreSlashedWords>(),
             services.GetRequiredService<IDailyQueueStore>(),
             services.GetRequiredService<TimeProvider>(),
-            alwaysOnTopEnabled);
+            alwaysOnTopEnabled,
+            services.GetRequiredService<LearningDataChangeNotifier>());
         await controlCenterViewModel.LoadAsync(cancellationToken);
         controlCenter = new ControlCenterWindow(controlCenterViewModel);
         controlCenter.AlwaysOnTopChanged += (_, _) =>

@@ -260,6 +260,63 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Successful_slash_and_undo_publish_shared_data_changes_without_explicit_refresh()
+    {
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        var notifier = new LearningDataChangeNotifier();
+        var changes = 0;
+        notifier.CommittedDataChanged += (_, _) => changes++;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var operations = new FloatingCardOperations(
+            (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)),
+            (_, _) => throw new NotSupportedException(),
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(
+                new Success<LearningTransition>(new(initial.Card, initial, CommittedEventId: Id(2001)))),
+            (_, _) => Task.FromResult<UseCaseResult<CardState>>(new Success<CardState>(initial.Card)));
+        using var viewModel = new FloatingCardViewModel(
+            operations,
+            EmptyDrawer("近义辨析", "暂无可靠近义词"),
+            EmptyDrawer("形近易混", "暂无可靠易混词"),
+            labels,
+            dataChanges: notifier);
+        await viewModel.InitializeAsync();
+
+        await viewModel.SlashAsync();
+        Assert.Equal(1, changes);
+
+        await viewModel.UndoAsync();
+        Assert.Equal(2, changes);
+    }
+
+    [Fact]
+    public async Task Failed_or_rolled_over_card_operations_do_not_publish_shared_data_changes()
+    {
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        var notifier = new LearningDataChangeNotifier();
+        var changes = 0;
+        notifier.CommittedDataChanged += (_, _) => changes++;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var operations = new FloatingCardOperations(
+            (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(initial)),
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(new StorageFailure<LearningTransition>("busy")),
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(
+                new Success<LearningTransition>(new(initial.Card, initial, Status: LearningTransitionStatus.QueueDayRolledOver))),
+            (_, _) => throw new NotSupportedException());
+        using var viewModel = new FloatingCardViewModel(
+            operations,
+            EmptyDrawer("近义辨析", "暂无可靠近义词"),
+            EmptyDrawer("形近易混", "暂无可靠易混词"),
+            labels,
+            dataChanges: notifier);
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F3);
+        await viewModel.SlashAsync();
+
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
     public async Task Unexpected_initial_load_failure_is_announced_instead_of_escaping_the_window_event()
     {
         using var labels = new ShortcutLabelMap(new FakeShortcutService());
@@ -514,6 +571,24 @@ public sealed class FloatingCardViewModelTests
         Assert.Contains(true, playback.PauseStates);
     }
 
+    [Fact]
+    public async Task Hide_stops_card_playback_and_show_alone_does_not_restart_autoplay()
+    {
+        var playback = new RecordingCardPronunciation();
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(
+            labels,
+            Card(1, "abate", "/əˈbeɪt/", "减轻"),
+            pronunciation: playback);
+        await viewModel.InitializeAsync();
+
+        viewModel.SetVisible(false);
+        viewModel.SetVisible(true);
+        await Task.Delay(100);
+
+        Assert.Equal(["abate", null], playback.CardWords);
+    }
+
     private static FloatingCardViewModel CreateViewModel(
         ShortcutLabelMap labels,
         NextCard initial,
@@ -582,6 +657,7 @@ public sealed class FloatingCardViewModelTests
         public List<bool> PauseStates { get; } = [];
         public event EventHandler<PronunciationPlaybackResult>? PlaybackFeedback { add { } remove { } }
         public void OnCardChanged(Guid? wordId, string? word, bool isPaused) => CardWords.Add(word);
+        public void OnCardHidden() => CardWords.Add(null);
         public void SetPaused(bool paused) => PauseStates.Add(paused);
         public void Stop() => CardWords.Add(null);
     }

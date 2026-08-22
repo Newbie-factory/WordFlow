@@ -65,6 +65,59 @@ public sealed class SqliteLearningStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Daily_statistics_use_the_durable_queue_local_day_instead_of_UTC_midnight()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("daily-local-day.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var learning = new SqliteLearningStore(factory);
+        var localDay = new DateOnly(2026, 8, 14);
+        var occurredAt = new DateTimeOffset(2026, 8, 13, 16, 30, 0, TimeSpan.Zero);
+        var card = new CardState(Id(901), null, occurredAt);
+        var session = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            localDay, new DailyPlan(1, 0), [], [card.Id], occurredAt), default);
+        var review = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(occurredAt))
+            .Review(Id(902), card, Rating.Good);
+
+        await learning.ApplyQueuedAsync(
+            new LearningCommand(Id(903), review, CardProjection.InitialRevision),
+            Assert.Single(session.Items).ItemId,
+            DailyQueueItemStatus.Completed,
+            default);
+
+        Assert.Equal(1, (await learning.GetDailyStatisticsAsync(localDay, default)).ReviewedToday);
+        Assert.Equal(0, (await learning.GetDailyStatisticsAsync(localDay.AddDays(-1), default)).ReviewedToday);
+    }
+
+    [Fact]
+    public async Task Daily_statistics_ignore_undone_queue_items_and_non_queue_restore_events()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("daily-effective.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var learning = new SqliteLearningStore(factory);
+        var day = new DateOnly(2026, 8, 13);
+        var queueCard = InitialCard();
+        var session = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            day, new DailyPlan(1, 0), [], [queueCard.Id], Now), default);
+        var review = Review(Id(904), queueCard, Rating.Good);
+        await learning.ApplyQueuedAsync(Command(Id(905), review), Assert.Single(session.Items).ItemId,
+            DailyQueueItemStatus.Completed, default);
+        await learning.UndoQueuedAsync(
+            new UndoLearningCommand(Id(906), Id(907), Now.AddMinutes(1)), review.EventId, default);
+
+        var restoredCard = new CardState(Id(908), null, Now);
+        var actions = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddMinutes(2)));
+        var slash = actions.Slash(Id(909), restoredCard);
+        await learning.ApplyAsync(new LearningCommand(Id(910), slash, CardProjection.InitialRevision), default);
+        var restore = actions.Restore(Id(911), slash.After, RestoreMode.Scheduled);
+        await learning.ApplyAsync(new LearningCommand(Id(912), restore, slash.EventId), default);
+
+        var statistics = await learning.GetDailyStatisticsAsync(day, default);
+
+        Assert.Equal(0, statistics.ReviewedToday);
+        Assert.Equal(0, statistics.SlashedTotal);
+    }
+
+    [Fact]
     public async Task Queued_undo_targets_the_committed_event_and_actual_queue_day_after_midnight()
     {
         var factory = await CreateMigratedFactoryAsync(Database("queued-midnight-undo.db"));

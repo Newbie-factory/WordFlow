@@ -85,5 +85,14 @@ public sealed class ControlCenterWindowChromeTests
         Assert.Contains(history.Descendants(presentation + "TextBlock"), element =>
             (string?)element.Attribute("AutomationProperties.Name") == "{Binding AutomationName}");
         Assert.Contains(history.Descendants(), element => element.Name.LocalName == "WrapPanel" && (string?)element.Attribute("ItemWidth") is "14" or "15" or "16");
+        var historyCell = history.Descendants(presentation + "Border")
+            .Single(element => (string?)element.Attribute("ToolTipService.ToolTip") == "{Binding Tooltip}");
+        var todayTrigger = historyCell.Descendants(presentation + "DataTrigger")
+            .Single(element => (string?)element.Attribute("Binding") == "{Binding IsToday}");
+        Assert.Equal("True", (string?)todayTrigger.Attribute("Value"));
+        Assert.Contains(todayTrigger.Elements(presentation + "Setter"), setter =>
+            (string?)setter.Attribute("Property") == "BorderThickness" && (string?)setter.Attribute("Value") != "0");
+        Assert.Contains(todayTrigger.Elements(presentation + "Setter"), setter =>
+            (string?)setter.Attribute("Property") == "BorderBrush");
     }
 }

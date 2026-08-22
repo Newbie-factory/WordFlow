@@ -29,6 +29,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private readonly Func<DailyPlan> planProvider;
     private readonly IFloatingCardActionHost actionHost;
     private readonly ICardPronunciationPlayback? pronunciation;
+    private readonly LearningDataChangeNotifier? dataChanges;
     private readonly TimeProvider timeProvider;
     private NextCard? current;
     private string? errorMessage;
@@ -52,7 +53,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         DailyPlan? plan = null,
         ICardPronunciationPlayback? pronunciation = null,
         Func<DailyPlan>? planProvider = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        LearningDataChangeNotifier? dataChanges = null)
     {
         this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
         Synonyms = synonyms ?? throw new ArgumentNullException(nameof(synonyms));
@@ -60,6 +62,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
         this.actionHost = actionHost ?? FloatingCardActionHost.Unavailable;
         this.pronunciation = pronunciation;
+        this.dataChanges = dataChanges;
         this.timeProvider = timeProvider ?? TimeProvider.System;
         this.planProvider = planProvider ?? (() => plan ?? DailyPlan.Default);
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
@@ -211,7 +214,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     {
         if (disposed || isVisible == visible) return;
         isVisible = visible;
-        if (!visible) CancelIdleWake();
+        if (!visible)
+        {
+            CancelIdleWake();
+            pronunciation?.OnCardHidden();
+        }
         else _ = RefreshIdleWakeAfterLifecycleAsync();
     }
 
@@ -234,6 +241,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             var operationGeneration = generation;
             var result = await operations.UndoLastAction(
                 new(Guid.NewGuid(), Guid.NewGuid(), lastEventId.Value), linked.Token);
+            if (result is Success<CardState>) dataChanges?.PublishCommitted();
             if (disposed || generation != operationGeneration) return;
             switch (result)
             {
@@ -306,6 +314,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
             var result = await submit(captured, Guid.NewGuid(), eventId, linked.Token);
+            if (result is Success<LearningTransition> { Value.Status: LearningTransitionStatus.Committed })
+                dataChanges?.PublishCommitted();
             if (disposed || generation != operationGeneration) return;
             switch (result)
             {
@@ -378,7 +388,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         generation++;
         current = next;
         hasNextCardRefreshFailure = refreshFailed;
-        pronunciation?.OnCardChanged(next?.Word.WordId, next?.Word.Lemma, IsPaused);
+        pronunciation?.OnCardChanged(next?.Word.WordId, next?.Word.Lemma, IsPaused || !isVisible);
         OnPropertyChanged(nameof(Word));
         OnPropertyChanged(nameof(Phonetic));
         OnPropertyChanged(nameof(Chinese));
