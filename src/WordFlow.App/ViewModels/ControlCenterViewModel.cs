@@ -33,6 +33,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private int slashedPageSize = 100;
     private int slashedCount;
     private SlashedWordRow? selectedSlashedWord;
+    private bool dailyPlanSubscribed;
 
     public ControlCenterViewModel(
         DailyPlanSettingsViewModel dailyPlan,
@@ -44,7 +45,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         IVocabularyRepository? vocabulary = null,
         GetConfusables? getConfusables = null,
         ILearningStore? learningStore = null,
-        RestoreSlashedWords? restoreSlashedWords = null)
+        RestoreSlashedWords? restoreSlashedWords = null,
+        IDailyQueueStore? dailyQueueStore = null)
     {
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         Shortcuts = shortcuts ?? throw new ArgumentNullException(nameof(shortcuts));
@@ -56,12 +58,14 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         this.getConfusables = getConfusables;
         this.learningStore = learningStore;
         this.restoreSlashedWords = restoreSlashedWords;
+        LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, context: context);
     }
 
     public DailyPlanSettingsViewModel DailyPlan { get; }
     public ShortcutSettingsViewModel Shortcuts { get; }
     public PronunciationSettingsViewModel Pronunciation { get; }
     public ThemeSettingsViewModel Theme { get; }
+    public LearningHistoryViewModel? LearningHistory { get; }
     public ObservableCollection<VocabularyWord> VocabularyResults { get; } = [];
     public ObservableCollection<ConfusableItem> ConfusableResults { get; } = [];
     public ObservableCollection<SlashedWordRow> SlashedWords { get; } = [];
@@ -94,7 +98,11 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         await DailyPlan.RestoreAsync(ct).ConfigureAwait(false);
         await Pronunciation.RestoreAsync(ct).ConfigureAwait(false);
         await RefreshProgressAsync(ct).ConfigureAwait(false);
-        DailyPlan.PropertyChanged += OnDailyPlanChanged;
+        if (!dailyPlanSubscribed)
+        {
+            DailyPlan.PropertyChanged += OnDailyPlanChanged;
+            dailyPlanSubscribed = true;
+        }
     }
 
     public async Task RefreshProgressAsync(CancellationToken ct = default)
@@ -102,6 +110,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         IsLoading = true;
         try
         {
+            Task historyLoad = LearningHistory?.LoadAsync(ct) ?? Task.CompletedTask;
             DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
             var snapshot = await progressReader.GetDailyStatisticsAsync(today, ct).ConfigureAwait(false);
             var trend = new List<DailyTrendPoint>();
@@ -119,6 +128,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
                 foreach (var point in trend) SevenDayTrend.Add(point);
                 Raise(nameof(RemainingToday)); Raise(nameof(ProgressRatio)); Raise(nameof(EstimatedMinutes));
             });
+            await historyLoad.ConfigureAwait(false);
         }
         finally { IsLoading = false; }
     }
@@ -206,12 +216,16 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         if (projection is null) { SlashedStatus = "该词的学习状态不存在"; return; }
         var result = await restoreSlashedWords.HandleAsync(new RestoreSlashedWordRequest(Guid.NewGuid(), Guid.NewGuid(), projection.Card.Id, projection.Revision, RestoreMode.Scheduled), ct).ConfigureAwait(false);
         SlashedStatus = result is Success<CardState> ? $"已取消斩：{SelectedSlashedWord.Word}" : "取消斩失败，请刷新后重试";
-        if (result is Success<CardState>) await LoadSlashedPageAsync(ct).ConfigureAwait(false);
+        if (result is Success<CardState>)
+        {
+            await LoadSlashedPageAsync(ct).ConfigureAwait(false);
+            await RefreshProgressAsync(ct).ConfigureAwait(false);
+        }
     }
 
     public void Dispose()
     {
-        DailyPlan.PropertyChanged -= OnDailyPlanChanged;
+        if (dailyPlanSubscribed) DailyPlan.PropertyChanged -= OnDailyPlanChanged;
         Shortcuts.Dispose();
         Pronunciation.Dispose();
     }

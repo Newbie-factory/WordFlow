@@ -170,7 +170,8 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<IVocabularyRepository>(),
             services.GetRequiredService<GetConfusables>(),
             services.GetRequiredService<ILearningStore>(),
-            services.GetRequiredService<RestoreSlashedWords>());
+            services.GetRequiredService<RestoreSlashedWords>(),
+            services.GetRequiredService<IDailyQueueStore>());
         await controlCenterViewModel.LoadAsync(cancellationToken);
         controlCenter = new ControlCenterWindow(controlCenterViewModel);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();

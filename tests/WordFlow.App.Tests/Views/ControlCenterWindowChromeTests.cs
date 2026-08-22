@@ -65,4 +65,22 @@ public sealed class ControlCenterWindowChromeTests
         Assert.Equal("MaximizeRestore_Click", (string?)buttons["MaximizeRestoreButton"].Attribute("Click"));
         Assert.Equal("Close_Click", (string?)buttons["CloseButton"].Attribute("Click"));
     }
+
+    [Fact]
+    public void Dashboard_binds_one_way_goal_and_accessible_six_month_history_cells()
+    {
+        string project = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "WordFlow.App"));
+        var document = XDocument.Load(Path.Combine(project, "Views", "ControlCenterWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var progress = document.Descendants(presentation + "ProgressBar")
+            .Single(element => ((string?)element.Attribute("Value"))?.Contains("LearningHistory.GoalProgressRatio", StringComparison.Ordinal) == true);
+        Assert.Contains("Mode=OneWay", (string?)progress.Attribute("Value"));
+
+        var history = document.Descendants(presentation + "ItemsControl")
+            .Single(element => (string?)element.Attribute("ItemsSource") == "{Binding LearningHistory.Days}");
+        Assert.Contains(history.Descendants(), element => (string?)element.Attribute("AutomationProperties.Name") == "{Binding AutomationName}");
+        Assert.Contains(history.Descendants(), element => element.Name.LocalName == "WrapPanel" && (string?)element.Attribute("ItemWidth") is "14" or "15" or "16");
+    }
 }
