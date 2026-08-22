@@ -24,6 +24,8 @@ public static class ServiceRegistration
             provider.GetRequiredService<SqliteConnectionFactory>(), backupDirectory: paths.BackupsDirectory));
         services.AddSingleton<ILearningStore, SqliteLearningStore>();
         services.AddSingleton<SqliteAppSettingStore>();
+        services.AddSingleton<PngThemeService>();
+        services.AddSingleton<ThemeSettingsViewModel>();
         services.AddSingleton<IPronunciationService, WindowsSpeechPronunciationService>();
         services.AddSingleton(provider => new PronunciationSettingsViewModel(
             provider.GetRequiredService<IPronunciationService>(),

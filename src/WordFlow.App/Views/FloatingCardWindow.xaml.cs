@@ -5,9 +5,11 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using WordFlow.App.Bootstrap;
 using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
@@ -25,6 +27,7 @@ public partial class FloatingCardWindow : Window
     private readonly FocusedShortcutBindingBridge? focusedShortcuts;
     private readonly IDisposable? shortcutFaultConnection;
     private readonly WindowPlacementService? placementService;
+    private readonly ThemeSettingsViewModel? themeSettings;
     private readonly DispatcherTimer? fullscreenTimer;
     private readonly DispatcherTimer? placementSaveTimer;
     private readonly CancellationTokenSource lifetime = new();
@@ -38,12 +41,18 @@ public partial class FloatingCardWindow : Window
 
     public FloatingCardWindow() => InitializeComponent();
 
-    public FloatingCardWindow(FloatingCardViewModel viewModel, WindowPlacementService placementService)
+    public FloatingCardWindow(FloatingCardViewModel viewModel, WindowPlacementService placementService, ThemeSettingsViewModel? themeSettings = null)
     {
         this.viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         this.placementService = placementService ?? throw new ArgumentNullException(nameof(placementService));
+        this.themeSettings = themeSettings;
         InitializeComponent();
         DataContext = viewModel;
+        if (themeSettings is not null)
+        {
+            themeSettings.ThemeChanged += OnThemeChanged;
+            ApplyTheme(themeSettings.Current);
+        }
         viewModel.ActionRequested += OnActionRequested;
         ContentRendered += OnContentRendered;
         LocationChanged += OnLocationChanged;
@@ -67,7 +76,7 @@ public partial class FloatingCardWindow : Window
     }
 
     public FloatingCardWindow(FloatingCardViewModel viewModel, IShortcutService shortcutService,
-        WindowPlacementService placementService, ShortcutCallbackFaultHub? faultHub = null) : this(viewModel, placementService)
+        WindowPlacementService placementService, ShortcutCallbackFaultHub? faultHub = null, ThemeSettingsViewModel? themeSettings = null) : this(viewModel, placementService, themeSettings)
     {
         this.shortcutService = shortcutService ?? throw new ArgumentNullException(nameof(shortcutService));
         focusedShortcuts = new(shortcutService);
@@ -236,6 +245,24 @@ public partial class FloatingCardWindow : Window
         if (viewModel is not null && !viewModel.IsPaused) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
     }
     private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
+    private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? PngTheme.Default);
+
+    private void ApplyTheme(PngTheme theme)
+    {
+        ImageBrush? brush = null;
+        if (!theme.IsDefault)
+        {
+            brush = new ImageBrush(new BitmapImage(new Uri(theme.ImagePath, UriKind.Absolute))) { Stretch = Stretch.Fill };
+        }
+        ThemeImageLayer.Background = brush;
+        ThemeImageLayer.Opacity = theme.IsDefault ? 0 : theme.Opacity;
+        ThemeImageLayer.Visibility = theme.IsDefault ? Visibility.Collapsed : Visibility.Visible;
+        ThemeReadabilityVeil.Opacity = theme.IsDefault ? 0 : 0.82;
+        SynonymsDrawer.ThemeBrush = brush;
+        ConfusablesDrawer.ThemeBrush = brush;
+        SynonymsDrawer.ThemeOpacity = theme.IsDefault ? 0 : theme.Opacity;
+        ConfusablesDrawer.ThemeOpacity = theme.IsDefault ? 0 : theme.Opacity;
+    }
 
     private void Track(Task operation)
     {
@@ -371,6 +398,7 @@ public partial class FloatingCardWindow : Window
             focusedShortcuts.Dispose();
         }
         if (viewModel is not null) { viewModel.ActionRequested -= OnActionRequested; viewModel.Dispose(); }
+        if (themeSettings is not null) themeSettings.ThemeChanged -= OnThemeChanged;
         lifetime.Dispose();
     }
 

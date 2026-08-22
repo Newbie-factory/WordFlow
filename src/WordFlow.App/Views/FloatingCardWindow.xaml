@@ -14,6 +14,9 @@
             AutomationProperties.Name="打开当前学习卡详情"
             AutomationProperties.HelpText="{Binding DetailsAvailabilityHelp}">
         <Grid>
+            <Border x:Name="ThemeImageLayer" CornerRadius="{StaticResource Radius.Card}" IsHitTestVisible="False" Visibility="Collapsed" />
+            <Border x:Name="ThemeReadabilityVeil" Background="{StaticResource Brush.Surface}" Opacity="0.82" CornerRadius="{StaticResource Radius.Card}" IsHitTestVisible="False" />
+            <Grid x:Name="CardContentLayer">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -131,6 +134,7 @@
                 <TextBlock x:Name="AccessibleStatus" Text="{Binding AccessibleStatus}" Height="1" Opacity="0"
                            AutomationProperties.LiveSetting="Polite" />
             </StackPanel>
+            </Grid>
         </Grid>
     </controls:AccessibleBorder>
     <Popup x:Name="SynonymsPopup" PlacementTarget="{Binding ElementName=WindowSurface}" Placement="Bottom" StaysOpen="True"

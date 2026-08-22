@@ -12,8 +12,14 @@ public partial class RelationDrawer : UserControl
     private double lastDesiredHeight = -1;
     public static readonly DependencyProperty IsCompactProperty = DependencyProperty.Register(
         nameof(IsCompact), typeof(bool), typeof(RelationDrawer), new PropertyMetadata(false));
+    public static readonly DependencyProperty ThemeBrushProperty = DependencyProperty.Register(
+        nameof(ThemeBrush), typeof(Brush), typeof(RelationDrawer), new PropertyMetadata(null));
+    public static readonly DependencyProperty ThemeOpacityProperty = DependencyProperty.Register(
+        nameof(ThemeOpacity), typeof(double), typeof(RelationDrawer), new PropertyMetadata(0d));
 
     public bool IsCompact { get => (bool)GetValue(IsCompactProperty); set => SetValue(IsCompactProperty, value); }
+    public Brush? ThemeBrush { get => (Brush?)GetValue(ThemeBrushProperty); set => SetValue(ThemeBrushProperty, value); }
+    public double ThemeOpacity { get => (double)GetValue(ThemeOpacityProperty); set => SetValue(ThemeOpacityProperty, value); }
     public event EventHandler? DesiredHeightChanged;
     public event EventHandler? DismissRequested;
     public RelationDrawer()

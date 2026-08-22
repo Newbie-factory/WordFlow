@@ -27,6 +27,7 @@ public partial class App : System.Windows.Application
     private IShortcutService? shortcutService;
     private IFloatingCardActionHost? cardActionHost;
     private PronunciationSettingsViewModel? pronunciationSettings;
+    private ThemeSettingsViewModel? themeSettings;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -141,11 +142,14 @@ public partial class App : System.Windows.Application
             cardActionHost,
             pronunciation);
         var paths = services.GetRequiredService<AppPaths>();
+        themeSettings = services.GetRequiredService<ThemeSettingsViewModel>();
+        await themeSettings.RestoreAsync(cancellationToken);
         card = new FloatingCardWindow(
             viewModel,
             shortcutService,
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
-            shortcutFaults);
+            shortcutFaults,
+            themeSettings);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
         try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
