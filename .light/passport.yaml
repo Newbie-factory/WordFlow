@@ -1,0 +1,31 @@
+project: wordflow-windows
+updated_at: 2026-08-22
+current_stage: second_iteration_spec_review
+branch: codex/wordflow-implementation
+artifacts:
+  - path: docs/superpowers/specs/2026-08-13-wordflow-windows-design.md
+    status: approved_baseline
+  - path: docs/superpowers/plans/2026-08-13-wordflow-windows-implementation.md
+    status: baseline_plan
+  - path: docs/testing/2026-08-22-feature-integration-audit.md
+    status: verified_audit
+  - path: docs/superpowers/specs/2026-08-22-wordflow-second-iteration-design.md
+    status: awaiting_user_written_approval
+decisions:
+  - choice: persist_daily_queue_in_sqlite
+    by: user
+  - choice: carry_over_then_top_up_within_daily_targets
+    by: user
+  - choice: aggressive_no_activate_topmost_when_enabled
+    by: user
+  - choice: square_wordflow_wordmark_icon
+    by: user
+gates:
+  - name: second_iteration_concept_design
+    status: PASS
+    evidence: user approvals in current task
+  - name: second_iteration_written_spec
+    status: PENDING_USER_APPROVAL
+known_limitations:
+  - Windows exclusive fullscreen, secure desktop, or higher-integrity processes can outrank ordinary desktop topmost windows.
+next_step: Obtain user approval of the written second-iteration specification, then create the implementation plan.
