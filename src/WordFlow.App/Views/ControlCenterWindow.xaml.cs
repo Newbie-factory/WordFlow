@@ -25,8 +25,11 @@ public partial class ControlCenterWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         viewModel.Theme.Feedback += ThemeFeedback;
+        viewModel.PropertyChanged += ViewModelPropertyChanged;
         ApplyWindowStateVisuals();
     }
+
+    public event EventHandler? AlwaysOnTopChanged;
 
     public void OpenDashboard()
     {
@@ -233,6 +236,12 @@ public partial class ControlCenterWindow : Window
 
     private void ThemeFeedback(string message) => Dispatcher.InvokeAsync(() => ThemeStatus.Text = message);
 
+    private void ViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ControlCenterViewModel.AlwaysOnTopEnabled))
+            AlwaysOnTopChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     protected override void OnClosing(CancelEventArgs e)
     {
         if (!PermitClose)
@@ -242,6 +251,7 @@ public partial class ControlCenterWindow : Window
             return;
         }
         viewModel.Theme.Feedback -= ThemeFeedback;
+        viewModel.PropertyChanged -= ViewModelPropertyChanged;
         if (windowSource is not null)
         {
             windowSource.RemoveHook(WindowMessageHook);

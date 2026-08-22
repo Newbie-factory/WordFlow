@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:WordFlow.App.Views.Controls"
         Title="WordFlow 学习卡" Width="480" MinHeight="326" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
-        ShowInTaskbar="False" Topmost="True" WindowStartupLocation="Manual"
+        ShowInTaskbar="False" Topmost="False" WindowStartupLocation="Manual"
         SnapsToDevicePixels="True" UseLayoutRounding="True"
         AutomationProperties.Name="WordFlow 悬浮学习卡">
     <Grid>

@@ -35,6 +35,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private int slashedCount;
     private SlashedWordRow? selectedSlashedWord;
     private bool dailyPlanSubscribed;
+    private bool alwaysOnTopEnabled;
 
     public ControlCenterViewModel(
         DailyPlanSettingsViewModel dailyPlan,
@@ -48,7 +49,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         ILearningStore? learningStore = null,
         RestoreSlashedWords? restoreSlashedWords = null,
         IDailyQueueStore? dailyQueueStore = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        bool alwaysOnTopEnabled = true)
     {
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         Shortcuts = shortcuts ?? throw new ArgumentNullException(nameof(shortcuts));
@@ -61,6 +63,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         this.getConfusables = getConfusables;
         this.learningStore = learningStore;
         this.restoreSlashedWords = restoreSlashedWords;
+        this.alwaysOnTopEnabled = alwaysOnTopEnabled;
         LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, this.clock, context);
     }
 
@@ -83,6 +86,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     public bool IsLoading { get => loading; private set => Set(ref loading, value); }
     public string Version => Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) ?? "本地构建";
     public string OfflineStatus => "完全离线 · 数据仅保存在本机";
+    public bool AlwaysOnTopEnabled { get => alwaysOnTopEnabled; set => Set(ref alwaysOnTopEnabled, value); }
     public string VocabularyQuery { get => vocabularyQuery; set => Set(ref vocabularyQuery, value); }
     public string ConfusableQuery { get => confusableQuery; set => Set(ref confusableQuery, value); }
     public string LibraryStatus { get => libraryStatus; private set => Set(ref libraryStatus, value); }

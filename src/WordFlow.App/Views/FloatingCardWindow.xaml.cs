@@ -30,16 +30,15 @@ public partial class FloatingCardWindow : Window
     private readonly WindowPlacementService? placementService;
     private readonly ThemeSettingsViewModel? themeSettings;
     private readonly ThemeImageCache themeImageCache = new();
-    private readonly DispatcherTimer? fullscreenTimer;
     private readonly DispatcherTimer? placementSaveTimer;
     private readonly CancellationTokenSource lifetime = new();
     private readonly HashSet<Task> pendingOperations = [];
     private HwndSource? source;
+    private StrongTopmostController? topmostController;
     private nint handle;
     private bool applyingPlacement;
-    private bool suppressTopmostForFullscreen = true;
+    private bool alwaysOnTopEnabled = true;
     private bool closing;
-    private bool? uiSmokeTopmostOverride;
     private bool updatingThemeControls;
     private string? appliedThemePath;
 
@@ -59,7 +58,11 @@ public partial class FloatingCardWindow : Window
             ApplyTheme(themeSettings.Current);
         }
         viewModel.ActionRequested += OnActionRequested;
+        SourceInitialized += OnSourceInitialized;
         ContentRendered += OnContentRendered;
+        IsVisibleChanged += OnIsVisibleChanged;
+        Activated += OnZOrderLifecycleEvent;
+        Deactivated += OnZOrderLifecycleEvent;
         LocationChanged += OnLocationChanged;
         SizeChanged += OnSizeChanged;
         Closed += OnClosed;
@@ -75,9 +78,6 @@ public partial class FloatingCardWindow : Window
 
         placementSaveTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
         placementSaveTimer.Tick += (_, _) => { placementSaveTimer.Stop(); SavePlacement(); };
-        fullscreenTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(1) };
-        fullscreenTimer.Tick += (_, _) => RefreshTopmost();
-        fullscreenTimer.Start();
     }
 
     public FloatingCardWindow(FloatingCardViewModel viewModel, IShortcutService shortcutService,
@@ -88,23 +88,20 @@ public partial class FloatingCardWindow : Window
         shortcutFaultConnection = (faultHub ?? new ShortcutCallbackFaultHub()).Connect(shortcutService, focusedShortcuts);
         shortcutService.ActionInvoked += OnShortcutActionInvoked;
         focusedShortcuts.ActionInvoked += OnShortcutActionInvoked;
-        SourceInitialized += OnSourceInitialized;
         PreviewKeyDown += OnPreviewKeyDown;
     }
 
     public event EventHandler<RelationActionRequestedEventArgs>? RelationActionRequested;
-    public event EventHandler<FullscreenSuppressionChangedEventArgs>? FullscreenSuppressionChanged;
     public int? WorkAreaHeightLimitPx { get; set; }
     public bool EnableUiSmokeControlMessages { get; set; }
-    public bool SuppressTopmostForFullscreen
+    public bool AlwaysOnTopEnabled
     {
-        get => suppressTopmostForFullscreen;
+        get => alwaysOnTopEnabled;
         set
         {
-            if (suppressTopmostForFullscreen == value) return;
-            suppressTopmostForFullscreen = value;
-            RefreshTopmost();
-            FullscreenSuppressionChanged?.Invoke(this, new(value));
+            if (alwaysOnTopEnabled == value) return;
+            alwaysOnTopEnabled = value;
+            if (topmostController is not null) topmostController.Enabled = value;
         }
     }
 
@@ -114,14 +111,17 @@ public partial class FloatingCardWindow : Window
         if (paused) CloseDrawers();
     }
 
-    public void PrepareForHide() => CloseDrawers();
+    public void PrepareForHide()
+    {
+        if (topmostController is not null) topmostController.Visible = false;
+        CloseDrawers();
+    }
 
     public void PrepareUiSmokeFocus()
     {
         EnsureHandle();
         Activate();
-        Topmost = true;
-        NativeFocus.SetForegroundWindow(handle);
+        topmostController?.Reassert();
         Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
         {
             Activate();
@@ -153,6 +153,23 @@ public partial class FloatingCardWindow : Window
         if (viewModel is not null) Track(viewModel.InitializeAsync(lifetime.Token));
     }
 
+    private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs args)
+    {
+        if (args.NewValue is not true)
+        {
+            if (topmostController is not null) topmostController.Visible = false;
+            return;
+        }
+
+        if (topmostController is not null)
+        {
+            topmostController.Visible = true;
+            topmostController.Reassert();
+        }
+    }
+
+    private void OnZOrderLifecycleEvent(object? sender, EventArgs args) => topmostController?.Reassert();
+
     private void OnSourceInitialized(object? sender, EventArgs args)
     {
         EnsureHandle();
@@ -168,6 +185,12 @@ public partial class FloatingCardWindow : Window
         handle = new WindowInteropHelper(this).Handle;
         source = HwndSource.FromHwnd(handle);
         source?.AddHook(WindowProcedure);
+        topmostController = new StrongTopmostController(CurrentTopmostHandles, new TopmostPolicy(),
+            new DispatcherTopmostTickSource(Dispatcher))
+        {
+            Enabled = alwaysOnTopEnabled,
+            Visible = IsVisible,
+        };
     }
 
     private nint WindowProcedure(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
@@ -181,8 +204,8 @@ public partial class FloatingCardWindow : Window
                 case 2: Show(); Activate(); break;
                 case 3: SetPaused(true); break;
                 case 4: SetPaused(false); break;
-                case 5: uiSmokeTopmostOverride = false; RefreshTopmost(); break;
-                case 6: uiSmokeTopmostOverride = true; RefreshTopmost(); break;
+                case 5: AlwaysOnTopEnabled = false; break;
+                case 6: AlwaysOnTopEnabled = true; break;
             }
             handled = true;
         }
@@ -360,20 +383,13 @@ public partial class FloatingCardWindow : Window
         drawer.MaxHeight = plan.MaxHeight;
         relationDrawer.IsCompact = plan.UseCompactRows;
         relationDrawer.ScheduleViewportMeasure();
-        SetPopupTopmost(relationDrawer, Topmost);
-    }
-
-    private void RefreshTopmost()
-    {
-        Topmost = uiSmokeTopmostOverride ?? WindowPlacementService.ShouldBeTopmost(SuppressTopmostForFullscreen,
-            WindowPlacementService.IsForegroundFullscreen(handle));
-        SetPopupTopmost(SynonymsDrawer, Topmost);
-        SetPopupTopmost(ConfusablesDrawer, Topmost);
+        topmostController?.Reassert();
     }
 
     private void OnDrawerOpened(RelationDrawer drawer)
     {
         ConfigureDrawer(drawer);
+        topmostController?.Reassert();
         Dispatcher.BeginInvoke(DispatcherPriority.Input, drawer.FocusSearch);
     }
 
@@ -389,11 +405,18 @@ public partial class FloatingCardWindow : Window
         viewModel?.Confusables.Close();
     }
 
-    private static void SetPopupTopmost(Visual drawer, bool topmost)
+    private IReadOnlyList<nint> CurrentTopmostHandles()
     {
-        if (PresentationSource.FromVisual(drawer) is not HwndSource popupSource) return;
-        NativePopup.SetWindowPos(popupSource.Handle, topmost ? new nint(-1) : new nint(-2), 0, 0, 0, 0,
-            NativePopup.NoMove | NativePopup.NoSize | NativePopup.NoActivate);
+        var handles = new List<nint>(3) { handle };
+        AddPopupHandle(SynonymsPopup.IsOpen, SynonymsDrawer, handles);
+        AddPopupHandle(ConfusablesPopup.IsOpen, ConfusablesDrawer, handles);
+        return handles;
+    }
+
+    private static void AddPopupHandle(bool isOpen, Visual drawer, ICollection<nint> handles)
+    {
+        if (isOpen && PresentationSource.FromVisual(drawer) is HwndSource popupSource)
+            handles.Add(popupSource.Handle);
     }
 
     private IReadOnlyList<MonitorWorkArea> CurrentMonitors()
@@ -407,7 +430,8 @@ public partial class FloatingCardWindow : Window
     {
         lifetime.Cancel();
         placementSaveTimer?.Stop();
-        fullscreenTimer?.Stop();
+        topmostController?.Dispose();
+        topmostController = null;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         if (source is not null) { source.RemoveHook(WindowProcedure); source = null; }
         if (shortcutService is not null) shortcutService.ActionInvoked -= OnShortcutActionInvoked;
@@ -425,21 +449,40 @@ public partial class FloatingCardWindow : Window
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left, Top, Right, Bottom; }
 
-    private static class NativeFocus
+    private sealed class DispatcherTopmostTickSource : ITopmostTickSource
     {
-        [DllImport("user32.dll")] public static extern bool SetForegroundWindow(nint window);
-    }
+        private readonly DispatcherTimer timer;
+        private bool disposed;
 
-    private static class NativePopup
-    {
-        public const uint NoSize = 0x0001;
-        public const uint NoMove = 0x0002;
-        public const uint NoActivate = 0x0010;
-        [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(nint hwnd, nint insertAfter, int x, int y, int cx, int cy, uint flags);
-    }
-}
+        public DispatcherTopmostTickSource(Dispatcher dispatcher)
+        {
+            timer = new(DispatcherPriority.Background, dispatcher);
+            timer.Tick += OnTimerTick;
+        }
 
-public sealed class FullscreenSuppressionChangedEventArgs(bool enabled) : EventArgs
-{
-    public bool Enabled { get; } = enabled;
+        public event EventHandler? Tick;
+
+        public void Start(TimeSpan interval)
+        {
+            if (disposed) return;
+            timer.Interval = interval;
+            if (!timer.IsEnabled) timer.Start();
+        }
+
+        public void Stop()
+        {
+            if (!disposed) timer.Stop();
+        }
+
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            timer.Stop();
+            timer.Tick -= OnTimerTick;
+            Tick = null;
+        }
+
+        private void OnTimerTick(object? sender, EventArgs args) => Tick?.Invoke(this, args);
+    }
 }

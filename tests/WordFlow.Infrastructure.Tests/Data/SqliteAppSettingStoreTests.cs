@@ -22,6 +22,22 @@ public sealed class SqliteAppSettingStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Always_on_top_defaults_true_and_does_not_overwrite_legacy_fullscreen_data()
+    {
+        var factory = new SqliteConnectionFactory(Path.Combine(directory, "topmost-user.db"));
+        await new MigrationRunner(factory).MigrateAsync(default);
+        var settings = new SqliteAppSettingStore(factory);
+        await settings.SetBooleanAsync("floating_card.suppress_topmost_fullscreen", false, default);
+
+        Assert.True(await settings.GetBooleanAsync("floating_card.always_on_top", true, default));
+        await settings.SetBooleanAsync("floating_card.always_on_top", false, default);
+
+        var restored = new SqliteAppSettingStore(factory);
+        Assert.False(await restored.GetBooleanAsync("floating_card.always_on_top", true, default));
+        Assert.False(await restored.GetBooleanAsync("floating_card.suppress_topmost_fullscreen", true, default));
+    }
+
+    [Fact]
     public async Task Multiple_settings_commit_atomically()
     {
         var factory = new SqliteConnectionFactory(Path.Combine(directory, "atomic-user.db"));

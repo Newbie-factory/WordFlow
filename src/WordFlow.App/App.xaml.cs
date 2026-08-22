@@ -14,7 +14,7 @@ namespace WordFlow.App;
 
 public partial class App : System.Windows.Application
 {
-    private const string FullscreenSuppressionSetting = "floating_card.suppress_topmost_fullscreen";
+    private const string AlwaysOnTopSetting = "floating_card.always_on_top";
     private readonly CancellationTokenSource lifetime = new();
     private SingleInstanceCoordinator? coordinator;
     private ServiceProvider? services;
@@ -101,7 +101,6 @@ public partial class App : System.Windows.Application
         var smokeViewModel = UiSmokeCardFactory.CreateViewModel(cardActionHost);
         card = new FloatingCardWindow(smokeViewModel, new WindowPlacementService(placementPath));
         card.EnableUiSmokeControlMessages = true;
-        card.SuppressTopmostForFullscreen = false;
         var workAreaArgument = Environment.GetCommandLineArgs().FirstOrDefault(argument => argument.StartsWith("--ui-smoke-work-area-height=", StringComparison.OrdinalIgnoreCase));
         if (workAreaArgument is not null && int.TryParse(workAreaArgument[(workAreaArgument.IndexOf('=') + 1)..], out var workAreaHeight))
             card.WorkAreaHeightLimitPx = workAreaHeight;
@@ -154,12 +153,24 @@ public partial class App : System.Windows.Application
         var paths = services.GetRequiredService<AppPaths>();
         themeSettings = services.GetRequiredService<ThemeSettingsViewModel>();
         await themeSettings.RestoreAsync(cancellationToken);
+        var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
+        bool alwaysOnTopEnabled;
+        try { alwaysOnTopEnabled = await appSettings.GetBooleanAsync(AlwaysOnTopSetting, true, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            alwaysOnTopEnabled = true;
+            WriteLifecycle($"app-setting-read-fault key={AlwaysOnTopSetting} type={exception.GetType().Name}");
+        }
         card = new FloatingCardWindow(
             viewModel,
             shortcutService,
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults,
-            themeSettings);
+            themeSettings)
+        {
+            AlwaysOnTopEnabled = alwaysOnTopEnabled,
+        };
         controlCenterViewModel = new ControlCenterViewModel(
             dailyPlanSettings,
             new ShortcutSettingsViewModel(shortcutService),
@@ -172,21 +183,16 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<ILearningStore>(),
             services.GetRequiredService<RestoreSlashedWords>(),
             services.GetRequiredService<IDailyQueueStore>(),
-            services.GetRequiredService<TimeProvider>());
+            services.GetRequiredService<TimeProvider>(),
+            alwaysOnTopEnabled);
         await controlCenterViewModel.LoadAsync(cancellationToken);
         controlCenter = new ControlCenterWindow(controlCenterViewModel);
-        var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
-        try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception exception)
+        controlCenter.AlwaysOnTopChanged += (_, _) =>
         {
-            card.SuppressTopmostForFullscreen = true;
-            WriteLifecycle($"app-setting-read-fault key={FullscreenSuppressionSetting} type={exception.GetType().Name}");
-        }
-        card.FullscreenSuppressionChanged += (_, args) =>
-        {
-            if (!appSettings.TrySetBoolean(FullscreenSuppressionSetting, args.Enabled, out var error) && error is not null)
-                WriteLifecycle($"app-setting-save-fault key={FullscreenSuppressionSetting} type={error.GetType().Name}");
+            bool enabled = controlCenterViewModel.AlwaysOnTopEnabled;
+            card.AlwaysOnTopEnabled = enabled;
+            if (!appSettings.TrySetBoolean(AlwaysOnTopSetting, enabled, out var error) && error is not null)
+                WriteLifecycle($"app-setting-save-fault key={AlwaysOnTopSetting} type={error.GetType().Name}");
         };
         card.RelationActionRequested += (_, request) =>
         {
@@ -221,7 +227,6 @@ public partial class App : System.Windows.Application
         SetCardVisibility(true);
         if (card.WindowState == WindowState.Minimized) card.WindowState = WindowState.Normal;
         card.Activate();
-        card.Topmost = true;
         card.Focus();
     }
 
