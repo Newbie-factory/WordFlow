@@ -1,4 +1,5 @@
 using WordFlow.Domain.Learning;
+using WordFlow.Application.Learning;
 
 namespace WordFlow.Application.Ports;
 
@@ -35,6 +36,12 @@ public interface ILearningStore
 {
     Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct);
 
+    Task<CommitResult> ApplyQueuedAsync(
+        LearningCommand command,
+        Guid queueItemId,
+        DailyQueueItemStatus terminalStatus,
+        CancellationToken ct);
+
     Task<CommitResult?> GetCommitAsync(Guid commandId, CancellationToken ct);
 
     Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct);
@@ -48,6 +55,11 @@ public interface ILearningStore
     Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct);
 
     Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct);
+
+    Task<CommitResult> UndoLatestQueuedAsync(
+        UndoLearningCommand command,
+        DateOnly localDay,
+        CancellationToken ct);
 }
 
 public sealed record DailyLearningStatistics(int ReviewedToday, int SlashedTotal);

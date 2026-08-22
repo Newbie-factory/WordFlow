@@ -307,6 +307,12 @@ public sealed class LearningUseCaseTests
             return Task.FromResult(new CommitResult(true, command.Event.EventId, command.Event.After));
         }
 
+        public Task<CommitResult> ApplyQueuedAsync(
+            LearningCommand command,
+            Guid queueItemId,
+            DailyQueueItemStatus terminalStatus,
+            CancellationToken ct) => ApplyAsync(command, ct);
+
         public Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -354,6 +360,11 @@ public sealed class LearningUseCaseTests
             var revision = Events.LastOrDefault(x => x.CardId == original.CardId)?.EventId ?? CardProjection.InitialRevision;
             return ApplyAsync(new LearningCommand(command.CommandId, undo, revision), ct);
         }
+
+        public Task<CommitResult> UndoLatestQueuedAsync(
+            UndoLearningCommand command,
+            DateOnly localDay,
+            CancellationToken ct) => UndoLatestAsync(command, ct);
     }
 
     private sealed class FakeVocabularyRepository(IEnumerable<VocabularyWord> words, IEnumerable<VocabularySense>? senses = null) : IVocabularyRepository

@@ -25,6 +25,8 @@ public static class ServiceRegistration
         services.AddSingleton<SqliteLearningStore>();
         services.AddSingleton<ILearningStore>(provider => provider.GetRequiredService<SqliteLearningStore>());
         services.AddSingleton<ILearningProgressReader>(provider => provider.GetRequiredService<SqliteLearningStore>());
+        services.AddSingleton<SqliteDailyQueueStore>();
+        services.AddSingleton<IDailyQueueStore>(provider => provider.GetRequiredService<SqliteDailyQueueStore>());
         services.AddSingleton<SqliteAppSettingStore>();
         services.AddSingleton<DailyPlanSettingsViewModel>();
         services.AddSingleton<PngThemeService>();

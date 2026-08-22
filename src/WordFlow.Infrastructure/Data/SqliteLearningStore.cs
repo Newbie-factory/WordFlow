@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
 using WordFlow.Domain.Learning;
 using WordFlow.Domain.Scheduling;
@@ -33,6 +34,13 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
 
     public Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct) =>
         TranslateAsync(() => ApplyCoreAsync(command, ct));
+
+    public Task<CommitResult> ApplyQueuedAsync(
+        LearningCommand command,
+        Guid queueItemId,
+        DailyQueueItemStatus terminalStatus,
+        CancellationToken ct) =>
+        TranslateAsync(() => ApplyQueuedCoreAsync(command, queueItemId, terminalStatus, ct));
 
     public Task<DailyLearningStatistics> GetDailyStatisticsAsync(DateOnly day, CancellationToken ct) =>
         TranslateAsync(async () =>
@@ -80,6 +88,54 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
         {
             try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); }
             catch { /* Preserve the originating failure; disposal will close the connection. */ }
+            throw;
+        }
+    }
+
+    private async Task<CommitResult> ApplyQueuedCoreAsync(
+        LearningCommand command,
+        Guid queueItemId,
+        DailyQueueItemStatus terminalStatus,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        if (queueItemId == Guid.Empty) throw new ArgumentException("A queue item ID cannot be empty.", nameof(queueItemId));
+        ValidateEvent(command.Event);
+        var expectedStatus = command.Event.Action == LearningAction.Slash
+            ? DailyQueueItemStatus.Slashed
+            : DailyQueueItemStatus.Completed;
+        if (terminalStatus != expectedStatus)
+            throw new ArgumentException($"{command.Event.Action} requires queue status {expectedStatus}.", nameof(terminalStatus));
+
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            var existing = await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false);
+            if (existing is not null)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return existing;
+            }
+
+            var queueDay = await ReadPendingQueueDayAsync(
+                connection, transaction, queueItemId, command.Event.CardId, ct).ConfigureAwait(false);
+            var current = await ReadCardProjectionAsync(connection, transaction, command.Event.CardId, ct).ConfigureAwait(false);
+            EnsureExpectedSnapshot(current, command.Event, command.ExpectedRevision);
+            await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.EventWritten);
+            await UpsertSnapshotAsync(connection, transaction, command.Event, ct).ConfigureAwait(false);
+            await CompleteQueueItemAsync(connection, transaction, queueItemId, terminalStatus,
+                command.Event.EventId, command.Event.OccurredAt, ct).ConfigureAwait(false);
+            await RecomputeSessionCompletionAsync(connection, transaction, queueDay,
+                command.Event.OccurredAt, ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return new CommitResult(true, command.Event.EventId, command.Event.After);
+        }
+        catch
+        {
+            try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
             throw;
         }
     }
@@ -228,6 +284,12 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
     public Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct) =>
         TranslateAsync(() => UndoLatestCoreAsync(command, ct));
 
+    public Task<CommitResult> UndoLatestQueuedAsync(
+        UndoLearningCommand command,
+        DateOnly localDay,
+        CancellationToken ct) =>
+        TranslateAsync(() => UndoLatestQueuedCoreAsync(command, localDay, ct));
+
     private async Task<CommitResult> UndoLatestCoreAsync(UndoLearningCommand command, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -264,6 +326,164 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
             throw;
         }
     }
+
+    private async Task<CommitResult> UndoLatestQueuedCoreAsync(
+        UndoLearningCommand command,
+        DateOnly localDay,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        await using var transaction = connection.BeginTransaction(deferred: false);
+        try
+        {
+            var duplicate = await FindCommandAsync(connection, transaction, command.CommandId, ct).ConfigureAwait(false);
+            if (duplicate is not null)
+            {
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                return duplicate;
+            }
+
+            var queued = await ReadLatestUndoableQueuedEventAsync(connection, transaction, localDay, ct).ConfigureAwait(false)
+                ?? throw new LearningNotFoundException("There is no queued action to undo for this day.");
+            faultInjector?.Invoke(LearningCommitStage.UndoEventSelected);
+            var current = await ReadCardProjectionAsync(connection, transaction, queued.Event.CardId, ct).ConfigureAwait(false);
+            await EnsureUndoLineageAsync(connection, transaction, current, queued.Event, ct).ConfigureAwait(false);
+            var undo = new ReviewEvent(
+                command.EventId, queued.Event.CardId, command.OccurredAt, LearningAction.Undo,
+                queued.Event.After, queued.Event.Before, queued.Event.EventId);
+            ValidateEvent(undo);
+            await InsertEventAsync(connection, transaction, command.CommandId, undo, ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.EventWritten);
+            await UpsertSnapshotAsync(connection, transaction, undo, ct).ConfigureAwait(false);
+
+            await using (var restore = connection.CreateCommand())
+            {
+                restore.Transaction = transaction;
+                restore.CommandText = """
+                    UPDATE daily_queue_items
+                    SET status='Pending',completed_event_id=NULL,completed_at_utc=NULL
+                    WHERE item_id=$itemId AND completed_event_id=$originalEventId
+                      AND status IN ('Completed','Slashed')
+                    """;
+                restore.Parameters.AddWithValue("$itemId", IdText(queued.QueueItemId));
+                restore.Parameters.AddWithValue("$originalEventId", IdText(queued.Event.EventId));
+                if (await restore.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
+                    throw new LearningConcurrencyException(queued.Event.CardId);
+            }
+            await using (var reopen = connection.CreateCommand())
+            {
+                reopen.Transaction = transaction;
+                reopen.CommandText = "UPDATE daily_sessions SET completed_at_utc=NULL,updated_at_utc=$at WHERE local_day=$day";
+                reopen.Parameters.AddWithValue("$at", MigrationRunner.UtcText(command.OccurredAt));
+                reopen.Parameters.AddWithValue("$day", DayText(localDay));
+                await reopen.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return new CommitResult(true, undo.EventId, undo.After);
+        }
+        catch
+        {
+            try { await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            throw;
+        }
+    }
+
+    private static async Task<DateOnly> ReadPendingQueueDayAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid queueItemId,
+        Guid cardId,
+        CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT local_day,card_id FROM daily_queue_items WHERE item_id=$itemId AND status='Pending'";
+        command.Parameters.AddWithValue("$itemId", IdText(queueItemId));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+            throw new LearningNotFoundException($"Pending queue item {queueItemId:D} was not found.");
+        if (ParseId(reader.GetString(1)) != cardId)
+            throw new LearningConcurrencyException(cardId);
+        return DateOnly.ParseExact(reader.GetString(0), "yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static async Task CompleteQueueItemAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid queueItemId,
+        DailyQueueItemStatus terminalStatus,
+        Guid eventId,
+        DateTimeOffset completedAt,
+        CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE daily_queue_items
+            SET status=$status,completed_event_id=$eventId,completed_at_utc=$completedAt
+            WHERE item_id=$itemId AND status='Pending'
+            """;
+        command.Parameters.AddWithValue("$status", terminalStatus.ToString());
+        command.Parameters.AddWithValue("$eventId", IdText(eventId));
+        command.Parameters.AddWithValue("$completedAt", MigrationRunner.UtcText(completedAt));
+        command.Parameters.AddWithValue("$itemId", IdText(queueItemId));
+        if (await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
+            throw new LearningNotFoundException($"Pending queue item {queueItemId:D} was not found.");
+    }
+
+    private static async Task RecomputeSessionCompletionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        DateOnly localDay,
+        DateTimeOffset updatedAt,
+        CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE daily_sessions
+            SET completed_at_utc=CASE
+                    WHEN EXISTS (SELECT 1 FROM daily_queue_items WHERE local_day=$day AND status='Pending') THEN NULL
+                    ELSE COALESCE(completed_at_utc,$at)
+                END,
+                updated_at_utc=$at
+            WHERE local_day=$day
+            """;
+        command.Parameters.AddWithValue("$day", DayText(localDay));
+        command.Parameters.AddWithValue("$at", MigrationRunner.UtcText(updatedAt));
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    private static async Task<QueuedEvent?> ReadLatestUndoableQueuedEventAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        DateOnly localDay,
+        CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT r.event_id,r.card_id,r.occurred_at_utc,r.action,r.before_json,r.after_json,r.compensates_event_id,q.item_id
+            FROM review_event r
+            JOIN daily_queue_items q ON q.completed_event_id=r.event_id
+            WHERE q.local_day=$day
+              AND q.status IN ('Completed','Slashed')
+              AND r.action <> 'Undo'
+              AND NOT EXISTS (SELECT 1 FROM review_event u WHERE u.compensates_event_id=r.event_id)
+            ORDER BY r.occurred_at_utc DESC,r.rowid DESC
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("$day", DayText(localDay));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await reader.ReadAsync(ct).ConfigureAwait(false)
+            ? new QueuedEvent(ReadEvent(reader), ParseId(reader.GetString(7)))
+            : null;
+    }
+
+    private static string DayText(DateOnly value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
     private static async Task<ReviewEvent?> ReadLatestUndoableEventAsync(
         SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
@@ -500,3 +720,5 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
 }
 
 internal sealed record TrustedReplayCommand(Guid CommandId, ReviewEvent Event);
+
+internal sealed record QueuedEvent(ReviewEvent Event, Guid QueueItemId);

@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
 using WordFlow.Domain.Learning;
 using WordFlow.Domain.Scheduling;
@@ -32,6 +33,57 @@ public sealed class SqliteLearningStoreTests : IDisposable
         var snapshots = await TextAsync(connection, "SELECT before_json || after_json FROM review_event");
         Assert.Contains("Z", snapshots, StringComparison.Ordinal);
         Assert.DoesNotContain("+00:00", snapshots, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Queued_apply_and_undo_commit_event_snapshot_queue_and_session_atomically()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("queued.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var learning = new SqliteLearningStore(factory);
+        var day = DateOnly.FromDateTime(Now.UtcDateTime);
+        var session = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            day, new DailyPlan(1, 0), [], [InitialCard().Id], Now), default);
+        var item = Assert.Single(session.Items);
+        var review = Review(Id(301), InitialCard(), Rating.Good);
+
+        var applied = await learning.ApplyQueuedAsync(Command(Id(401), review), item.ItemId,
+            DailyQueueItemStatus.Completed, default);
+        await using (var completed = await factory.OpenUserAsync(default))
+            Assert.Equal(1L, await ScalarAsync(completed, "SELECT COUNT(*) FROM daily_sessions WHERE completed_at_utc IS NOT NULL"));
+        var undo = await learning.UndoLatestQueuedAsync(
+            new UndoLearningCommand(Id(402), Id(302), Now.AddMinutes(1)), day, default);
+
+        Assert.True(applied.Applied);
+        Assert.True(undo.Applied);
+        Assert.Equal(review.Before, undo.Card);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+        Assert.Equal(1L, await ScalarAsync(connection, $"SELECT COUNT(*) FROM daily_queue_items WHERE item_id='{item.ItemId:D}' AND status='Pending' AND completed_event_id IS NULL AND completed_at_utc IS NULL"));
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM daily_sessions WHERE completed_at_utc IS NULL"));
+    }
+
+    [Fact]
+    public async Task Queued_apply_failure_after_event_write_rolls_back_queue_event_and_snapshot()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("queued-rollback.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var session = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            DateOnly.FromDateTime(Now.UtcDateTime), new DailyPlan(1, 0), [], [InitialCard().Id], Now), default);
+        var item = Assert.Single(session.Items);
+        var learning = new SqliteLearningStore(factory, stage =>
+        {
+            if (stage == LearningCommitStage.EventWritten) throw new InjectedFailureException();
+        });
+
+        await Assert.ThrowsAsync<InjectedFailureException>(() => learning.ApplyQueuedAsync(
+            Command(Id(403), Review(Id(303), InitialCard(), Rating.Good)), item.ItemId,
+            DailyQueueItemStatus.Completed, default));
+
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM card_state"));
+        Assert.Equal(1L, await ScalarAsync(connection, $"SELECT COUNT(*) FROM daily_queue_items WHERE item_id='{item.ItemId:D}' AND status='Pending'"));
     }
 
     [Fact]
@@ -448,6 +500,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         {
             "card_state", "review_event", "slash_event", "daily_plan", "app_setting",
             "shortcut_binding", "user_word_relation", "skin_preset", "backup_record", "schema_version",
+            "daily_sessions", "daily_queue_items",
         });
         Assert.Equal(1L, await ScalarAsync(connection, "PRAGMA foreign_keys"));
         Assert.Equal(5000L, await ScalarAsync(connection, "PRAGMA busy_timeout"));
@@ -465,7 +518,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         }
         var runner = new MigrationRunner(factory, new[]
         {
-            new SqliteMigration(3, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
+            new SqliteMigration(4, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
         });
 
         await Assert.ThrowsAsync<SqliteException>(() => runner.MigrateAsync(default));
@@ -474,9 +527,9 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal("dark", await TextAsync(verify, "SELECT value FROM app_setting WHERE key='theme'"));
         Assert.Equal(0L, await ScalarAsync(verify,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='should_rollback'"));
-        Assert.Equal(2L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
-        Assert.Equal(2L, await ScalarAsync(verify, "SELECT COUNT(*) FROM schema_version"));
-        Assert.Single(Directory.GetFiles(directory, "user.db.v2.*.backup"));
+        Assert.Equal(3L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(3L, await ScalarAsync(verify, "SELECT COUNT(*) FROM schema_version"));
+        Assert.Single(Directory.GetFiles(directory, "user.db.v3.*.backup"));
     }
 
     [Fact]
@@ -492,7 +545,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         await new MigrationRunner(factory).MigrateAsync(default);
 
         await using var after = await factory.OpenUserAsync(default);
-        Assert.Equal(2L, await ScalarAsync(after, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(3L, await ScalarAsync(after, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(6L, await ScalarAsync(after, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('fsrs_parameter_snapshot_insert_identity','fsrs_parameter_snapshot_update_guard','fsrs_parameter_snapshot_delete_guard','review_event_insert_identity','slash_event_insert_identity','fsrs_parameter_activation_insert_identity')"));
         Assert.Single(Directory.GetFiles(directory, "upgrade.db.v1.*.backup"));
     }
