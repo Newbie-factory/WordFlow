@@ -28,6 +28,7 @@ public partial class App : System.Windows.Application
     private IFloatingCardActionHost? cardActionHost;
     private PronunciationSettingsViewModel? pronunciationSettings;
     private ThemeSettingsViewModel? themeSettings;
+    private ControlCenterWindow? controlCenter;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -152,6 +153,7 @@ public partial class App : System.Windows.Application
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults,
             themeSettings);
+        controlCenter = new ControlCenterWindow(themeSettings);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
         try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -184,8 +186,8 @@ public partial class App : System.Windows.Application
             initiallyCardVisible: true,
             SetCardVisibility,
             paused => card.SetPaused(paused),
-            () => ShowLocalInformation("Control Center", "The control center shell is ready."),
-            () => ShowLocalInformation("Today Progress", "Today’s progress will appear here."),
+            OpenControlCenter,
+            OpenControlCenter,
             ExitFromTray);
         trayIcon = new TrayIconService(trayController);
         WriteLifecycle($"primary-ready pid={Environment.ProcessId}");
@@ -213,6 +215,19 @@ public partial class App : System.Windows.Application
     private void ShowLocalInformation(string title, string message) =>
         MessageBox.Show(card, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
 
+    private void OpenControlCenter()
+    {
+        if (controlCenter is null || !controlCenter.IsLoaded)
+        {
+            if (themeSettings is null) return;
+            controlCenter = new ControlCenterWindow(themeSettings);
+        }
+        if (!controlCenter.IsVisible) controlCenter.Show();
+        if (controlCenter.WindowState == WindowState.Minimized) controlCenter.WindowState = WindowState.Normal;
+        controlCenter.Activate();
+        controlCenter.Focus();
+    }
+
     private async void ExitFromTray() => await ExitAsync(0);
 
     private Task ExitAsync(int exitCode)
@@ -227,6 +242,7 @@ public partial class App : System.Windows.Application
             CancelLifetimeAsync,
             DisposeTrayAsync,
             DisposeShortcutsAsync,
+            CloseControlCenterAsync,
             CloseCardAsync,
             DisposeServicesAsync,
             DisposeCoordinatorAsync,
@@ -266,6 +282,13 @@ public partial class App : System.Windows.Application
         if (card is not null) await card.CloseAsync();
         card = null;
         cardActionHost = null;
+    }
+
+    private ValueTask CloseControlCenterAsync()
+    {
+        controlCenter?.Close();
+        controlCenter = null;
+        return ValueTask.CompletedTask;
     }
 
     private ValueTask DisposeServicesAsync()

@@ -249,28 +249,7 @@ public partial class FloatingCardWindow : Window
     }
     private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
     private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? PngTheme.Default);
-    private void OnThemeFeedback(string message) => ThemeStatus.Text = message;
-
-    private async void ThemeImport_Click(object sender, RoutedEventArgs args)
-    {
-        if (themeSettings is null) return;
-        var dialog = new OpenFileDialog { Filter = "PNG 图片|*.png", Title = "选择 PNG 背景" };
-        if (dialog.ShowDialog(this) != true) return;
-        try
-        {
-            await themeSettings.ImportAsync(dialog.FileName, ThemeOpacitySlider.Value, lifetime.Token);
-            ThemeStatus.Text = $"已使用：{themeSettings.DisplayName}";
-        }
-        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
-        { ThemeStatus.Text = $"PNG 无法使用：{exception.Message}"; }
-    }
-
-    private async void ThemeReset_Click(object sender, RoutedEventArgs args)
-    {
-        if (themeSettings is null) return;
-        await themeSettings.ResetAsync(lifetime.Token);
-        ThemeStatus.Text = "已恢复默认背景";
-    }
+    private void OnThemeFeedback(string message) { }
 
     private void ThemeOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
     {
@@ -288,7 +267,6 @@ public partial class FloatingCardWindow : Window
         updatingThemeControls = true;
         ThemeOpacitySlider.Value = theme.Opacity;
         updatingThemeControls = false;
-        ThemeStatus.Text = theme.IsDefault ? "默认浅色背景" : $"已使用：{themeSettings?.DisplayName}";
         ThemeImageLayer.Opacity = theme.IsDefault ? 0 : theme.Opacity;
         ThemeImageLayer.Visibility = theme.IsDefault ? Visibility.Collapsed : Visibility.Visible;
         ThemeReadabilityVeil.Opacity = theme.IsDefault ? 0 : 0.82;
