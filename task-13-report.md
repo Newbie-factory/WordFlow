@@ -17,3 +17,7 @@ Verification: `dotnet test tests/WordFlow.App.Tests/WordFlow.App.Tests.csproj --
 - PNG decoder failures and startup restore failures now fall back to the default theme without rewriting or corrupting stored settings.
 
 Follow-up verification: focused theme tests 5 passed; `dotnet build WordFlow.sln --no-restore -c Release` passed with 0 warnings and 0 errors.
+
+## Thread-safety follow-up
+
+Theme view-model state publication is now marshalled through the UI synchronization context after background SQLite/file work. Property, theme-change, and feedback callbacks therefore never directly update WPF controls from a worker thread. Release suite: 487 passed; build: 0 warnings/errors; diff check passed.
