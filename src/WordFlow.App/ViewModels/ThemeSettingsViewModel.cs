@@ -9,13 +9,16 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
     private static readonly TimeSpan DefaultDebounceInterval = TimeSpan.FromMilliseconds(250);
     private readonly ImageThemeService service;
     private readonly Func<ImageTheme, CancellationToken, Task> saveAsync;
+    private readonly Func<CancellationToken, Task<ImageTheme>> restoreAsync;
+    private readonly Func<string, double, CancellationToken, Task<ImageTheme>> importAsync;
+    private readonly Func<CancellationToken, Task> resetAsync;
     private readonly TimeSpan debounceInterval;
     private readonly SynchronizationContext? ownerContext;
     private readonly object persistenceSync = new();
     private readonly SemaphoreSlim persistenceGate = new(1, 1);
     private ImageTheme current = ImageTheme.Default;
     private CancellationTokenSource? debounceCancellation;
-    private Task pendingPersistence = Task.CompletedTask;
+    private Task durableTail = Task.CompletedTask;
     private long revision;
     private long persistedRevision;
 
@@ -27,12 +30,18 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
     internal ThemeSettingsViewModel(
         ImageThemeService service,
         Func<ImageTheme, CancellationToken, Task> saveAsync,
-        TimeSpan debounceInterval)
+        TimeSpan debounceInterval,
+        Func<CancellationToken, Task<ImageTheme>>? restoreAsync = null,
+        Func<string, double, CancellationToken, Task<ImageTheme>>? importAsync = null,
+        Func<CancellationToken, Task>? resetAsync = null)
     {
         this.service = service ?? throw new ArgumentNullException(nameof(service));
         this.saveAsync = saveAsync ?? throw new ArgumentNullException(nameof(saveAsync));
         if (debounceInterval < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(debounceInterval));
         this.debounceInterval = debounceInterval;
+        this.restoreAsync = restoreAsync ?? this.service.RestoreAsync;
+        this.importAsync = importAsync ?? this.service.ImportAsync;
+        this.resetAsync = resetAsync ?? this.service.ResetAsync;
         ownerContext = SynchronizationContext.Current;
     }
 
@@ -57,52 +66,49 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
     public bool IsCustom => !Current.IsDefault;
     public string DisplayName => IsCustom ? Path.GetFileName(Current.ImagePath) : "默认浅色背景";
 
-    public async Task RestoreAsync(CancellationToken ct = default)
+    public Task RestoreAsync(CancellationToken ct = default) => StartDurableOperation(async () =>
     {
-        CancelPendingPersistence();
         await persistenceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var restored = await service.RestoreAsync(ct).ConfigureAwait(false);
+            var restored = await restoreAsync(ct).ConfigureAwait(false);
             RunOnOwner(() => SetDurableCurrent(restored));
         }
         finally { persistenceGate.Release(); }
-    }
+    });
 
-    public async Task ImportAsync(string sourcePath, double opacity, CancellationToken ct = default)
+    public Task ImportAsync(string sourcePath, double opacity, CancellationToken ct = default) => StartDurableOperation(async () =>
     {
-        CancelPendingPersistence();
         await persistenceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var imported = await service.ImportAsync(sourcePath, opacity, ct).ConfigureAwait(false);
+            var imported = await importAsync(sourcePath, opacity, ct).ConfigureAwait(false);
             RunOnOwner(() => SetDurableCurrent(imported));
         }
         finally { persistenceGate.Release(); }
-    }
+    });
 
-    public async Task ResetAsync(CancellationToken ct = default)
+    public Task ResetAsync(CancellationToken ct = default) => StartDurableOperation(async () =>
     {
-        CancelPendingPersistence();
         await persistenceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await service.ResetAsync(ct).ConfigureAwait(false);
+            await resetAsync(ct).ConfigureAwait(false);
             RunOnOwner(() => SetDurableCurrent(ImageTheme.Default));
         }
         finally { persistenceGate.Release(); }
-    }
+    });
 
     public async Task FlushAsync(CancellationToken ct = default)
     {
         while (true)
         {
-            Task pending;
-            lock (persistenceSync) pending = pendingPersistence;
-            await pending.WaitAsync(ct).ConfigureAwait(false);
+            Task snapshot;
+            lock (persistenceSync) snapshot = durableTail;
+            await snapshot.WaitAsync(ct).ConfigureAwait(false);
             lock (persistenceSync)
             {
-                if (ReferenceEquals(pending, pendingPersistence)) return;
+                if (ReferenceEquals(snapshot, durableTail)) return;
             }
         }
     }
@@ -131,14 +137,52 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
     private void SchedulePersistence(ImageTheme snapshot)
     {
         CancellationTokenSource? previous;
+        CancellationToken token;
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (persistenceSync)
         {
             previous = debounceCancellation;
             debounceCancellation = new CancellationTokenSource();
+            token = debounceCancellation.Token;
             long scheduledRevision = ++revision;
-            pendingPersistence = DebounceAndPersistAsync(scheduledRevision, snapshot, debounceCancellation.Token);
+            Task operation = RunRegisteredAsync(start.Task,
+                () => DebounceAndPersistAsync(scheduledRevision, snapshot, token));
+            durableTail = CompleteBarrierAsync(durableTail, operation);
         }
         CancelAndDispose(previous);
+        start.SetResult();
+    }
+
+    private Task StartDurableOperation(Func<Task> operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        CancellationTokenSource? cancellation;
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task registered;
+        lock (persistenceSync)
+        {
+            cancellation = debounceCancellation;
+            debounceCancellation = null;
+            registered = RunRegisteredAsync(start.Task, operation);
+            durableTail = CompleteBarrierAsync(durableTail, registered);
+        }
+        CancelAndDispose(cancellation);
+        start.SetResult();
+        return registered;
+    }
+
+    private static async Task RunRegisteredAsync(Task start, Func<Task> operation)
+    {
+        await start.ConfigureAwait(false);
+        await operation().ConfigureAwait(false);
+    }
+
+    private static async Task CompleteBarrierAsync(Task previous, Task current)
+    {
+        try { await previous.ConfigureAwait(false); }
+        catch { }
+        try { await current.ConfigureAwait(false); }
+        catch { }
     }
 
     private async Task DebounceAndPersistAsync(long scheduledRevision, ImageTheme snapshot, CancellationToken token)

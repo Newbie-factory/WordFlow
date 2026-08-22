@@ -128,6 +128,89 @@ public sealed class ThemeSettingsViewModelTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task Flush_waits_for_an_import_already_inside_durable_persistence()
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-vm-").FullName;
+        try
+        {
+            var service = await CreateServiceAsync(root);
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var imported = new ImageTheme(Path.Combine(root, "imported.png"), .4);
+            int obsoletePreviewSaves = 0;
+            var viewModel = new ThemeSettingsViewModel(
+                service,
+                (_, _) =>
+                {
+                    obsoletePreviewSaves++;
+                    return Task.CompletedTask;
+                },
+                TimeSpan.FromMilliseconds(10),
+                importAsync: async (_, _, _) =>
+                {
+                    entered.SetResult();
+                    await release.Task;
+                    return imported;
+                });
+
+            Task import = viewModel.ImportAsync("source.png", .4);
+            await entered.Task;
+            viewModel.Opacity = .7;
+            Task flush = viewModel.FlushAsync();
+
+            Assert.False(flush.IsCompleted);
+            release.SetResult();
+            await Task.WhenAll(import, flush);
+            Assert.Equal(imported, viewModel.Current);
+            Assert.Equal(0, obsoletePreviewSaves);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Flush_waits_for_reset_and_a_later_preview_without_deadlock_or_duplicate_save()
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-vm-").FullName;
+        try
+        {
+            var service = await CreateServiceAsync(root);
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            int previewSaves = 0;
+            ImageTheme? saved = null;
+            var viewModel = new ThemeSettingsViewModel(
+                service,
+                (theme, _) =>
+                {
+                    previewSaves++;
+                    saved = theme;
+                    return Task.CompletedTask;
+                },
+                TimeSpan.FromMilliseconds(10),
+                resetAsync: async _ =>
+                {
+                    entered.SetResult();
+                    await release.Task;
+                });
+
+            Task reset = viewModel.ResetAsync();
+            await entered.Task;
+            Task firstFlush = viewModel.FlushAsync();
+            Assert.False(firstFlush.IsCompleted);
+
+            release.SetResult();
+            await Task.WhenAll(reset, firstFlush).WaitAsync(TimeSpan.FromSeconds(2));
+            viewModel.Opacity = .63;
+            await viewModel.FlushAsync().WaitAsync(TimeSpan.FromSeconds(2));
+
+            Assert.Equal(1, previewSaves);
+            Assert.Equal(.63, saved!.Opacity);
+            Assert.Equal(.63, viewModel.Current.Opacity);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static async Task<ImageThemeService> CreateServiceAsync(string root)
     {
         var paths = new AppPaths(Path.Combine(root, "local"), Path.Combine(root, "bundled"));
