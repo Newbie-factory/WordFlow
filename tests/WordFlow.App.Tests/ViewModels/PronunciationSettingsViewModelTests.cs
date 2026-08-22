@@ -19,11 +19,13 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         var service = new FakePronunciationService();
         var settings = new PronunciationSettingsViewModel(service, store);
         await settings.RestoreAsync();
+        Assert.Equal(1, settings.AutoplayRepeatCount);
         settings.SelectedVoiceId = "gb";
         settings.AccentPreference = PronunciationAccent.British;
         settings.Rate = -2;
         settings.Volume = 72;
         settings.Autoplay = true;
+        settings.AutoplayRepeatCount = 10;
         await settings.SaveAsync();
 
         var restored = new PronunciationSettingsViewModel(service, store);
@@ -34,7 +36,38 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         Assert.Equal(-2, restored.Rate);
         Assert.Equal(72, restored.Volume);
         Assert.True(restored.Autoplay);
+        Assert.Equal(10, restored.AutoplayRepeatCount);
         Assert.Null(restored.SettingsIssue);
+    }
+
+    [Theory]
+    [InlineData("0", 1)]
+    [InlineData("11", 1)]
+    [InlineData("not-a-number", 1)]
+    [InlineData("1", 1)]
+    [InlineData("2", 2)]
+    [InlineData("3", 3)]
+    [InlineData("4", 4)]
+    [InlineData("5", 5)]
+    [InlineData("6", 6)]
+    [InlineData("7", 7)]
+    [InlineData("8", 8)]
+    [InlineData("9", 9)]
+    [InlineData("10", 10)]
+    public async Task Restore_sanitizes_repeat_count_to_one_through_ten(string storedValue, int expected)
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.AutoplayRepeatCountKey] = storedValue,
+        }, default);
+        var settings = new PronunciationSettingsViewModel(new FakePronunciationService(), store);
+
+        await settings.RestoreAsync();
+
+        Assert.Equal(expected, settings.AutoplayRepeatCount);
+        var persisted = await store.GetManyAsync([PronunciationSettingsViewModel.AutoplayRepeatCountKey], default);
+        Assert.Equal(expected.ToString(), persisted[PronunciationSettingsViewModel.AutoplayRepeatCountKey]);
     }
 
     [Fact]
@@ -296,6 +329,65 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Autoplay_repetitions_are_serial_and_card_change_cancels_the_remainder()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync())
+        {
+            Autoplay = true,
+            AutoplayRepeatCount = 10,
+        };
+
+        settings.OnCardChanged(Guid.NewGuid(), "alpha", isPaused: false);
+        await service.WaitForCallsAsync(1);
+        Assert.Equal(1, service.SelectVoiceCalls);
+        service.Complete(0, PronunciationPlaybackResult.Completed("alpha"));
+        await service.WaitForCallsAsync(2);
+
+        settings.OnCardChanged(Guid.NewGuid(), "beta", isPaused: false);
+
+        Assert.True(service.Pending[1].CancellationToken.IsCancellationRequested);
+        Assert.Equal(["alpha", "alpha"], service.SpokenWords.Take(2));
+    }
+
+    [Fact]
+    public async Task Autoplay_failure_short_circuits_remaining_repetitions()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync())
+        {
+            Autoplay = true,
+            AutoplayRepeatCount = 4,
+        };
+        var feedback = new TaskCompletionSource<PronunciationPlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        settings.PlaybackFeedback += (_, result) => feedback.TrySetResult(result);
+
+        settings.OnCardChanged(Guid.NewGuid(), "alpha", isPaused: false);
+        await service.WaitForCallsAsync(1);
+        service.Complete(0, PronunciationPlaybackResult.Failed("device fault"));
+
+        var result = await feedback.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(PronunciationPlaybackStatus.Failed, result.Status);
+        Assert.Single(service.SpokenWords);
+    }
+
+    [Fact]
+    public async Task Manual_playback_stays_single_when_autoplay_repeat_count_is_ten()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync()) { AutoplayRepeatCount = 10 };
+        var feedback = new TaskCompletionSource<PronunciationPlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        settings.PlaybackFeedback += (_, result) => feedback.TrySetResult(result);
+
+        settings.Execute(Guid.NewGuid(), "manual");
+        await service.WaitForCallsAsync(1);
+        service.Complete(0, PronunciationPlaybackResult.Completed("manual"));
+
+        await feedback.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Single(service.SpokenWords);
+    }
+
+    [Fact]
     public async Task Card_change_disable_pause_and_dispose_cancel_without_stale_autoplay()
     {
         var service = new FakePronunciationService();
@@ -459,7 +551,7 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
 
     private sealed class FakePronunciationService : IPronunciationService
     {
-        private readonly List<TaskCompletionSource<PronunciationPlaybackResult>> pending = [];
+        private readonly List<PendingPlayback> pending = [];
         private readonly SemaphoreSlim calls = new(0);
         public IReadOnlyList<PronunciationVoice> Voices { get; set; } =
         [
@@ -469,7 +561,9 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         public PronunciationAvailability Availability { get; set; } =
             new(true, "可用", PronunciationInventoryState.AuthoritativeAvailable);
         public ConcurrentQueue<string> SpokenWords { get; } = [];
+        public IReadOnlyList<PendingPlayback> Pending => pending;
         public int CancelCalls { get; private set; }
+        public int SelectVoiceCalls { get; private set; }
         public bool DelayCompletion { get; set; }
         public bool DelayNextCancel { get; set; }
         private TaskCompletionSource<bool>? delayedCancel;
@@ -477,8 +571,11 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         private TaskCompletionSource<bool>? publicationEntered;
         private TaskCompletionSource<bool>? publicationRelease;
         private TaskCompletionSource<bool>? publicationCompleted;
-        public PronunciationVoice? SelectVoice(string? voiceId, PronunciationAccent preference) =>
-            Voices.FirstOrDefault(voice => voice.Id == voiceId) ?? Voices[0];
+        public PronunciationVoice? SelectVoice(string? voiceId, PronunciationAccent preference)
+        {
+            SelectVoiceCalls++;
+            return Voices.FirstOrDefault(voice => voice.Id == voiceId) ?? Voices[0];
+        }
         public async Task<PronunciationPlaybackResult> SpeakAsync(string text, string voiceId, int rate, int volume, CancellationToken ct)
         {
             bool wasBlocked = Interlocked.Exchange(ref blockNextPublication, 0) == 1;
@@ -492,12 +589,16 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
                     return PronunciationPlaybackResult.Cancelled();
                 }
             }
+            TaskCompletionSource<PronunciationPlaybackResult>? completion = null;
+            if (DelayCompletion)
+            {
+                completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                pending.Add(new(completion, ct));
+            }
             SpokenWords.Enqueue(text);
             calls.Release();
             if (wasBlocked) publicationCompleted!.TrySetResult(true);
-            if (!DelayCompletion) return PronunciationPlaybackResult.Completed(text);
-            var completion = new TaskCompletionSource<PronunciationPlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            pending.Add(completion);
+            if (completion is null) return PronunciationPlaybackResult.Completed(text);
             return await completion.Task;
         }
         public Task CancelAsync()
@@ -523,8 +624,12 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         {
             while (SpokenWords.Count < count) await calls.WaitAsync(TimeSpan.FromSeconds(2));
         }
-        public void Complete(int index, PronunciationPlaybackResult result) => pending[index].TrySetResult(result);
+        public void Complete(int index, PronunciationPlaybackResult result) => pending[index].Completion.TrySetResult(result);
         public void Dispose() { }
+
+        public sealed record PendingPlayback(
+            TaskCompletionSource<PronunciationPlaybackResult> Completion,
+            CancellationToken CancellationToken);
     }
 
     private sealed class ThrowingEngineFactory : IOfflineSpeechEngineFactory

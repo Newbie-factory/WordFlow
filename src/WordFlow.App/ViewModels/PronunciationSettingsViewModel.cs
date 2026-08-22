@@ -22,8 +22,9 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     public const string RateKey = "pronunciation.rate";
     public const string VolumeKey = "pronunciation.volume";
     public const string AutoplayKey = "pronunciation.autoplay";
+    public const string AutoplayRepeatCountKey = "pronunciation.autoplay_repeat_count";
 
-    private static readonly string[] SettingKeys = [VoiceKey, AccentKey, RateKey, VolumeKey, AutoplayKey];
+    private static readonly string[] SettingKeys = [VoiceKey, AccentKey, RateKey, VolumeKey, AutoplayKey, AutoplayRepeatCountKey];
     private readonly IPronunciationService service;
     private readonly SqliteAppSettingStore store;
     private readonly SynchronizationContext? feedbackContext;
@@ -32,6 +33,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     private int rate;
     private int volume = 100;
     private bool autoplay;
+    private int autoplayRepeatCount = 1;
     private string? settingsIssue;
     private readonly object operationGate = new();
     private readonly HashSet<Task> operations = [];
@@ -73,6 +75,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             RaisePropertyChanged(nameof(Autoplay));
         }
     }
+    public int AutoplayRepeatCount { get => autoplayRepeatCount; set => SetField(ref autoplayRepeatCount, value); }
     public string? SettingsIssue { get => settingsIssue; private set => SetField(ref settingsIssue, value); }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -126,6 +129,8 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         bool restoredAutoplay = values[AutoplayKey] is null ? false
             : bool.TryParse(values[AutoplayKey], out var parsedAutoplay) ? parsedAutoplay
             : AddIssue(issues, "已修复自动播放设置", false);
+        int restoredAutoplayRepeatCount = ParseBounded(
+            values[AutoplayRepeatCountKey], 1, 10, 1, "已修复自动朗读次数", issues);
 
         return new(
             restoredVoice,
@@ -133,6 +138,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             restoredRate,
             restoredVolume,
             restoredAutoplay,
+            restoredAutoplayRepeatCount,
             issues.Count == 0 ? null : string.Join("；", issues.Distinct(StringComparer.Ordinal)),
             issues.Any(issue => !string.Equals(issue, PreservedConflictIssue, StringComparison.Ordinal)));
     }
@@ -145,6 +151,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         rate = snapshot.Rate;
         volume = snapshot.Volume;
         autoplay = snapshot.Autoplay;
+        autoplayRepeatCount = snapshot.AutoplayRepeatCount;
         settingsIssue = snapshot.Issue;
         if (autoplayChanged)
         {
@@ -158,6 +165,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     {
         if (Rate is < -10 or > 10) throw new ArgumentOutOfRangeException(nameof(Rate));
         if (Volume is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(Volume));
+        if (AutoplayRepeatCount is < 1 or > 10) throw new ArgumentOutOfRangeException(nameof(AutoplayRepeatCount));
         if (AccentPreference is not (PronunciationAccent.Automatic or PronunciationAccent.British or PronunciationAccent.American))
             throw new ArgumentOutOfRangeException(nameof(AccentPreference));
         if (service.Availability.InventoryState != PronunciationInventoryState.UnavailableFault &&
@@ -174,6 +182,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         [RateKey] = Rate.ToString(CultureInfo.InvariantCulture),
         [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
         [AutoplayKey] = Autoplay.ToString(),
+        [AutoplayRepeatCountKey] = AutoplayRepeatCount.ToString(CultureInfo.InvariantCulture),
     };
 
     private Task PersistAsync(IReadOnlyDictionary<string, string> values, CancellationToken ct) =>
@@ -230,8 +239,9 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
     {
         if (disposed) return;
         bool shouldAutoplay = Autoplay;
+        int repeatCount = AutoplayRepeatCount;
         EnqueuePlayback(
-            operation => ChangeCardAsync(operation, word, shouldAutoplay),
+            operation => ChangeCardAsync(operation, word, shouldAutoplay, repeatCount),
             () => paused = isPaused);
     }
 
@@ -262,7 +272,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         Track(queued);
     }
 
-    private async Task ChangeCardAsync(PlaybackOperation operation, string? word, bool shouldAutoplay)
+    private async Task ChangeCardAsync(PlaybackOperation operation, string? word, bool shouldAutoplay, int repeatCount)
     {
         try { await service.CancelAsync().ConfigureAwait(false); }
         catch (Exception exception)
@@ -272,7 +282,53 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         }
         if (operation.Cancellation.IsCancellationRequested ||
             !IsCurrent(operation.Generation) || paused || !shouldAutoplay || string.IsNullOrWhiteSpace(word)) return;
-        await PublishSpeechAsync(operation, word).ConfigureAwait(false);
+        StartAutoplaySequence(operation, word, repeatCount);
+    }
+
+    private void StartAutoplaySequence(PlaybackOperation operation, string word, int repeatCount)
+    {
+        if (operation.Cancellation.IsCancellationRequested || !IsCurrent(operation.Generation)) return;
+        operation.PublicationOwned = true;
+        Track(PlayAutoplaySequenceAsync(operation, word, repeatCount));
+    }
+
+    private async Task PlayAutoplaySequenceAsync(PlaybackOperation operation, string word, int repeatCount)
+    {
+        try
+        {
+            if (operation.Cancellation.IsCancellationRequested || !IsCurrent(operation.Generation)) return;
+            var voice = ResolveVoice();
+            if (voice is null)
+            {
+                PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Unavailable(service.Availability.Message));
+                return;
+            }
+
+            for (int repetition = 0; repetition < repeatCount; repetition++)
+            {
+                operation.Cancellation.Token.ThrowIfCancellationRequested();
+                var result = await service.SpeakAsync(
+                    word, voice.Id, Rate, Volume, operation.Cancellation.Token).ConfigureAwait(false);
+                if (result.Status != PronunciationPlaybackStatus.Completed)
+                {
+                    if (result.Status != PronunciationPlaybackStatus.Cancelled)
+                        PublishIfCurrent(operation.Generation, result);
+                    return;
+                }
+            }
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Completed(word));
+        }
+        catch (OperationCanceledException) when (operation.Cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            PublishIfCurrent(operation.Generation, PronunciationPlaybackResult.Failed(exception.Message));
+        }
+        finally
+        {
+            CompletePlaybackOperation(operation);
+        }
     }
 
     private Task PublishSpeechAsync(PlaybackOperation operation, string word)
@@ -439,7 +495,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
 
     private void NotifyAll()
     {
-        foreach (string property in new[] { nameof(SelectedVoiceId), nameof(AccentPreference), nameof(Rate), nameof(Volume), nameof(Autoplay) })
+        foreach (string property in new[] { nameof(SelectedVoiceId), nameof(AccentPreference), nameof(Rate), nameof(Volume), nameof(Autoplay), nameof(AutoplayRepeatCount) })
             RaisePropertyChanged(property);
     }
 
@@ -459,6 +515,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         int Rate,
         int Volume,
         bool Autoplay,
+        int AutoplayRepeatCount,
         string? Issue,
         bool NeedsRepair)
     {
@@ -469,6 +526,7 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             [RateKey] = Rate.ToString(CultureInfo.InvariantCulture),
             [VolumeKey] = Volume.ToString(CultureInfo.InvariantCulture),
             [AutoplayKey] = Autoplay.ToString(),
+            [AutoplayRepeatCountKey] = AutoplayRepeatCount.ToString(CultureInfo.InvariantCulture),
         };
     }
 
