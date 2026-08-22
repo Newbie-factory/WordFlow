@@ -16,10 +16,13 @@ public partial class RelationDrawer : UserControl
         nameof(ThemeBrush), typeof(Brush), typeof(RelationDrawer), new PropertyMetadata(null));
     public static readonly DependencyProperty ThemeOpacityProperty = DependencyProperty.Register(
         nameof(ThemeOpacity), typeof(double), typeof(RelationDrawer), new PropertyMetadata(0d));
+    public static readonly DependencyProperty ThemeVeilOpacityProperty = DependencyProperty.Register(
+        nameof(ThemeVeilOpacity), typeof(double), typeof(RelationDrawer), new PropertyMetadata(0d));
 
     public bool IsCompact { get => (bool)GetValue(IsCompactProperty); set => SetValue(IsCompactProperty, value); }
     public Brush? ThemeBrush { get => (Brush?)GetValue(ThemeBrushProperty); set => SetValue(ThemeBrushProperty, value); }
     public double ThemeOpacity { get => (double)GetValue(ThemeOpacityProperty); set => SetValue(ThemeOpacityProperty, value); }
+    public double ThemeVeilOpacity { get => (double)GetValue(ThemeVeilOpacityProperty); set => SetValue(ThemeVeilOpacityProperty, value); }
     public event EventHandler? DesiredHeightChanged;
     public event EventHandler? DismissRequested;
     public RelationDrawer()

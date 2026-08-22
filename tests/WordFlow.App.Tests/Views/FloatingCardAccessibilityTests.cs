@@ -17,6 +17,8 @@ public sealed class FloatingCardAccessibilityTests
         Assert.True(Array.IndexOf(names, "PhoneticText") < Array.IndexOf(names, "ChineseText"));
         Assert.Contains("AgainButton", names);
         Assert.Contains("SynonymsButton", names);
+        Assert.DoesNotContain("UndoButton", names);
+        Assert.DoesNotContain(card.Descendants(), element => (string?)element.Attribute("Text") == "{Binding ProgressText}");
         var cardSurface = card.Descendants().Single(element => element.Name.LocalName == "AccessibleBorder" && (string?)element.Attribute(x + "Name") == "WindowSurface");
         Assert.Equal("True", (string?)cardSurface.Attribute("Focusable"));
         Assert.Equal("9", (string?)cardSurface.Attribute("KeyboardNavigation.TabIndex"));
@@ -32,7 +34,20 @@ public sealed class FloatingCardAccessibilityTests
             .Select(button => int.Parse((string?)button.Attribute("TabIndex") ?? throw new Xunit.Sdk.XunitException("Every card button requires an explicit TabIndex.")))
             .OrderBy(index => index)
             .ToArray();
-        Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7, 8], tabOrder);
+        Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7], tabOrder);
+
+        var cardSlider = card.Descendants(presentation + "Slider").Single(element => (string?)element.Attribute(x + "Name") == "ThemeOpacitySlider");
+        Assert.Equal("0", (string?)cardSlider.Attribute("Minimum"));
+        Assert.Equal("1", (string?)cardSlider.Attribute("Maximum"));
+        Assert.Equal("True", (string?)cardSlider.Attribute("IsMoveToPointEnabled"));
+        Assert.Equal("8", (string?)cardSlider.Attribute("TabIndex"));
+
+        var controlCenter = XDocument.Load(Path.Combine(project, "Views", "ControlCenterWindow.xaml"));
+        var themeSlider = controlCenter.Descendants(presentation + "Slider")
+            .Single(element => ((string?)element.Attribute("Value"))?.Contains("Theme.Opacity", StringComparison.Ordinal) == true);
+        Assert.Equal("0", (string?)themeSlider.Attribute("Minimum"));
+        Assert.Equal("1", (string?)themeSlider.Attribute("Maximum"));
+        Assert.Equal("True", (string?)themeSlider.Attribute("IsMoveToPointEnabled"));
 
         var drawer = XDocument.Load(Path.Combine(project, "Views", "Controls", "RelationDrawer.xaml"));
         var scroll = drawer.Descendants(presentation + "ScrollViewer").Single();

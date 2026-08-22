@@ -6,7 +6,6 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -16,6 +15,7 @@ using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
 using WordFlow.Infrastructure.Windows;
 using WordFlow.App.Views.Controls;
+using WordFlow.App.Styling;
 
 namespace WordFlow.App.Views;
 
@@ -29,6 +29,7 @@ public partial class FloatingCardWindow : Window
     private readonly IDisposable? shortcutFaultConnection;
     private readonly WindowPlacementService? placementService;
     private readonly ThemeSettingsViewModel? themeSettings;
+    private readonly ThemeImageCache themeImageCache = new();
     private readonly DispatcherTimer? fullscreenTimer;
     private readonly DispatcherTimer? placementSaveTimer;
     private readonly CancellationTokenSource lifetime = new();
@@ -40,6 +41,7 @@ public partial class FloatingCardWindow : Window
     private bool closing;
     private bool? uiSmokeTopmostOverride;
     private bool updatingThemeControls;
+    private string? appliedThemePath;
 
     public FloatingCardWindow() => InitializeComponent();
 
@@ -132,6 +134,7 @@ public partial class FloatingCardWindow : Window
     {
         if (closing) return;
         closing = true;
+        if (themeSettings is not null) await themeSettings.FlushAsync();
         lifetime.Cancel();
         CloseDrawers();
         placementSaveTimer?.Stop();
@@ -258,28 +261,27 @@ public partial class FloatingCardWindow : Window
 
     private void ApplyTheme(ImageTheme theme)
     {
-        ImageBrush? brush = null;
-        if (!theme.IsDefault)
+        string? nextPath = theme.IsDefault ? null : theme.ImagePath;
+        if (!string.Equals(appliedThemePath, nextPath, StringComparison.OrdinalIgnoreCase))
         {
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(theme.ImagePath, UriKind.Absolute);
-            image.EndInit();
-            image.Freeze();
-            brush = new ImageBrush(image) { Stretch = Stretch.Fill };
+            ImageBrush? brush = theme.IsDefault ? null : themeImageCache.Get(theme.ImagePath);
+            ThemeImageLayer.Background = brush;
+            SynonymsDrawer.ThemeBrush = brush;
+            ConfusablesDrawer.ThemeBrush = brush;
+            appliedThemePath = nextPath;
         }
-        ThemeImageLayer.Background = brush;
+
         updatingThemeControls = true;
         ThemeOpacitySlider.Value = theme.Opacity;
         updatingThemeControls = false;
-        ThemeImageLayer.Opacity = theme.IsDefault ? 0 : theme.Opacity;
+        var visual = ThemeVisualMapper.Map(theme.Opacity);
+        ThemeImageLayer.Opacity = theme.IsDefault ? 0 : visual.ImageOpacity;
         ThemeImageLayer.Visibility = theme.IsDefault ? Visibility.Collapsed : Visibility.Visible;
-        ThemeReadabilityVeil.Opacity = theme.IsDefault ? 0 : 0.82;
-        SynonymsDrawer.ThemeBrush = brush;
-        ConfusablesDrawer.ThemeBrush = brush;
-        SynonymsDrawer.ThemeOpacity = theme.IsDefault ? 0 : theme.Opacity;
-        ConfusablesDrawer.ThemeOpacity = theme.IsDefault ? 0 : theme.Opacity;
+        ThemeReadabilityVeil.Opacity = theme.IsDefault ? 0 : visual.VeilOpacity;
+        SynonymsDrawer.ThemeOpacity = theme.IsDefault ? 0 : visual.ImageOpacity;
+        ConfusablesDrawer.ThemeOpacity = theme.IsDefault ? 0 : visual.ImageOpacity;
+        SynonymsDrawer.ThemeVeilOpacity = theme.IsDefault ? 0 : visual.VeilOpacity;
+        ConfusablesDrawer.ThemeVeilOpacity = theme.IsDefault ? 0 : visual.VeilOpacity;
     }
 
     private void Track(Task operation)

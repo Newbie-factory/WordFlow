@@ -74,7 +74,9 @@
             <Border Background="{Binding ThemeBrush, RelativeSource={RelativeSource AncestorType={x:Type local:RelationDrawer}}}"
                     Opacity="{Binding ThemeOpacity, RelativeSource={RelativeSource AncestorType={x:Type local:RelationDrawer}}}"
                     CornerRadius="12" IsHitTestVisible="False" />
-            <Border Background="{StaticResource Brush.Surface}" Opacity="0.82" CornerRadius="12" IsHitTestVisible="False" />
+            <Border Background="{StaticResource Brush.Surface}"
+                    Opacity="{Binding ThemeVeilOpacity, RelativeSource={RelativeSource AncestorType={x:Type local:RelationDrawer}}}"
+                    CornerRadius="12" IsHitTestVisible="False" />
             <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />

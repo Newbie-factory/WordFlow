@@ -23,7 +23,7 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Grid x:Name="StableWordBlock" Grid.Row="0" Height="270">
+            <Grid x:Name="StableWordBlock" Grid.Row="0" Height="226">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="28" />
                     <RowDefinition Height="*" />
@@ -68,15 +68,6 @@
                                AutomationProperties.Name="{Binding Chinese, StringFormat=当前单词中文释义 {0}}"
                                AutomationProperties.HelpText="{Binding Chinese}" />
                     <StackPanel Grid.Row="3" VerticalAlignment="Bottom">
-                        <DockPanel Margin="0,14,0,8">
-                            <TextBlock Text="{Binding ProgressText}" TextTrimming="CharacterEllipsis" FontSize="{StaticResource Type.Caption}"
-                                       Foreground="{StaticResource Brush.InkMuted}" />
-                            <Button x:Name="UndoButton" DockPanel.Dock="Right" Style="{StaticResource Button.Base}"
-                                    Command="{Binding UndoCommand}" Padding="9,4" MinHeight="28" TabIndex="8"
-                                    AutomationProperties.Name="撤销上一学习操作">
-                                <TextBlock><Run Text="撤销 "/><Run Text="{Binding UndoGesture, Mode=OneWay}" /></TextBlock>
-                            </Button>
-                        </DockPanel>
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
@@ -126,7 +117,8 @@
 
             <StackPanel Grid.Row="2">
                 <Border Margin="20,0,20,10" Padding="8" Background="{StaticResource Brush.SurfaceRaised}" CornerRadius="{StaticResource Radius.Control}">
-                    <Slider x:Name="ThemeOpacitySlider" Minimum="0" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="False" ValueChanged="ThemeOpacity_Changed" TabIndex="12" AutomationProperties.Name="卡片背景透明度" />
+                    <Slider x:Name="ThemeOpacitySlider" Minimum="0" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="False"
+                            IsMoveToPointEnabled="True" ValueChanged="ThemeOpacity_Changed" TabIndex="8" AutomationProperties.Name="卡片背景透明度" />
                 </Border>
                 <Border Margin="20,0,20,12" Padding="10,8" Background="{StaticResource Brush.ErrorSurface}"
                         CornerRadius="{StaticResource Radius.Control}"
