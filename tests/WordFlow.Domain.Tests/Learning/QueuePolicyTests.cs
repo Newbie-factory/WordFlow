@@ -30,6 +30,26 @@ public sealed class QueuePolicyTests
     }
 
     [Fact]
+    public void BuildPlan_separates_risk_ordered_reviews_from_deterministic_new_cards()
+    {
+        var highestRisk = Card(1, Now.AddDays(-2), stabilityDays: 1);
+        var lowerRisk = Card(2, Now.AddDays(-1), stabilityDays: 20);
+        var newIds = new[] { highestRisk.Id, lowerRisk.Id, Id(4), Id(3) };
+        var policy = new QueuePolicy(new Fsrs6Scheduler());
+
+        var plan = policy.BuildPlan(
+            new QueueInput(
+                new[] { lowerRisk, highestRisk },
+                newIds,
+                new DailyPlan(2, 1),
+                Now));
+
+        Assert.Equal(new[] { highestRisk.Id }, plan.ReviewCardIds);
+        Assert.Equal(new[] { Id(3), Id(4) }, plan.NewCardIds);
+        Assert.DoesNotContain(plan.ReviewCardIds[0], plan.NewCardIds);
+    }
+
+    [Fact]
     public void Due_reviews_precede_new_words_and_each_daily_limit_is_applied()
     {
         var reviews = Enumerable.Range(0, 3)

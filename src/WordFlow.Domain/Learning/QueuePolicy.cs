@@ -55,6 +55,12 @@ public sealed class QueuePolicy
 
     public IReadOnlyList<Guid> Build(QueueInput input)
     {
+        var plan = BuildPlan(input);
+        return plan.ReviewCardIds.Concat(plan.NewCardIds).ToArray();
+    }
+
+    public DailyQueuePlan BuildPlan(QueueInput input)
+    {
         ArgumentNullException.ThrowIfNull(input);
 
         var reviews = input.DueCards
@@ -83,9 +89,10 @@ public sealed class QueuePolicy
             .Where(id => id != Guid.Empty && included.Add(id))
             .Distinct()
             .OrderBy(id => id)
-            .Take(input.DailyPlan.NewLimit);
+            .Take(input.DailyPlan.NewLimit)
+            .ToArray();
 
-        return reviews.Concat(newCards).ToArray();
+        return new DailyQueuePlan(reviews, newCards);
     }
 
     private static bool IsAvailable(CardState card, DateTimeOffset now) =>
