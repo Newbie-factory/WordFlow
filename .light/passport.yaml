@@ -1,6 +1,6 @@
 project: wordflow-windows
 updated_at: 2026-08-22
-current_stage: second_iteration_execution_choice
+current_stage: second_iteration_verified_with_concerns
 branch: codex/wordflow-implementation
 artifacts:
   - path: docs/superpowers/specs/2026-08-13-wordflow-windows-design.md
@@ -13,6 +13,10 @@ artifacts:
     status: approved
   - path: docs/superpowers/plans/2026-08-22-wordflow-second-iteration-implementation.md
     status: ready
+  - path: docs/testing/2026-08-22-second-iteration-verification.md
+    status: pass_with_concerns
+  - path: .superpowers/sdd/round2-task-10-implementer-report.md
+    status: done_with_concerns
 decisions:
   - choice: persist_daily_queue_in_sqlite
     by: user
@@ -32,6 +36,17 @@ gates:
   - name: second_iteration_implementation_plan
     status: PASS
     evidence: placeholder scan none and all approved requirements mapped to ten tasks
+  - name: second_iteration_vocabulary_relations
+    status: PASS
+    evidence: verifier exit 0; vocabulary 12046 integrity ok; relations 43947 senses and 47934 published integrity ok
+  - name: second_iteration_tests_build_publish
+    status: PASS
+    evidence: 598 passed 0 failed 0 skipped; build 0 warnings 0 errors; both release variants published
+  - name: second_iteration_windows_ui
+    status: PASS_WITH_CONCERNS
+    evidence: sliders/topmost/navigation/undo/restart passed at 150 percent DPI; native file picker unavailable so guarded isolated import seam used
 known_limitations:
   - Windows exclusive fullscreen, secure desktop, or higher-integrity processes can outrank ordinary desktop topmost windows.
-next_step: Obtain execution-mode choice, then implement the ten-task plan with test-first red/green cycles.
+  - Native OpenFileDialog interaction was not observable in the automation session; import format and restart coverage used the guarded isolated startup seam.
+  - Two exploratory pre-seam launches reached the real user profile and wrote startup metadata; no learning action or destructive rollback was performed.
+next_step: User review of the native file-picker and pre-seam profile-write concerns; optionally perform a supervised manual picker check.
