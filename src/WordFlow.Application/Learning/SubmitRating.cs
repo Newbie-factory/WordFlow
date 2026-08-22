@@ -15,7 +15,17 @@ public sealed record SubmitRatingRequest(
     RatingShortcut Shortcut,
     DailyPlan? Plan = null);
 
-public sealed record LearningTransition(CardState Card, NextCard? NextCard);
+public enum NextCardRefreshStatus
+{
+    Resolved,
+    Failed,
+}
+
+public sealed record LearningTransition(
+    CardState Card,
+    NextCard? NextCard,
+    NextCardRefreshStatus RefreshStatus = NextCardRefreshStatus.Resolved,
+    string? RefreshFailureMessage = null);
 
 public sealed class SubmitRating
 {

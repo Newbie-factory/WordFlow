@@ -19,10 +19,10 @@ internal static class LearningMutation
         DailyPlan plan,
         CancellationToken ct)
     {
+        CommitResult commit;
         try
         {
             var duplicate = await store.GetCommitAsync(commandId, ct).ConfigureAwait(false);
-            CommitResult commit;
             if (duplicate is not null)
             {
                 commit = duplicate;
@@ -37,14 +37,6 @@ internal static class LearningMutation
                     terminalStatus,
                     ct).ConfigureAwait(false);
             }
-
-            var next = await nextCard.HandleAsync(new GetNextCardRequest(plan), ct).ConfigureAwait(false);
-            return next switch
-            {
-                Success<NextCard?> success => new Success<LearningTransition>(new LearningTransition(commit.Card, success.Value)),
-                StorageFailure<NextCard?> failure => new StorageFailure<LearningTransition>(failure.Message),
-                _ => throw new InvalidOperationException("Unexpected next-card result."),
-            };
         }
         catch (LearningConcurrencyException exception)
         {
@@ -54,7 +46,33 @@ internal static class LearningMutation
         {
             return new StorageFailure<LearningTransition>(exception.Message);
         }
+
+        try
+        {
+            var next = await nextCard.HandleAsync(new GetNextCardRequest(plan), ct).ConfigureAwait(false);
+            return next switch
+            {
+                Success<NextCard?> success => new Success<LearningTransition>(new LearningTransition(commit.Card, success.Value)),
+                StorageFailure<NextCard?> failure => CommittedRefreshFailure(commit, failure.Message),
+                NotFound<NextCard?> failure => CommittedRefreshFailure(commit, failure.Message),
+                Conflict<NextCard?> failure => CommittedRefreshFailure(commit, failure.Message),
+                _ => CommittedRefreshFailure(commit, "下一词刷新返回了未知状态。"),
+            };
+        }
+        catch (OperationCanceledException exception)
+        {
+            return CommittedRefreshFailure(commit,
+                string.IsNullOrWhiteSpace(exception.Message) ? "下一词刷新已取消。" : exception.Message);
+        }
+        catch (Exception exception)
+        {
+            return CommittedRefreshFailure(commit,
+                string.IsNullOrWhiteSpace(exception.Message) ? "下一词暂时无法加载。" : exception.Message);
+        }
     }
+
+    private static Success<LearningTransition> CommittedRefreshFailure(CommitResult commit, string message) =>
+        new(new LearningTransition(commit.Card, null, NextCardRefreshStatus.Failed, message));
 }
 
 internal sealed class UnusedScheduler : IFsrsScheduler

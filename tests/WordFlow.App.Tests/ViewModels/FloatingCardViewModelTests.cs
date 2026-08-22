@@ -67,6 +67,37 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Committed_rating_with_failed_successor_refresh_clears_old_card_and_reports_truthfully()
+    {
+        var submissions = 0;
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, initial,
+            submit: (_, _) =>
+            {
+                submissions++;
+                return Task.FromResult<UseCaseResult<LearningTransition>>(new Success<LearningTransition>(
+                    new(initial.Card, null, NextCardRefreshStatus.Failed, "successor busy")));
+            });
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F3);
+        await viewModel.RateAsync(RatingShortcut.F3);
+
+        Assert.Equal(1, submissions);
+        Assert.False(viewModel.HasCard);
+        Assert.False(viewModel.CanRate);
+        Assert.False(viewModel.AgainCommand.CanExecute(null));
+        Assert.True(viewModel.UndoCommand.CanExecute(null));
+        Assert.Contains("学习记录已保存", viewModel.AccessibleStatus);
+        Assert.Contains("下一词暂时无法加载", viewModel.AccessibleStatus);
+        Assert.Contains("successor busy", viewModel.AccessibleStatus);
+        Assert.DoesNotContain("未保存", viewModel.AccessibleStatus);
+        Assert.DoesNotContain("今日学习已完成", $"{viewModel.Word}{viewModel.Chinese}{viewModel.AccessibleStatus}");
+        Assert.Null(viewModel.ErrorMessage);
+    }
+
+    [Fact]
     public async Task Rating_forwards_the_exact_current_queue_item_identity()
     {
         var queueItemId = Guid.NewGuid();

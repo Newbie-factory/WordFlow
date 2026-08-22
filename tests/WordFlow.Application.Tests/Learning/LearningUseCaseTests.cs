@@ -74,6 +74,27 @@ public sealed class LearningUseCaseTests
     }
 
     [Fact]
+    public async Task Successful_queued_commit_with_failed_successor_read_is_reported_as_committed()
+    {
+        var store = new FakeLearningStore([Card(1), Card(2)]);
+        var queue = Queue(store, [Word(1), Word(2)]);
+        var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
+        await queue.HandleAsync(new(DailyPlan.Default), default);
+        store.QueueStore!.GetNextPendingFailure = new TransientStorageException("successor busy", new IOException());
+
+        var result = await handler.HandleAsync(new(
+            Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision,
+            QueueItem(Id(1)), RatingShortcut.F3), default);
+
+        var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
+        Assert.Equal(NextCardRefreshStatus.Failed, transition.RefreshStatus);
+        Assert.Null(transition.NextCard);
+        Assert.Contains("successor busy", transition.RefreshFailureMessage);
+        Assert.Equal(DailyQueueItemStatus.Completed, store.QueueStore.ItemStatus(QueueItem(Id(1))));
+        Assert.Single(store.Applied);
+    }
+
+    [Fact]
     public async Task Slash_is_a_separate_action_and_advances_only_after_commit()
     {
         var store = new FakeLearningStore([Card(1), Card(2)]);
@@ -405,6 +426,7 @@ public sealed class LearningUseCaseTests
     private sealed class FakeDailyQueueStore : IDailyQueueStore
     {
         private DailySessionSnapshot? session;
+        public Exception? GetNextPendingFailure { get; set; }
 
         public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct)
         {
@@ -419,12 +441,19 @@ public sealed class LearningUseCaseTests
             return Task.FromResult(session);
         }
 
-        public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
-            Task.FromResult(session?.Items.FirstOrDefault(item => item.Status == DailyQueueItemStatus.Pending));
+        public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct)
+        {
+            if (GetNextPendingFailure is not null) throw GetNextPendingFailure;
+            return Task.FromResult(session?.Items.FirstOrDefault(item => item.Status == DailyQueueItemStatus.Pending));
+        }
         public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => Task.CompletedTask;
         public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<DailyHistoryEntry>>([]);
         public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Task.FromResult(new GoalProgress(0, 0));
+
+        public DailyQueueItemStatus ItemStatus(Guid itemId) =>
+            session?.Items.Single(item => item.ItemId == itemId).Status
+            ?? throw new LearningNotFoundException("The daily queue was not created.");
 
         public void Complete(Guid itemId, DailyQueueItemStatus status, Guid eventId, DateTimeOffset at)
         {

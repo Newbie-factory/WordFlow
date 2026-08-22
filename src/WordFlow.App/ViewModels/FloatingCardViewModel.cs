@@ -30,6 +30,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private Guid? lastEventId;
     private bool disposed;
     private bool isPaused;
+    private bool hasNextCardRefreshFailure;
     private readonly CancellationTokenSource lifetime = new();
     private long generation;
 
@@ -69,9 +70,9 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public IReadOnlyList<string> ReadingOrder => StableReadingOrder;
     public RelationDrawerViewModel Synonyms { get; }
     public RelationDrawerViewModel Confusables { get; }
-    public string Word => current?.Word.Lemma ?? "今日学习已完成";
+    public string Word => current?.Word.Lemma ?? (hasNextCardRefreshFailure ? "下一词暂时无法加载" : "今日学习已完成");
     public string Phonetic => current?.Word.Phonetic ?? "";
-    public string Chinese => current?.Word.Chinese ?? "没有待学习的单词";
+    public string Chinese => current?.Word.Chinese ?? (hasNextCardRefreshFailure ? "学习记录已保存，请稍后重新加载" : "没有待学习的单词");
     public bool HasCard => current is not null;
     public bool CanRate => HasCard && !IsBusy && !IsPaused;
     public bool IsPaused => isPaused;
@@ -253,12 +254,23 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             {
                 case Success<LearningTransition> success:
                     if (eventIdOnSuccess) lastEventId = eventId;
-                    SetCurrent(success.Value.NextCard);
                     Synonyms.Reset();
                     Confusables.Reset();
-                    AccessibleStatus = success.Value.NextCard is null
-                        ? "学习记录已保存，今日队列已完成"
-                        : $"学习记录已保存，下一词 {success.Value.NextCard.Word.Lemma}";
+                    if (success.Value.RefreshStatus == NextCardRefreshStatus.Failed)
+                    {
+                        SetCurrent(null, refreshFailed: true);
+                        var detail = string.IsNullOrWhiteSpace(success.Value.RefreshFailureMessage)
+                            ? ""
+                            : $"：{success.Value.RefreshFailureMessage}";
+                        AccessibleStatus = $"学习记录已保存，但下一词暂时无法加载{detail}";
+                    }
+                    else
+                    {
+                        SetCurrent(success.Value.NextCard);
+                        AccessibleStatus = success.Value.NextCard is null
+                            ? "学习记录已保存，今日队列已完成"
+                            : $"学习记录已保存，下一词 {success.Value.NextCard.Word.Lemma}";
+                    }
                     break;
                 case StorageFailure<LearningTransition> failure: SetFailure("学习记录未保存", failure.Message); break;
                 case NotFound<LearningTransition> failure: SetFailure("学习记录未保存", failure.Message); break;
@@ -292,10 +304,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         else if (result is StorageFailure<NextCard?> failure) SetFailure("已撤销，但无法刷新学习卡", failure.Message);
     }
 
-    private void SetCurrent(NextCard? next)
+    private void SetCurrent(NextCard? next, bool refreshFailed = false)
     {
         generation++;
         current = next;
+        hasNextCardRefreshFailure = refreshFailed;
         pronunciation?.OnCardChanged(next?.Word.WordId, next?.Word.Lemma, IsPaused);
         OnPropertyChanged(nameof(Word));
         OnPropertyChanged(nameof(Phonetic));
@@ -360,7 +373,9 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             Confusables.Close();
             AccessibleStatus = "学习已暂停";
         }
-        else AccessibleStatus = current is null ? "今日学习已完成" : $"当前单词 {current.Word.Lemma}";
+        else AccessibleStatus = current is not null
+            ? $"当前单词 {current.Word.Lemma}"
+            : hasNextCardRefreshFailure ? "学习记录已保存，但下一词暂时无法加载" : "今日学习已完成";
         RaiseCommandStates();
     }
 
