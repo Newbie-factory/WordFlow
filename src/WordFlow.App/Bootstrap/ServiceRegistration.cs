@@ -42,6 +42,7 @@ public static class ServiceRegistration
         services.AddSingleton<GetNextCard>();
         services.AddSingleton<SubmitRating>();
         services.AddSingleton<SlashWord>();
+        services.AddSingleton<RestoreSlashedWords>();
         services.AddSingleton<UndoLastAction>();
         services.AddSingleton<GetSynonyms>();
         services.AddSingleton<GetConfusables>();

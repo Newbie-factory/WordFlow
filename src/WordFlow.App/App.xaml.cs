@@ -36,6 +36,7 @@ public partial class App : System.Windows.Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        bool openControlCenterForSmoke = e.Args.Contains("--control-center-smoke", StringComparer.OrdinalIgnoreCase);
         if (e.Args.Contains("--ui-smoke", StringComparer.OrdinalIgnoreCase))
         {
             StartUiSmoke(e.Args.Contains("--ui-smoke-production", StringComparer.OrdinalIgnoreCase));
@@ -71,6 +72,7 @@ public partial class App : System.Windows.Application
                 RestorePronunciationSettingsAsync,
                 CreateCardAndTrayAsync,
                 lifetime.Token);
+            if (openControlCenterForSmoke) OpenControlCenter();
         }
         catch (CorpusIntegrityException exception)
         {
@@ -164,7 +166,11 @@ public partial class App : System.Windows.Application
             pronunciation,
             themeSettings,
             services.GetRequiredService<ILearningProgressReader>(),
-            SynchronizationContext.Current);
+            SynchronizationContext.Current,
+            services.GetRequiredService<IVocabularyRepository>(),
+            services.GetRequiredService<GetConfusables>(),
+            services.GetRequiredService<ILearningStore>(),
+            services.GetRequiredService<RestoreSlashedWords>());
         await controlCenterViewModel.LoadAsync(cancellationToken);
         controlCenter = new ControlCenterWindow(controlCenterViewModel);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
@@ -200,7 +206,7 @@ public partial class App : System.Windows.Application
             SetCardVisibility,
             paused => card.SetPaused(paused),
             OpenControlCenter,
-            OpenControlCenter,
+            OpenTodayProgress,
             ExitFromTray);
         trayIcon = new TrayIconService(trayController);
         WriteLifecycle($"primary-ready pid={Environment.ProcessId}");
@@ -230,7 +236,7 @@ public partial class App : System.Windows.Application
 
     private void OpenControlCenter()
     {
-        if (controlCenter is null || !controlCenter.IsLoaded)
+        if (controlCenter is null)
         {
             if (controlCenterViewModel is null) return;
             controlCenter = new ControlCenterWindow(controlCenterViewModel);
@@ -239,6 +245,12 @@ public partial class App : System.Windows.Application
         if (controlCenter.WindowState == WindowState.Minimized) controlCenter.WindowState = WindowState.Normal;
         controlCenter.Activate();
         controlCenter.Focus();
+    }
+
+    private void OpenTodayProgress()
+    {
+        OpenControlCenter();
+        controlCenter?.OpenDashboard();
     }
 
     private async void ExitFromTray() => await ExitAsync(0);
@@ -299,8 +311,14 @@ public partial class App : System.Windows.Application
 
     private ValueTask CloseControlCenterAsync()
     {
-        controlCenter?.Close();
+        if (controlCenter is not null)
+        {
+            controlCenter.PermitClose = true;
+            controlCenter.Close();
+        }
         controlCenter = null;
+        controlCenterViewModel?.Dispose();
+        controlCenterViewModel = null;
         return ValueTask.CompletedTask;
     }
 
