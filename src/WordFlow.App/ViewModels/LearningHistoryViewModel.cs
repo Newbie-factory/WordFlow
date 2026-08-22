@@ -23,6 +23,7 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
     private int slashedWords;
     private int totalWords;
     private double goalProgressRatio;
+    private long loadGeneration;
 
     public LearningHistoryViewModel(IDailyQueueStore store, TimeProvider? clock = null, SynchronizationContext? context = null)
     {
@@ -42,6 +43,7 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
 
     public async Task LoadAsync(CancellationToken ct)
     {
+        long generation = Interlocked.Increment(ref loadGeneration);
         var today = DateOnly.FromDateTime(clock.GetLocalNow().DateTime);
         var goalTask = store.GetGoalProgressAsync(ct);
         var historyTask = store.GetHistoryAsync(today, HistoryDayCount, ct);
@@ -56,7 +58,7 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
             cells.Add(CreateCell(day, historyByDay.GetValueOrDefault(day), today));
         }
 
-        Publish(() =>
+        await PublishIfCurrentAsync(generation, () =>
         {
             SlashedWords = goal.SlashedWords;
             TotalWords = goal.TotalWords;
@@ -65,7 +67,7 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
             Raise(nameof(GoalProgressPercentText));
             Days.Clear();
             foreach (var cell in cells) Days.Add(cell);
-        });
+        }).ConfigureAwait(false);
     }
 
     private static LearningDayCellViewModel CreateCell(DateOnly day, DailyHistoryEntry? entry, DateOnly today)
@@ -94,9 +96,25 @@ public sealed class LearningHistoryViewModel : INotifyPropertyChanged
 
     private void Raise(string? name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    private void Publish(Action action)
+    private Task PublishIfCurrentAsync(long generation, Action action)
     {
-        if (context is null || context == SynchronizationContext.Current) action();
-        else context.Post(_ => action(), null);
+        if (generation != Volatile.Read(ref loadGeneration)) return Task.CompletedTask;
+        if (context is null || context == SynchronizationContext.Current)
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Post(_ =>
+        {
+            try
+            {
+                if (generation == Volatile.Read(ref loadGeneration)) action();
+                completion.SetResult();
+            }
+            catch (Exception exception) { completion.SetException(exception); }
+        }, null);
+        return completion.Task;
     }
 }

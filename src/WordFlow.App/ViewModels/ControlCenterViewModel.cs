@@ -16,6 +16,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly ILearningProgressReader progressReader;
     private readonly SynchronizationContext? context;
+    private readonly TimeProvider clock;
     private readonly IVocabularyRepository? vocabulary;
     private readonly GetConfusables? getConfusables;
     private readonly ILearningStore? learningStore;
@@ -46,7 +47,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         GetConfusables? getConfusables = null,
         ILearningStore? learningStore = null,
         RestoreSlashedWords? restoreSlashedWords = null,
-        IDailyQueueStore? dailyQueueStore = null)
+        IDailyQueueStore? dailyQueueStore = null,
+        TimeProvider? clock = null)
     {
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         Shortcuts = shortcuts ?? throw new ArgumentNullException(nameof(shortcuts));
@@ -54,11 +56,12 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         Theme = theme ?? throw new ArgumentNullException(nameof(theme));
         this.progressReader = progressReader ?? throw new ArgumentNullException(nameof(progressReader));
         this.context = context;
+        this.clock = clock ?? TimeProvider.System;
         this.vocabulary = vocabulary;
         this.getConfusables = getConfusables;
         this.learningStore = learningStore;
         this.restoreSlashedWords = restoreSlashedWords;
-        LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, context: context);
+        LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, this.clock, context);
     }
 
     public DailyPlanSettingsViewModel DailyPlan { get; }
@@ -111,7 +114,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             Task historyLoad = LearningHistory?.LoadAsync(ct) ?? Task.CompletedTask;
-            DateOnly today = DateOnly.FromDateTime(DateTime.UtcNow);
+            DateOnly today = GetDashboardDay(clock);
             var snapshot = await progressReader.GetDailyStatisticsAsync(today, ct).ConfigureAwait(false);
             var trend = new List<DailyTrendPoint>();
             for (int offset = 6; offset >= 0; offset--)
@@ -252,6 +255,9 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         if (args.PropertyName is nameof(DailyPlanSettingsViewModel.NewLimit) or nameof(DailyPlanSettingsViewModel.SoftReviewLimit) or nameof(DailyPlanSettingsViewModel.Plan))
         { Raise(nameof(DailyTarget)); Raise(nameof(RemainingToday)); Raise(nameof(ProgressRatio)); Raise(nameof(EstimatedMinutes)); }
     }
+
+    internal static DateOnly GetDashboardDay(TimeProvider clock) =>
+        DateOnly.FromDateTime((clock ?? throw new ArgumentNullException(nameof(clock))).GetLocalNow().DateTime);
 
     private void Publish(Action action) { if (context is null || context == SynchronizationContext.Current) action(); else context.Post(_ => action(), null); }
     private bool Set<T>(ref T field, T value, [System.Runtime.CompilerServices.CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Raise(name); return true; }

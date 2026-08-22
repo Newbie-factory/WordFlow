@@ -18,7 +18,9 @@ public sealed class LearningHistoryViewModelTests
                 new DailyHistoryEntry(completedDay, 10, 10, 20, 20, 0, true, true),
                 new DailyHistoryEntry(today.AddDays(-1), 2, 10, 3, 20, 0, true, false),
             ]);
-        var viewModel = new LearningHistoryViewModel(store, new FixedTimeProvider(today));
+        var viewModel = new LearningHistoryViewModel(store, new FixedTimeProvider(
+            new DateTimeOffset(2026, 8, 21, 16, 30, 0, TimeSpan.Zero),
+            TimeZoneInfo.CreateCustomTimeZone("UTC+08", TimeSpan.FromHours(8), "UTC+08", "UTC+08")));
 
         await viewModel.LoadAsync(default);
 
@@ -34,20 +36,54 @@ public sealed class LearningHistoryViewModelTests
         Assert.Equal("Completed", completed.FillKey);
         Assert.Contains("已完成", completed.Tooltip);
         Assert.Contains("已完成", completed.AutomationName);
+        Assert.Contains("新词 10/10", completed.Tooltip);
 
         var incomplete = Assert.Single(viewModel.Days, x => x.Day == today.AddDays(-1));
         Assert.Equal("未完成", incomplete.StatusText);
         Assert.Equal("Incomplete", incomplete.FillKey);
+        Assert.Contains("未完成", incomplete.Tooltip);
+        Assert.Contains("新词 2/10", incomplete.AutomationName);
 
         var absent = Assert.Single(viewModel.Days, x => x.Day == today.AddDays(-3));
         Assert.Equal("未开始", absent.StatusText);
         Assert.Equal("Absent", absent.FillKey);
         Assert.True(absent.IsToday is false);
+        Assert.Contains("未开始", absent.Tooltip);
+        Assert.Contains("当天未创建学习计划", absent.AutomationName);
     }
 
-    private sealed class FixedTimeProvider(DateOnly day) : TimeProvider
+    [Fact]
+    public async Task Load_keeps_newer_result_when_an_older_request_finishes_last()
     {
-        public override DateTimeOffset GetUtcNow() => new(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var firstGoal = new TaskCompletionSource<GoalProgress>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstHistory = new TaskCompletionSource<IReadOnlyList<DailyHistoryEntry>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new SequencedDailyQueueStore(firstGoal, firstHistory);
+        var viewModel = new LearningHistoryViewModel(store, new FixedTimeProvider(
+            new DateTimeOffset(2026, 8, 21, 16, 30, 0, TimeSpan.Zero), TimeZoneInfo.Utc));
+
+        Task first = viewModel.LoadAsync(default);
+        Task second = viewModel.LoadAsync(default);
+        await second;
+        firstGoal.SetResult(new GoalProgress(1, 100));
+        firstHistory.SetResult([]);
+        await first;
+
+        Assert.Equal("9 / 100", viewModel.GoalProgressText);
+    }
+
+    [Fact]
+    public void Dashboard_day_boundary_uses_explicit_local_time_provider()
+    {
+        var provider = new FixedTimeProvider(
+            new DateTimeOffset(2026, 8, 21, 16, 30, 0, TimeSpan.Zero),
+            TimeZoneInfo.CreateCustomTimeZone("UTC+08-dashboard", TimeSpan.FromHours(8), "UTC+08-dashboard", "UTC+08-dashboard"));
+        Assert.Equal(new DateOnly(2026, 8, 22), ControlCenterViewModel.GetDashboardDay(provider));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow, TimeZoneInfo localTimeZone) : TimeProvider
+    {
+        public override TimeZoneInfo LocalTimeZone => localTimeZone;
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private sealed class StubDailyQueueStore(GoalProgress goal, IReadOnlyList<DailyHistoryEntry> entries) : IDailyQueueStore
@@ -65,5 +101,20 @@ public sealed class LearningHistoryViewModelTests
             RequestedDayCount = dayCount;
             return Task.FromResult(entries);
         }
+    }
+
+    private sealed class SequencedDailyQueueStore(
+        TaskCompletionSource<GoalProgress> firstGoal,
+        TaskCompletionSource<IReadOnlyList<DailyHistoryEntry>> firstHistory) : IDailyQueueStore
+    {
+        private int calls;
+
+        public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct) => throw new NotSupportedException();
+        public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
+        public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
+        public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Interlocked.Increment(ref calls) == 1
+            ? firstGoal.Task : Task.FromResult(new GoalProgress(9, 100));
+        public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) => Volatile.Read(ref calls) == 1
+            ? firstHistory.Task : Task.FromResult<IReadOnlyList<DailyHistoryEntry>>([]);
     }
 }

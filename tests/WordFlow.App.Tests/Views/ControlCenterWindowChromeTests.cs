@@ -80,7 +80,10 @@ public sealed class ControlCenterWindowChromeTests
 
         var history = document.Descendants(presentation + "ItemsControl")
             .Single(element => (string?)element.Attribute("ItemsSource") == "{Binding LearningHistory.Days}");
-        Assert.Contains(history.Descendants(), element => (string?)element.Attribute("AutomationProperties.Name") == "{Binding AutomationName}");
+        Assert.DoesNotContain(history.Descendants(presentation + "Border"), element =>
+            (string?)element.Attribute("AutomationProperties.Name") == "{Binding AutomationName}");
+        Assert.Contains(history.Descendants(presentation + "TextBlock"), element =>
+            (string?)element.Attribute("AutomationProperties.Name") == "{Binding AutomationName}");
         Assert.Contains(history.Descendants(), element => element.Name.LocalName == "WrapPanel" && (string?)element.Attribute("ItemWidth") is "14" or "15" or "16");
     }
 }
