@@ -109,7 +109,8 @@
 - `card_id`；
 - `kind`：`New`、`Review`、`Relearning`；
 - `origin_day`：遗留任务的原始日期；
-- `status`：`Pending`、`Completed`、`Slashed`；
+- `source_item_id`：跨日结转时指向上一条队列项；
+- `status`：`Pending`、`Completed`、`Slashed`、`CarriedForward`；
 - `completed_event_id`、`created_at`、`completed_at`。
 
 索引覆盖“按日期和状态取下一项”“按卡片查未完成项”“读取 183 天历史”。数据库迁移是幂等的，升级不改变已有学习事件和 FSRS 状态。
@@ -127,7 +128,7 @@
 新一天首次建队列时：
 
 1. 按原队列顺序读取历史未完成项；
-2. 新词遗留优先占用今日新词目标，复习遗留优先占用今日复习目标；
+2. 新词遗留优先占用今日新词目标，复习遗留优先占用今日复习目标；选中的原队列项在同一事务内标记为 `CarriedForward`，新项通过 `source_item_id` 保留完整结转链；
 3. 各类别不足目标时，再从今日 FSRS 到期词和新词候选中补齐；
 4. 遗留数量超过今日目标时，只取今日目标数量，其余保留在有序积压中供后续日期继续承接；
 5. 临近词库结束或当日到期复习不足时，有效目标取实际可用数量，避免出现永远无法完成的计划。

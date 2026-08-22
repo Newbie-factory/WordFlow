@@ -1,6 +1,6 @@
 project: wordflow-windows
 updated_at: 2026-08-22
-current_stage: second_iteration_spec_review
+current_stage: second_iteration_execution_choice
 branch: codex/wordflow-implementation
 artifacts:
   - path: docs/superpowers/specs/2026-08-13-wordflow-windows-design.md
@@ -10,7 +10,9 @@ artifacts:
   - path: docs/testing/2026-08-22-feature-integration-audit.md
     status: verified_audit
   - path: docs/superpowers/specs/2026-08-22-wordflow-second-iteration-design.md
-    status: awaiting_user_written_approval
+    status: approved
+  - path: docs/superpowers/plans/2026-08-22-wordflow-second-iteration-implementation.md
+    status: ready
 decisions:
   - choice: persist_daily_queue_in_sqlite
     by: user
@@ -25,7 +27,11 @@ gates:
     status: PASS
     evidence: user approvals in current task
   - name: second_iteration_written_spec
-    status: PENDING_USER_APPROVAL
+    status: PASS
+    evidence: user approved written specification in current task
+  - name: second_iteration_implementation_plan
+    status: PASS
+    evidence: placeholder scan none and all approved requirements mapped to ten tasks
 known_limitations:
   - Windows exclusive fullscreen, secure desktop, or higher-integrity processes can outrank ordinary desktop topmost windows.
-next_step: Obtain user approval of the written second-iteration specification, then create the implementation plan.
+next_step: Obtain execution-mode choice, then implement the ten-task plan with test-first red/green cycles.
