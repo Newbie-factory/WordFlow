@@ -87,6 +87,24 @@ public sealed class ImageThemeServiceTests
     }
 
     [Fact]
+    public void Stored_image_guard_requires_the_skins_directory_boundary()
+    {
+        string appRoot = Path.Combine(Path.GetTempPath(), "wordflow-app-root");
+        string skinsRoot = Path.Combine(appRoot, "Skins");
+        string skinsImage = Path.Combine(skinsRoot, "theme.png");
+        var normal = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase)
+        {
+            [appRoot] = FileAttributes.Directory,
+            [skinsRoot] = FileAttributes.Directory,
+            [skinsImage] = FileAttributes.Normal,
+        };
+
+        Assert.True(ImageThemeService.IsStoredImagePathSafe(skinsImage, appRoot, skinsRoot, normal.GetValueOrDefault));
+        Assert.False(ImageThemeService.IsStoredImagePathSafe(Path.Combine(appRoot, "Data", "theme.png"), appRoot, skinsRoot, normal.GetValueOrDefault));
+        Assert.False(ImageThemeService.IsStoredImagePathSafe(Path.Combine(appRoot, "Cache", "theme.png"), appRoot, skinsRoot, normal.GetValueOrDefault));
+    }
+
+    [Fact]
     public async Task Import_uses_detected_format_for_managed_copy_and_preserves_exact_opacity()
     {
         string root = Directory.CreateTempSubdirectory("wordflow-theme-").FullName;
@@ -176,6 +194,28 @@ public sealed class ImageThemeServiceTests
             var restored = await new ImageThemeService(paths, store).RestoreAsync();
 
             Assert.Equal(newPath, restored.ImagePath);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("Data")]
+    [InlineData("Cache")]
+    public async Task Restore_rejects_a_valid_image_outside_the_skins_directory(string siblingDirectory)
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-").FullName;
+        try
+        {
+            var (paths, store) = await CreateStoreAsync(root);
+            string imagePath = WritePng(Path.Combine(paths.RootDirectory, siblingDirectory), "theme.png");
+            await store.SetManyAsync(new Dictionary<string, string>
+            {
+                [ImageThemeService.ImagePathKey] = imagePath,
+            }, default);
+
+            var restored = await new ImageThemeService(paths, store).RestoreAsync();
+
+            Assert.True(restored.IsDefault);
         }
         finally { Directory.Delete(root, true); }
     }

@@ -146,10 +146,8 @@ public sealed class ImageThemeService
 
     private bool IsSafeStoredPath(string path)
     {
-        string full;
-        try { full = Path.GetFullPath(path); } catch { return false; }
-        return IsManagedPathWithoutReparse(full, paths.RootDirectory, File.GetAttributes)
-            && HasSupportedExtension(full);
+        return IsStoredImagePathSafe(path, paths.RootDirectory, paths.SkinsDirectory, File.GetAttributes)
+            && HasSupportedExtension(path);
     }
 
     internal static bool IsManagedPathWithoutReparse(string candidatePath, string trustedAppDataRoot, Func<string, FileAttributes> getAttributes)
@@ -174,6 +172,22 @@ public sealed class ImageThemeService
                 if (HasReparsePoint(current, getAttributes)) return false;
             }
             return true;
+        }
+        catch { return false; }
+    }
+
+    internal static bool IsStoredImagePathSafe(
+        string candidatePath,
+        string trustedAppDataRoot,
+        string skinsDirectory,
+        Func<string, FileAttributes> getAttributes)
+    {
+        try
+        {
+            string full = Path.GetFullPath(candidatePath);
+            string skins = Path.GetFullPath(skinsDirectory).TrimEnd(Path.DirectorySeparatorChar);
+            return full.StartsWith(skins + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                && IsManagedPathWithoutReparse(full, trustedAppDataRoot, getAttributes);
         }
         catch { return false; }
     }
