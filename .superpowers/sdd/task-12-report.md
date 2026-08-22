@@ -258,3 +258,46 @@ git diff --check
 ### Remaining environment limitation
 
 - This host still has no physical `en-GB` voice. The real null-output SAPI smoke covers installed `en-US`; GB selection, fallback, connected conflicts, and case normalization are covered through the machine-independent engine seam.
+
+## Final I1 closure — canonical stable-voice identity
+
+The remaining stable-ID half of the conflict graph now uses one explicit `PronunciationVoiceIdentity` comparer (`OrdinalIgnoreCase`) everywhere identity is evaluated: canonical-row dedupe, ID/name graph construction and traversal, quarantine membership, service selection, speech validation, persisted settings restore, and settings-save validation. Ordering and user-facing identifiers remain ordinal/original: a case-variant persisted value is preserved verbatim, while speech resolves it to the exact original inventory ID before crossing the SAPI boundary.
+
+The exact probe `id-a/Shared`, `ID-A/Other`, `id-b/shared` now produces no selectable voice, canonical quarantine metadata `id-a,id-b`, and `UnavailableConflict` with conflict/non-install guidance. The longer mixed-case connected component still quarantines every related ID while unrelated `safe-a` and `safe-z` remain exposed in deterministic culture/ID order. Otherwise identical rows whose stable IDs differ only by case dedupe as one canonical safe row; different metadata under the same canonical ID still seeds conflict.
+
+Persisted-ID regressions cover both an available inventory voice and a quarantined voice. Matching is canonical and case-insensitive, but the persisted/selected spelling is not silently rewritten; the engine receives the original ID from the installed inventory.
+
+### Strict TDD evidence
+
+- The mixed-case probe first leaked `ID-A/Other`, and the longer graph emitted duplicate quarantine metadata `ID-A,id-a,...`.
+- Case-variant selection first fell through to the accent-preferred fallback, and speech rejected the persisted spelling.
+- Settings restore first erased both available and quarantined case-variant persisted IDs; the quarantine branch was independently returned to `Ordinal` to confirm its regression failed before restoring the canonical comparer.
+- A case-only duplicate row first quarantined `safe-z`; canonical-row equality now dedupes it without weakening different-metadata conflict detection.
+
+### Fresh final verification
+
+```text
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WindowsSpeechPronunciationServiceTests"
+  23/23 passed (includes mixed-case graph and guarded real-SAPI null-output smoke)
+
+dotnet test tests\WordFlow.App.Tests\WordFlow.App.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PronunciationSettingsViewModelTests|FullyQualifiedName~BootstrapSequenceTests"
+  26/26 passed
+
+dotnet test tests\WordFlow.Infrastructure.Tests\WordFlow.Infrastructure.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~Real_installed_English_voice_null_output_smoke_is_guarded_and_stops_cleanly"
+  1/1 passed
+
+dotnet test WordFlow.sln -c Release --no-restore
+  482/482 passed (129 Domain, 47 Application, 199 Infrastructure, 107 App)
+
+dotnet build WordFlow.sln -c Release --no-restore
+  0 warnings, 0 errors
+
+python -m unittest discover -s tools\vocabulary\tests -p test_*.py
+  54/54 passed
+
+runtime-network-reference-audit=pass;hits=0
+runtime-url-launch-audit=pass;hits=0
+resolved-package-audit=pass; no remote pronunciation provider
+git diff --check
+  no whitespace errors; line-ending notices only
+```

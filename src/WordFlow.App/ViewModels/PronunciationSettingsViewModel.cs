@@ -105,9 +105,9 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
         string? restoredVoice;
         if (string.IsNullOrWhiteSpace(rawVoice)) restoredVoice = null;
         else if (service.Availability.InventoryState == PronunciationInventoryState.UnavailableFault ||
-                 service.Voices.Any(voice => string.Equals(voice.Id, rawVoice, StringComparison.Ordinal)))
+                 service.Voices.Any(voice => PronunciationVoiceIdentity.Equals(voice.Id, rawVoice)))
             restoredVoice = rawVoice;
-        else if (service.Availability.QuarantinedVoiceIds.Contains(rawVoice, StringComparer.Ordinal))
+        else if (service.Availability.QuarantinedVoiceIds.Contains(rawVoice, PronunciationVoiceIdentity.Comparer))
         {
             restoredVoice = rawVoice;
             issues.Add(PreservedConflictIssue);
@@ -162,8 +162,8 @@ public sealed class PronunciationSettingsViewModel : INotifyPropertyChanged, ICa
             throw new ArgumentOutOfRangeException(nameof(AccentPreference));
         if (service.Availability.InventoryState != PronunciationInventoryState.UnavailableFault &&
             !string.IsNullOrWhiteSpace(SelectedVoiceId) &&
-            service.Voices.All(voice => !string.Equals(voice.Id, SelectedVoiceId, StringComparison.Ordinal)) &&
-            !service.Availability.QuarantinedVoiceIds.Contains(SelectedVoiceId, StringComparer.Ordinal))
+            service.Voices.All(voice => !PronunciationVoiceIdentity.Equals(voice.Id, SelectedVoiceId)) &&
+            !service.Availability.QuarantinedVoiceIds.Contains(SelectedVoiceId, PronunciationVoiceIdentity.Comparer))
             throw new ArgumentException("The selected voice is not an installed English voice.", nameof(SelectedVoiceId));
     }
 

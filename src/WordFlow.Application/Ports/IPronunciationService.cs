@@ -10,6 +10,13 @@ public enum PronunciationAccent
 
 public sealed record PronunciationVoice(string Id, string Name, string CultureName, PronunciationAccent Accent);
 
+public static class PronunciationVoiceIdentity
+{
+    public static StringComparer Comparer { get; } = StringComparer.OrdinalIgnoreCase;
+
+    public static bool Equals(string? left, string? right) => Comparer.Equals(left, right);
+}
+
 public enum PronunciationInventoryState
 {
     AuthoritativeAvailable,

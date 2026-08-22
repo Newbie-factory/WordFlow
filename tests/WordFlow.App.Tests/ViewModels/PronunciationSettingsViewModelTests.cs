@@ -115,6 +115,56 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Persisted_voice_id_uses_canonical_identity_without_rewriting_its_original_spelling()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "voice-id",
+        }, default);
+        using var service = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false, [new("Voice-ID", "Voice", "en-US", true)])));
+        var settings = new PronunciationSettingsViewModel(service, store);
+
+        await settings.RestoreAsync();
+        await settings.SaveAsync();
+        var persisted = await store.GetManyAsync([PronunciationSettingsViewModel.VoiceKey], default);
+
+        Assert.Equal("voice-id", settings.SelectedVoiceId);
+        Assert.Equal("voice-id", persisted[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.Null(settings.SettingsIssue);
+        Assert.Equal("Voice-ID", service.SelectVoice(settings.SelectedVoiceId, PronunciationAccent.Automatic)!.Id);
+    }
+
+    [Fact]
+    public async Task Case_variant_quarantined_voice_id_keeps_its_persisted_spelling_across_unrelated_save()
+    {
+        var store = await StoreAsync();
+        await store.SetManyAsync(new Dictionary<string, string>
+        {
+            [PronunciationSettingsViewModel.VoiceKey] = "ID-A",
+        }, default);
+        using var service = new WindowsSpeechPronunciationService(new TestEngineFactory(
+            new TestSpeechEngine(false,
+            [
+                new("id-a", "First", "en-US", true),
+                new("id-a", "Second", "en-GB", true),
+            ])));
+        var settings = new PronunciationSettingsViewModel(service, store);
+
+        await settings.RestoreAsync();
+        settings.Rate = -4;
+        await settings.SaveAsync();
+        var persisted = await store.GetManyAsync(
+            [PronunciationSettingsViewModel.VoiceKey, PronunciationSettingsViewModel.RateKey], default);
+
+        Assert.Equal("ID-A", settings.SelectedVoiceId);
+        Assert.Equal("ID-A", persisted[PronunciationSettingsViewModel.VoiceKey]);
+        Assert.Equal("-4", persisted[PronunciationSettingsViewModel.RateKey]);
+        Assert.Contains("冲突", settings.SettingsIssue);
+    }
+
+    [Fact]
     public async Task Partial_conflict_preserves_a_quarantined_voice_id_and_later_clean_inventory_recovers_it()
     {
         var store = await StoreAsync();

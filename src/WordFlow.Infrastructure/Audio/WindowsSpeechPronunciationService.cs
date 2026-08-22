@@ -76,7 +76,7 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
     {
         if (!string.IsNullOrWhiteSpace(voiceId))
         {
-            var exact = voices.FirstOrDefault(voice => string.Equals(voice.Id, voiceId, StringComparison.Ordinal));
+            var exact = voices.FirstOrDefault(voice => PronunciationVoiceIdentity.Equals(voice.Id, voiceId));
             if (exact is not null) return exact;
         }
 
@@ -98,7 +98,8 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
         if (volume is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(volume), "Volume must be between 0 and 100.");
         if (!availability.IsAvailable)
             return Task.FromResult(PronunciationPlaybackResult.Unavailable(availability.Message));
-        if (voices.All(voice => !string.Equals(voice.Id, voiceId, StringComparison.Ordinal)))
+        var selectedVoice = voices.FirstOrDefault(voice => PronunciationVoiceIdentity.Equals(voice.Id, voiceId));
+        if (selectedVoice is null)
             throw new ArgumentException("The selected installed English voice is unavailable.", nameof(voiceId));
         if (ct.IsCancellationRequested)
             return Task.FromResult(PronunciationPlaybackResult.Cancelled());
@@ -107,7 +108,7 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
         var pending = new PendingRequest(sequence, Guid.NewGuid(), text, ct);
         if (ct.CanBeCanceled)
             pending.Cancellation = ct.Register(() => QueueCancellation(sequence));
-        if (!TryPostLatest(sequence, () => StartCore(pending, voiceId, rate, volume)))
+        if (!TryPostLatest(sequence, () => StartCore(pending, selectedVoice.Id, rate, volume)))
         {
             pending.Cancellation.Dispose();
             pending.Completion.TrySetResult(PronunciationPlaybackResult.Cancelled());
@@ -297,25 +298,25 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
             candidates.Add(new(voice.Id, voice.Name, cultureName, AccentFor(cultureName)));
         }
 
-        var uniqueCandidates = candidates.Distinct().ToArray();
+        var uniqueCandidates = candidates.Distinct(CanonicalVoiceRowComparer.Instance).ToArray();
         var namesById = uniqueCandidates
-            .GroupBy(voice => voice.Id, StringComparer.Ordinal)
+            .GroupBy(voice => voice.Id, PronunciationVoiceIdentity.Comparer)
             .ToDictionary(
                 group => group.Key,
                 group => group.Select(voice => voice.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
-                StringComparer.Ordinal);
+                PronunciationVoiceIdentity.Comparer);
         var idsByName = uniqueCandidates
             .GroupBy(voice => voice.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
-                group => group.Select(voice => voice.Id).ToHashSet(StringComparer.Ordinal),
+                group => group.Select(voice => voice.Id).ToHashSet(PronunciationVoiceIdentity.Comparer),
                 StringComparer.OrdinalIgnoreCase);
 
         var quarantinedIds = uniqueCandidates
-            .GroupBy(voice => voice.Id, StringComparer.Ordinal)
+            .GroupBy(voice => voice.Id, PronunciationVoiceIdentity.Comparer)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
-            .ToHashSet(StringComparer.Ordinal);
+            .ToHashSet(PronunciationVoiceIdentity.Comparer);
         foreach (var ids in idsByName.Values.Where(ids => ids.Count > 1))
             quarantinedIds.UnionWith(ids);
 
@@ -354,6 +355,29 @@ public sealed class WindowsSpeechPronunciationService : IPronunciationService
         PronunciationAccent.OtherEnglish when voice.Accent == PronunciationAccent.OtherEnglish => 0,
         _ => 2,
     };
+
+    private sealed class CanonicalVoiceRowComparer : IEqualityComparer<PronunciationVoice>
+    {
+        public static CanonicalVoiceRowComparer Instance { get; } = new();
+
+        public bool Equals(PronunciationVoice? left, PronunciationVoice? right) =>
+            ReferenceEquals(left, right) ||
+            left is not null && right is not null &&
+            PronunciationVoiceIdentity.Equals(left.Id, right.Id) &&
+            string.Equals(left.Name, right.Name, StringComparison.Ordinal) &&
+            string.Equals(left.CultureName, right.CultureName, StringComparison.Ordinal) &&
+            left.Accent == right.Accent;
+
+        public int GetHashCode(PronunciationVoice voice)
+        {
+            var hash = new HashCode();
+            hash.Add(voice.Id, PronunciationVoiceIdentity.Comparer);
+            hash.Add(voice.Name, StringComparer.Ordinal);
+            hash.Add(voice.CultureName, StringComparer.Ordinal);
+            hash.Add(voice.Accent);
+            return hash.ToHashCode();
+        }
+    }
 
     private sealed class PendingRequest(long sequence, Guid requestId, string text, CancellationToken cancellationToken)
     {

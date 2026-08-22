@@ -124,23 +124,61 @@ public sealed class WindowsSpeechPronunciationServiceTests
     }
 
     [Fact]
+    public void Mixed_case_stable_id_component_is_canonically_quarantined_and_unavailable()
+    {
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(
+            new FakeSpeechEngine(
+            [
+                new("id-a", "Shared", "en-US", true),
+                new("ID-A", "Other", "en-GB", true),
+                new("id-b", "shared", "en-GB", true),
+            ])));
+
+        Assert.Empty(service.Voices);
+        Assert.Equal(["id-a", "id-b"], service.Availability.QuarantinedVoiceIds);
+        Assert.False(service.Availability.IsAvailable);
+        Assert.Equal(PronunciationInventoryState.UnavailableConflict, service.Availability.InventoryState);
+        Assert.Contains("冲突", service.Availability.Message);
+        Assert.DoesNotContain("安装", service.Availability.Message);
+    }
+
+    [Fact]
     public void Conflict_graph_is_case_insensitive_and_keeps_exact_duplicates_in_deterministic_safe_order()
     {
         using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(
             new FakeSpeechEngine(
             [
                 new("id-a", "Shared", "en-US", true),
-                new("id-a", "Other", "en-GB", true),
+                new("ID-A", "Other", "en-GB", true),
                 new("id-b", "sHaReD", "en-GB", true),
                 new("id-c", "OTHER", "en-AU", true),
                 new("safe-z", "Solo Z", "EN-us", true),
-                new("safe-z", "Solo Z", "en-US", true),
+                new("SAFE-Z", "Solo Z", "en-US", true),
                 new("safe-a", "Solo A", "en-GB", true),
             ])));
 
         Assert.Equal(["safe-a", "safe-z"], service.Voices.Select(voice => voice.Id));
         Assert.Equal(["en-GB", "en-US"], service.Voices.Select(voice => voice.CultureName));
         Assert.Equal(["id-a", "id-b", "id-c"], service.Availability.QuarantinedVoiceIds);
+    }
+
+    [Fact]
+    public async Task Case_variant_voice_id_resolves_to_the_original_inventory_id_for_selection_and_speech()
+    {
+        var engine = new FakeSpeechEngine(
+        [
+            new("Voice-ID", "US Voice", "en-US", true),
+            new("fallback", "GB Voice", "en-GB", true),
+        ]);
+        using var service = new WindowsSpeechPronunciationService(new FakeSpeechEngineFactory(engine));
+
+        Assert.Equal("Voice-ID", service.SelectVoice("voice-id", PronunciationAccent.British)!.Id);
+
+        var speech = service.SpeakAsync("word", "voice-id", 0, 80, default);
+        await engine.WaitForStartsAsync(1);
+        Assert.Equal("Voice-ID", engine.Started[0].VoiceId);
+        engine.Complete(engine.Started[0].RequestId);
+        Assert.Equal(PronunciationPlaybackStatus.Completed, (await speech).Status);
     }
 
     [Theory]
