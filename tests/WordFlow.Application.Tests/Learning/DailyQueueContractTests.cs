@@ -8,6 +8,18 @@ public sealed class DailyQueueContractTests
     private static readonly DateOnly Day = new(2026, 8, 13);
     private static readonly Guid CardId = Guid.Parse("00000000-0000-0000-0000-000000000001");
 
+    [Fact]
+    public void Displayed_cards_and_mutations_require_an_explicit_non_nullable_queue_day()
+    {
+        Assert.Equal(typeof(DateOnly), typeof(NextCard).GetProperty(nameof(NextCard.QueueDay))!.PropertyType);
+        Assert.False(typeof(NextCard).GetConstructors().Single().GetParameters()
+            .Single(parameter => parameter.Name == "QueueDay").HasDefaultValue);
+        Assert.False(typeof(SubmitRatingRequest).GetConstructors().Single().GetParameters()
+            .Single(parameter => parameter.Name == "QueueDay").HasDefaultValue);
+        Assert.False(typeof(SlashWordRequest).GetConstructors().Single().GetParameters()
+            .Single(parameter => parameter.Name == "QueueDay").HasDefaultValue);
+    }
+
     [Theory]
     [InlineData(DailyQueueItemKind.New, DailyQueueItemStatus.Pending)]
     [InlineData(DailyQueueItemKind.Review, DailyQueueItemStatus.Completed)]

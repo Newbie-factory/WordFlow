@@ -5,11 +5,15 @@ namespace WordFlow.Application.Ports;
 
 public interface IDailyQueueStore
 {
+    Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct);
+
     Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct);
 
     Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct);
 
     Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct);
+
+    Task<DateTimeOffset?> GetNextRelearningDueAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct);
 
     Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct);
 

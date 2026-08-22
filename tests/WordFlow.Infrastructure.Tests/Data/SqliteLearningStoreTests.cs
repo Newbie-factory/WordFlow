@@ -51,16 +51,55 @@ public sealed class SqliteLearningStoreTests : IDisposable
             DailyQueueItemStatus.Completed, default);
         await using (var completed = await factory.OpenUserAsync(default))
             Assert.Equal(1L, await ScalarAsync(completed, "SELECT COUNT(*) FROM daily_sessions WHERE completed_at_utc IS NOT NULL"));
-        var undo = await learning.UndoLatestQueuedAsync(
-            new UndoLearningCommand(Id(402), Id(302), Now.AddMinutes(1)), day, default);
+        var undo = await learning.UndoQueuedAsync(
+            new UndoLearningCommand(Id(402), Id(302), Now.AddMinutes(1)), review.EventId, default);
 
         Assert.True(applied.Applied);
+        Assert.Equal(day, applied.QueueDay);
         Assert.True(undo.Applied);
         Assert.Equal(review.Before, undo.Card);
         await using var connection = await factory.OpenUserAsync(default);
         Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
         Assert.Equal(1L, await ScalarAsync(connection, $"SELECT COUNT(*) FROM daily_queue_items WHERE item_id='{item.ItemId:D}' AND status='Pending' AND completed_event_id IS NULL AND completed_at_utc IS NULL"));
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM daily_sessions WHERE completed_at_utc IS NULL"));
+    }
+
+    [Fact]
+    public async Task Queued_undo_targets_the_committed_event_and_actual_queue_day_after_midnight()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("queued-midnight-undo.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var learning = new SqliteLearningStore(factory);
+        var dayOne = DateOnly.FromDateTime(Now.UtcDateTime);
+        var dayTwo = dayOne.AddDays(1);
+        var firstSession = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            dayOne, new DailyPlan(1, 0), [], [Id(1)], Now), default);
+        var firstReview = Review(Id(311), InitialCard(), Rating.Good);
+        await learning.ApplyQueuedAsync(Command(Id(411), firstReview), firstSession.Items[0].ItemId,
+            DailyQueueItemStatus.Completed, default);
+        var secondCard = new CardState(Id(2), null, Now.AddDays(1));
+        var secondSession = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            dayTwo, new DailyPlan(1, 0), [], [Id(2)], Now.AddDays(1)), default);
+        var secondReview = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now.AddDays(1)))
+            .Review(Id(312), secondCard, Rating.Good);
+        await learning.ApplyQueuedAsync(new LearningCommand(Id(412), secondReview, CardProjection.InitialRevision),
+            secondSession.Items[0].ItemId, DailyQueueItemStatus.Completed, default);
+
+        var undo = await learning.UndoQueuedAsync(
+            new UndoLearningCommand(Id(413), Id(313), Now.AddDays(1).AddMinutes(1)),
+            firstReview.EventId,
+            default);
+
+        Assert.Equal(firstReview.Before, undo.Card);
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(1L, await ScalarAsync(connection,
+            $"SELECT COUNT(*) FROM daily_queue_items WHERE completed_event_id IS NULL AND status='Pending' AND item_id='{firstSession.Items[0].ItemId:D}'"));
+        Assert.Equal(1L, await ScalarAsync(connection,
+            $"SELECT COUNT(*) FROM daily_queue_items WHERE completed_event_id='{secondReview.EventId:D}' AND status='Completed'"));
+        Assert.Equal(1L, await ScalarAsync(connection,
+            $"SELECT COUNT(*) FROM daily_sessions WHERE local_day='{dayOne:yyyy-MM-dd}' AND completed_at_utc IS NULL"));
+        Assert.Equal(1L, await ScalarAsync(connection,
+            $"SELECT COUNT(*) FROM daily_sessions WHERE local_day='{dayTwo:yyyy-MM-dd}' AND completed_at_utc IS NOT NULL"));
     }
 
     [Fact]

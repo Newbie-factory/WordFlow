@@ -23,7 +23,7 @@ public sealed class DailyQueueCoordinatorTests
         {
             var result = await firstRun.Submit.HandleAsync(new(
                 Guid.NewGuid(), Guid.NewGuid(), current!.Card, current.Revision,
-                current.QueueItemId, RatingShortcut.F3, new DailyPlan(40, 0)), default);
+                current.QueueItemId, RatingShortcut.F3, current.QueueDay, new DailyPlan(40, 0)), default);
             current = Assert.IsType<Success<LearningTransition>>(result).Value.NextCard;
         }
 
@@ -34,6 +34,23 @@ public sealed class DailyQueueCoordinatorTests
         Assert.Equal(expected.Word.WordId, resumed!.Word.WordId);
         Assert.Equal(expected.QueueItemId, resumed.QueueItemId);
         Assert.Equal(DailyQueueItemKind.New, resumed.QueueKind);
+    }
+
+    [Fact]
+    public async Task Persisted_session_resolves_its_current_item_without_enumerating_queue_candidates()
+    {
+        var clock = new MutableTimeProvider(Now);
+        var queue = new DurableQueueStore();
+        var learning = new DurableLearningStore(queue);
+        var vocabulary = new FakeVocabularyRepository([Word(1), Word(2)]);
+        var firstRun = UseCases(learning, queue, vocabulary, clock);
+        var persisted = await firstRun.Coordinator.GetNextAsync(new DailyPlan(2, 0), default);
+        var reopened = UseCases(learning, queue, new CandidateEnumerationFailureVocabulary(vocabulary), clock);
+
+        var resumed = await reopened.Coordinator.GetNextAsync(new DailyPlan(99, 99), default);
+
+        Assert.Equal(persisted!.QueueItemId, resumed!.QueueItemId);
+        Assert.Equal(persisted.Word.WordId, resumed.Word.WordId);
     }
 
     [Fact]
@@ -49,7 +66,7 @@ public sealed class DailyQueueCoordinatorTests
 
         var result = await useCases.Submit.HandleAsync(new(
             Guid.NewGuid(), Guid.NewGuid(), current!.Card, current.Revision,
-            current.QueueItemId, RatingShortcut.F3, new DailyPlan(2, 0)), default);
+            current.QueueItemId, RatingShortcut.F3, current.QueueDay, new DailyPlan(2, 0)), default);
 
         Assert.IsType<StorageFailure<LearningTransition>>(result);
         Assert.Equal(readsBeforeCommit, queue.PendingReads);
@@ -69,15 +86,43 @@ public sealed class DailyQueueCoordinatorTests
         var eventId = Guid.NewGuid();
         var rated = await useCases.Submit.HandleAsync(new(
             Guid.NewGuid(), eventId, first!.Card, first.Revision,
-            first.QueueItemId, RatingShortcut.F3, new DailyPlan(2, 0)), default);
+            first.QueueItemId, RatingShortcut.F3, first.QueueDay, new DailyPlan(2, 0)), default);
         Assert.NotEqual(first.QueueItemId, Assert.IsType<Success<LearningTransition>>(rated).Value.NextCard!.QueueItemId);
 
-        var undone = await useCases.Undo.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid()), default);
+        var undone = await useCases.Undo.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), eventId), default);
         var restored = await useCases.Coordinator.GetNextAsync(new DailyPlan(2, 0), default);
 
         Assert.IsType<Success<CardState>>(undone);
         Assert.Equal(first.Word.WordId, restored!.Word.WordId);
         Assert.Equal(first.QueueItemId, restored.QueueItemId);
+    }
+
+    [Fact]
+    public async Task Immediate_undo_after_local_midnight_restores_the_event_on_its_actual_queue_day()
+    {
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+08-undo", TimeSpan.FromHours(8), "UTC+08-undo", "UTC+08-undo");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 13, 15, 59, 0, TimeSpan.Zero), zone);
+        var queue = new DurableQueueStore();
+        var learning = new DurableLearningStore(queue);
+        var useCases = UseCases(learning, queue, new FakeVocabularyRepository([Word(1)]), clock);
+        var displayed = Assert.IsType<NextCard>(
+            await useCases.Coordinator.GetNextAsync(new DailyPlan(1, 0), default));
+        var eventId = Guid.NewGuid();
+        var rated = await useCases.Submit.HandleAsync(new(
+            Guid.NewGuid(), eventId, displayed.Card, displayed.Revision,
+            displayed.QueueItemId, RatingShortcut.F3, displayed.QueueDay, new DailyPlan(1, 0)), default);
+        Assert.Equal(new DateOnly(2026, 8, 13),
+            Assert.IsType<Success<LearningTransition>>(rated).Value.CommittedQueueDay);
+
+        clock.UtcNow = new DateTimeOffset(2026, 8, 13, 16, 1, 0, TimeSpan.Zero);
+        var undone = await useCases.Undo.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), eventId), default);
+        var restored = await useCases.Coordinator.GetNextAsync(new DailyPlan(1, 0), default);
+
+        Assert.IsType<Success<CardState>>(undone);
+        Assert.Equal(displayed.Card.Id, restored!.Card.Id);
+        Assert.Equal(new DateOnly(2026, 8, 14), restored.QueueDay);
+        Assert.Equal(displayed.QueueItemId,
+            queue.Sessions[new DateOnly(2026, 8, 14)].Items.Single().SourceItemId);
     }
 
     [Fact]
@@ -90,9 +135,11 @@ public sealed class DailyQueueCoordinatorTests
         var vocabulary = new FakeVocabularyRepository([Word(1), Word(2), Word(3)]);
         var dayOne = UseCases(learning, queue, vocabulary, clock);
         var first = await dayOne.Coordinator.GetNextAsync(new DailyPlan(2, 0), default);
+        var displayed = Assert.IsType<NextCard>(first);
+        Assert.Equal(new DateOnly(2026, 8, 13), displayed.QueueDay);
         var rated = await dayOne.Submit.HandleAsync(new(
-            Guid.NewGuid(), Guid.NewGuid(), first!.Card, first.Revision,
-            first.QueueItemId, RatingShortcut.F3, new DailyPlan(2, 0)), default);
+            Guid.NewGuid(), Guid.NewGuid(), displayed.Card, displayed.Revision,
+            displayed.QueueItemId, RatingShortcut.F3, displayed.QueueDay, new DailyPlan(2, 0)), default);
         var carriedSource = Assert.IsType<Success<LearningTransition>>(rated).Value.NextCard!;
 
         clock.UtcNow = new DateTimeOffset(2026, 8, 13, 16, 1, 0, TimeSpan.Zero);
@@ -102,10 +149,64 @@ public sealed class DailyQueueCoordinatorTests
         var restored = await reopened.Coordinator.GetNextAsync(new DailyPlan(99, 99), default);
 
         Assert.Equal(new DateOnly(2026, 8, 14), dayTwo.Coordinator.CurrentLocalDay);
+        Assert.Equal(new DateOnly(2026, 8, 14), rolled!.QueueDay);
         Assert.Equal(carriedSource.Word.WordId, rolled!.Word.WordId);
         Assert.NotEqual(carriedSource.QueueItemId, rolled.QueueItemId);
         Assert.Equal(rolled.QueueItemId, restored!.QueueItemId);
         Assert.Equal(new DailyPlan(2, 0), queue.Sessions[new DateOnly(2026, 8, 14)].ConfiguredPlan);
+    }
+
+    [Fact]
+    public async Task Midnight_click_does_not_commit_yesterdays_card_when_todays_actual_next_card_differs()
+    {
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+08-midnight", TimeSpan.FromHours(8), "UTC+08-midnight", "UTC+08-midnight");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 13, 15, 59, 0, TimeSpan.Zero), zone);
+        var queue = new DurableQueueStore();
+        var learning = new DurableLearningStore(queue);
+        learning.Seed(new CardState(Id(2), null, new DateTimeOffset(2026, 8, 13, 16, 0, 0, TimeSpan.Zero)));
+        var useCases = UseCases(learning, queue, new FakeVocabularyRepository([Word(1), Word(2)]), clock);
+        var displayed = Assert.IsType<NextCard>(
+            await useCases.Coordinator.GetNextAsync(new DailyPlan(1, 1), default));
+        Assert.Equal(Id(1), displayed.Card.Id);
+
+        clock.UtcNow = new DateTimeOffset(2026, 8, 13, 16, 1, 0, TimeSpan.Zero);
+        var result = await useCases.Submit.HandleAsync(new(
+            Guid.NewGuid(), Guid.NewGuid(), displayed.Card, displayed.Revision,
+            displayed.QueueItemId, RatingShortcut.F3, displayed.QueueDay, new DailyPlan(0, 1)), default);
+
+        var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
+        Assert.Equal(LearningTransitionStatus.QueueDayRolledOver, transition.Status);
+        Assert.Equal(Id(2), transition.NextCard!.Card.Id);
+        Assert.Equal(new DateOnly(2026, 8, 14), transition.NextCard.QueueDay);
+        Assert.Empty(learning.Events);
+        Assert.Equal(DailyQueueItemStatus.Pending,
+            queue.Sessions[new DateOnly(2026, 8, 13)].Items.Single().Status);
+    }
+
+    [Fact]
+    public async Task Midnight_click_maps_the_same_carried_card_to_todays_item_before_committing()
+    {
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+08-carried-click", TimeSpan.FromHours(8), "UTC+08-carried-click", "UTC+08-carried-click");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 13, 15, 59, 0, TimeSpan.Zero), zone);
+        var queue = new DurableQueueStore();
+        var learning = new DurableLearningStore(queue);
+        var useCases = UseCases(learning, queue, new FakeVocabularyRepository([Word(1)]), clock);
+        var displayed = Assert.IsType<NextCard>(
+            await useCases.Coordinator.GetNextAsync(new DailyPlan(1, 0), default));
+
+        clock.UtcNow = new DateTimeOffset(2026, 8, 13, 16, 1, 0, TimeSpan.Zero);
+        var result = await useCases.Submit.HandleAsync(new(
+            Guid.NewGuid(), Guid.NewGuid(), displayed.Card, displayed.Revision,
+            displayed.QueueItemId, RatingShortcut.F3, displayed.QueueDay, new DailyPlan(1, 0)), default);
+
+        var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
+        var today = new DateOnly(2026, 8, 14);
+        Assert.Equal(LearningTransitionStatus.Committed, transition.Status);
+        Assert.Equal(today, transition.CommittedQueueDay);
+        Assert.Single(learning.Events);
+        Assert.Equal(DailyQueueItemStatus.CarriedForward,
+            queue.Sessions[new DateOnly(2026, 8, 13)].Items.Single().Status);
+        Assert.Equal(DailyQueueItemStatus.Completed, queue.Sessions[today].Items.Single().Status);
     }
 
     private static UseCaseSet UseCases(
@@ -149,6 +250,8 @@ public sealed class DailyQueueCoordinatorTests
         public Exception? ApplyQueuedFailure { get; set; }
         public IReadOnlyList<ReviewEvent> Events => queuedEvents.Select(x => x.Event).ToArray();
 
+        public void Seed(CardState card) => cards[card.Id] = card;
+
         public Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct) =>
             ApplyCoreAsync(command, null, null, ct);
 
@@ -178,7 +281,8 @@ public sealed class DailyQueueCoordinatorTests
         public Task<CardState?> GetCardAsync(Guid cardId, CancellationToken ct) => Task.FromResult(cards.GetValueOrDefault(cardId));
         public Task<CardProjection?> GetCardProjectionAsync(Guid cardId, CancellationToken ct) => Task.FromResult(
             cards.TryGetValue(cardId, out var card)
-                ? new CardProjection(card, queuedEvents.Last(x => x.Event.CardId == cardId).Event.EventId)
+                ? new CardProjection(card, queuedEvents.LastOrDefault(x => x.Event.CardId == cardId)?.Event.EventId
+                    ?? CardProjection.InitialRevision)
                 : null);
         public Task<Page<CardState>> GetCardsAsync(PageRequest page, CancellationToken ct)
         {
@@ -191,16 +295,17 @@ public sealed class DailyQueueCoordinatorTests
         public Task<ReviewEvent?> GetLatestUndoableEventAsync(CancellationToken ct) =>
             Task.FromResult(queuedEvents.LastOrDefault()?.Event);
         public Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct) =>
-            UndoLatestQueuedAsync(command, queue.Sessions.Keys.Max(), ct);
-        public Task<CommitResult> UndoLatestQueuedAsync(UndoLearningCommand command, DateOnly localDay, CancellationToken ct)
+            UndoQueuedAsync(command, queuedEvents.Last(x => x.Event.Action != LearningAction.Undo).Event.EventId, ct);
+        public Task<CommitResult> UndoQueuedAsync(UndoLearningCommand command, Guid completedEventId, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             if (commits.TryGetValue(command.CommandId, out var duplicate)) return Task.FromResult(duplicate with { Applied = false });
-            var original = queuedEvents.LastOrDefault(x => x.QueueItemId.HasValue && queue.IsCompletedOn(x.QueueItemId.Value, localDay))
-                ?? throw new LearningNotFoundException("There is no queued action to undo for this day.");
+            var original = queuedEvents.SingleOrDefault(x => x.Event.EventId == completedEventId
+                && x.QueueItemId.HasValue && queue.IsCompleted(x.QueueItemId.Value))
+                ?? throw new LearningNotFoundException("The queued action is not undoable.");
             var undo = new ReviewEvent(command.EventId, original.Event.CardId, command.OccurredAt,
                 LearningAction.Undo, original.Event.After, original.Event.Before, original.Event.EventId);
-            queue.Restore(original.QueueItemId!.Value, original.Event.EventId, localDay);
+            queue.Restore(original.QueueItemId!.Value, original.Event.EventId);
             cards[undo.CardId] = undo.After;
             queuedEvents.Add(new(undo, null));
             var result = new CommitResult(true, undo.EventId, undo.After);
@@ -216,6 +321,9 @@ public sealed class DailyQueueCoordinatorTests
         private readonly Dictionary<DateOnly, Session> sessions = [];
         public IReadOnlyDictionary<DateOnly, DailySessionSnapshot> Sessions => sessions.ToDictionary(x => x.Key, x => x.Value.Snapshot());
         public int PendingReads { get; private set; }
+
+        public Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct) =>
+            Task.FromResult(sessions.TryGetValue(localDay, out var session) ? session.Snapshot() : null);
 
         public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct)
         {
@@ -262,6 +370,8 @@ public sealed class DailyQueueCoordinatorTests
         }
 
         public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => Task.CompletedTask;
+        public Task<DateTimeOffset?> GetNextRelearningDueAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
+            Task.FromResult<DateTimeOffset?>(null);
         public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<DailyHistoryEntry>>([]);
         public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Task.FromResult(new GoalProgress(0, 0));
@@ -274,16 +384,16 @@ public sealed class DailyQueueCoordinatorTests
             Replace(itemId, item with { Status = status, CompletedEventId = eventId, CompletedAt = at });
         }
 
-        public bool IsCompletedOn(Guid itemId, DateOnly day)
+        public bool IsCompleted(Guid itemId)
         {
             var item = Find(itemId);
-            return item.LocalDay == day && item.Status is DailyQueueItemStatus.Completed or DailyQueueItemStatus.Slashed;
+            return item.Status is DailyQueueItemStatus.Completed or DailyQueueItemStatus.Slashed;
         }
 
-        public void Restore(Guid itemId, Guid eventId, DateOnly day)
+        public void Restore(Guid itemId, Guid eventId)
         {
             var item = Find(itemId);
-            if (item.LocalDay != day || item.CompletedEventId != eventId) throw new LearningConcurrencyException(item.CardId);
+            if (item.CompletedEventId != eventId) throw new LearningConcurrencyException(item.CardId);
             Replace(itemId, item with { Status = DailyQueueItemStatus.Pending, CompletedEventId = null, CompletedAt = null });
         }
 
@@ -315,5 +425,18 @@ public sealed class DailyQueueCoordinatorTests
             Task.FromResult(new Page<VocabularySense>([], 0, false, "senses:test"));
         public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) =>
             Task.FromResult(new ExhaustionProbe(true, "senses:test"));
+    }
+
+    private sealed class CandidateEnumerationFailureVocabulary(IVocabularyRepository inner) : IVocabularyRepository
+    {
+        public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
+            throw new IOException("Candidate enumeration must not run for a persisted session.");
+        public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) =>
+            throw new IOException("Candidate enumeration must not run for a persisted session.");
+        public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => inner.GetWordAsync(wordId, ct);
+        public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
+            inner.GetSensesAsync(wordId, page, ct);
+        public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) =>
+            inner.ProbeSensesEndAsync(wordId, offset, snapshotId, ct);
     }
 }

@@ -13,7 +13,8 @@ public sealed record NextCard(
     VocabularyWord Word,
     CurrentPrimarySense? PrimarySense,
     Guid QueueItemId,
-    DailyQueueItemKind QueueKind);
+    DailyQueueItemKind QueueKind,
+    DateOnly QueueDay);
 
 public sealed class GetNextCard
 {
@@ -26,6 +27,21 @@ public sealed class GetNextCard
 
     internal Task<CardProjection?> ResolveProjectionAsync(Guid cardId, CancellationToken ct) =>
         coordinator.ResolveProjectionAsync(cardId, ct);
+
+    internal DateOnly CurrentLocalDay => coordinator.CurrentLocalDay;
+
+    public async Task<UseCaseResult<DateTimeOffset?>> GetNextRelearningDueAsync(CancellationToken ct)
+    {
+        try
+        {
+            return new Success<DateTimeOffset?>(
+                await coordinator.GetNextRelearningDueAsync(ct).ConfigureAwait(false));
+        }
+        catch (TransientStorageException exception)
+        {
+            return new StorageFailure<DateTimeOffset?>(exception.Message);
+        }
+    }
 
     public async Task<UseCaseResult<NextCard?>> HandleAsync(GetNextCardRequest request, CancellationToken ct)
     {

@@ -13,7 +13,13 @@ public sealed record FloatingCardOperations(
     Func<DailyPlan, CancellationToken, Task<UseCaseResult<NextCard?>>> GetNextCard,
     Func<SubmitRatingRequest, CancellationToken, Task<UseCaseResult<LearningTransition>>> SubmitRating,
     Func<SlashWordRequest, CancellationToken, Task<UseCaseResult<LearningTransition>>> SlashWord,
-    Func<UndoLastActionRequest, CancellationToken, Task<UseCaseResult<CardState>>> UndoLastAction);
+    Func<UndoLastActionRequest, CancellationToken, Task<UseCaseResult<CardState>>> UndoLastAction,
+    Func<CancellationToken, Task<UseCaseResult<DateTimeOffset?>>>? GetNextRelearningDue = null);
+
+public sealed class IdleWakeScheduleChangedEventArgs(DateTimeOffset? dueAtUtc) : EventArgs
+{
+    public DateTimeOffset? DueAtUtc { get; } = dueAtUtc;
+}
 
 public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 {
@@ -23,6 +29,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private readonly Func<DailyPlan> planProvider;
     private readonly IFloatingCardActionHost actionHost;
     private readonly ICardPronunciationPlayback? pronunciation;
+    private readonly TimeProvider timeProvider;
     private NextCard? current;
     private string? errorMessage;
     private string accessibleStatus = "准备学习";
@@ -31,6 +38,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private bool disposed;
     private bool isPaused;
     private bool hasNextCardRefreshFailure;
+    private bool isVisible = true;
+    private DateTimeOffset? idleWakeAtUtc;
     private readonly CancellationTokenSource lifetime = new();
     private long generation;
 
@@ -42,7 +51,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         IFloatingCardActionHost? actionHost = null,
         DailyPlan? plan = null,
         ICardPronunciationPlayback? pronunciation = null,
-        Func<DailyPlan>? planProvider = null)
+        Func<DailyPlan>? planProvider = null,
+        TimeProvider? timeProvider = null)
     {
         this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
         Synonyms = synonyms ?? throw new ArgumentNullException(nameof(synonyms));
@@ -50,6 +60,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
         this.actionHost = actionHost ?? FloatingCardActionHost.Unavailable;
         this.pronunciation = pronunciation;
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         this.planProvider = planProvider ?? (() => plan ?? DailyPlan.Default);
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
         Synonyms.ActionRequested += OnRelationActionRequested;
@@ -127,6 +138,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public event EventHandler<RelationActionRequestedEventArgs>? ActionRequested;
+    public event EventHandler<IdleWakeScheduleChangedEventArgs>? IdleWakeScheduleChanged;
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -143,6 +155,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                 case Success<NextCard?> success:
                     SetCurrent(success.Value);
                     AccessibleStatus = success.Value is null ? "今日学习已完成" : $"当前单词 {success.Value.Word.Lemma}";
+                    await RefreshIdleWakeScheduleAsync(linked.Token);
                     break;
                 case StorageFailure<NextCard?> failure:
                     SetFailure("无法加载学习卡", failure.Message);
@@ -160,13 +173,55 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         finally { if (!disposed) IsBusy = false; }
     }
 
+    public Task WakeIdleAsync(CancellationToken ct = default)
+    {
+        if (disposed || IsPaused || !isVisible || IsBusy || HasCard) return Task.CompletedTask;
+        CancelIdleWake();
+        return InitializeAsync(ct);
+    }
+
+    public async Task RefreshIdleWakeScheduleAsync(CancellationToken ct = default)
+    {
+        if (disposed || IsPaused || !isVisible || HasCard)
+        {
+            CancelIdleWake();
+            return;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        DateTimeOffset? relearningDue = null;
+        if (operations.GetNextRelearningDue is not null)
+        {
+            try
+            {
+                var result = await operations.GetNextRelearningDue(ct);
+                relearningDue = result is Success<DateTimeOffset?> success
+                    ? success.Value
+                    : now.AddMinutes(1);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { relearningDue = now.AddMinutes(1); }
+        }
+
+        var midnight = NextLocalMidnightUtc();
+        SetIdleWake(relearningDue is { } due && due < midnight ? due : midnight);
+    }
+
+    public void SetVisible(bool visible)
+    {
+        if (disposed || isVisible == visible) return;
+        isVisible = visible;
+        if (!visible) CancelIdleWake();
+        else _ = RefreshIdleWakeAfterLifecycleAsync();
+    }
+
     public Task RateAsync(RatingShortcut rating, CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SubmitRating(
-            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, rating, planProvider()), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, rating, card.QueueDay, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public Task SlashAsync(CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SlashWord(
-            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, planProvider()), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, card.QueueItemId, card.QueueDay, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public async Task UndoAsync(CancellationToken ct = default)
     {
@@ -177,7 +232,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
             var operationGeneration = generation;
-            var result = await operations.UndoLastAction(new(Guid.NewGuid(), Guid.NewGuid()), linked.Token);
+            var result = await operations.UndoLastAction(
+                new(Guid.NewGuid(), Guid.NewGuid(), lastEventId.Value), linked.Token);
             if (disposed || generation != operationGeneration) return;
             switch (result)
             {
@@ -220,6 +276,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         if (disposed) return;
         disposed = true;
         generation++;
+        CancelIdleWake();
         lifetime.Cancel();
         shortcutLabels.PropertyChanged -= OnShortcutLabelsChanged;
         Synonyms.ActionRequested -= OnRelationActionRequested;
@@ -253,7 +310,16 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             switch (result)
             {
                 case Success<LearningTransition> success:
-                    if (eventIdOnSuccess) lastEventId = eventId;
+                    if (success.Value.Status == LearningTransitionStatus.QueueDayRolledOver)
+                    {
+                        SetCurrent(success.Value.NextCard);
+                        AccessibleStatus = success.Value.NextCard is null
+                            ? "日期已切换；上一日卡片未提交，今日暂无待学习单词"
+                            : $"日期已切换；上一日卡片未提交，请重新评分今日单词 {success.Value.NextCard.Word.Lemma}";
+                        await RefreshIdleWakeScheduleAsync(linked.Token);
+                        break;
+                    }
+                    if (eventIdOnSuccess) lastEventId = success.Value.CommittedEventId ?? eventId;
                     Synonyms.Reset();
                     Confusables.Reset();
                     if (success.Value.RefreshStatus == NextCardRefreshStatus.Failed)
@@ -271,6 +337,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
                             ? "学习记录已保存，今日队列已完成"
                             : $"学习记录已保存，下一词 {success.Value.NextCard.Word.Lemma}";
                     }
+                    await RefreshIdleWakeScheduleAsync(linked.Token);
                     break;
                 case StorageFailure<LearningTransition> failure: SetFailure("学习记录未保存", failure.Message); break;
                 case NotFound<LearningTransition> failure: SetFailure("学习记录未保存", failure.Message); break;
@@ -302,10 +369,12 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         if (disposed || generation != operationGeneration) return;
         if (result is Success<NextCard?> success) SetCurrent(success.Value);
         else if (result is StorageFailure<NextCard?> failure) SetFailure("已撤销，但无法刷新学习卡", failure.Message);
+        await RefreshIdleWakeScheduleAsync(ct);
     }
 
     private void SetCurrent(NextCard? next, bool refreshFailed = false)
     {
+        CancelIdleWake();
         generation++;
         current = next;
         hasNextCardRefreshFailure = refreshFailed;
@@ -369,14 +438,47 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(CanRate));
         if (paused)
         {
+            CancelIdleWake();
             Synonyms.Close();
             Confusables.Close();
             AccessibleStatus = "学习已暂停";
         }
-        else AccessibleStatus = current is not null
-            ? $"当前单词 {current.Word.Lemma}"
-            : hasNextCardRefreshFailure ? "学习记录已保存，但下一词暂时无法加载" : "今日学习已完成";
+        else
+        {
+            AccessibleStatus = current is not null
+                ? $"当前单词 {current.Word.Lemma}"
+                : hasNextCardRefreshFailure ? "学习记录已保存，但下一词暂时无法加载" : "今日学习已完成";
+            _ = RefreshIdleWakeAfterLifecycleAsync();
+        }
         RaiseCommandStates();
+    }
+
+    private async Task RefreshIdleWakeAfterLifecycleAsync()
+    {
+        try { await RefreshIdleWakeScheduleAsync(lifetime.Token); }
+        catch (OperationCanceledException) { }
+    }
+
+    private DateTimeOffset NextLocalMidnightUtc()
+    {
+        var tomorrow = DateOnly.FromDateTime(timeProvider.GetLocalNow().DateTime)
+            .AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Unspecified);
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(tomorrow, timeProvider.LocalTimeZone), TimeSpan.Zero);
+    }
+
+    private void SetIdleWake(DateTimeOffset dueAtUtc)
+    {
+        dueAtUtc = dueAtUtc.ToUniversalTime();
+        if (idleWakeAtUtc == dueAtUtc) return;
+        idleWakeAtUtc = dueAtUtc;
+        IdleWakeScheduleChanged?.Invoke(this, new(dueAtUtc));
+    }
+
+    private void CancelIdleWake()
+    {
+        if (idleWakeAtUtc is null) return;
+        idleWakeAtUtc = null;
+        IdleWakeScheduleChanged?.Invoke(this, new(null));
     }
 
     private AsyncActionCommand Command(Func<Task> execute, Func<bool> canExecute) =>

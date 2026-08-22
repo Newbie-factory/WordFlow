@@ -98,6 +98,99 @@ public sealed class FloatingCardViewModelTests
     }
 
     [Fact]
+    public async Task Idle_wake_after_false_complete_reloads_the_due_relearning_card_without_another_mutation()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 13, 8, 0, 0, TimeSpan.Zero));
+        var dueAt = clock.GetUtcNow().AddMinutes(10);
+        var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
+        var relearning = initial with { QueueItemId = Guid.NewGuid(), QueueKind = DailyQueueItemKind.Relearning };
+        var loads = 0;
+        DateTimeOffset? scheduledWake = null;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var operations = new FloatingCardOperations(
+            (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(++loads == 1 ? initial : relearning)),
+            (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(
+                new Success<LearningTransition>(new(initial.Card, null))),
+            (_, _) => throw new NotSupportedException(),
+            (_, _) => throw new NotSupportedException(),
+            _ => Task.FromResult<UseCaseResult<DateTimeOffset?>>(new Success<DateTimeOffset?>(dueAt)));
+        using var viewModel = new FloatingCardViewModel(
+            operations,
+            EmptyDrawer("近义辨析", "暂无可靠近义词"),
+            EmptyDrawer("形近易混", "暂无可靠易混词"),
+            labels,
+            timeProvider: clock);
+        viewModel.IdleWakeScheduleChanged += (_, args) => scheduledWake = args.DueAtUtc;
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F1);
+
+        Assert.False(viewModel.HasCard);
+        Assert.Equal(dueAt, scheduledWake);
+        clock.UtcNow = dueAt.AddSeconds(1);
+        await viewModel.WakeIdleAsync();
+        Assert.True(viewModel.HasCard);
+        Assert.Equal(DailyQueueItemKind.Relearning, relearning.QueueKind);
+        Assert.Equal("abate", viewModel.Word);
+        Assert.DoesNotContain("今日学习已完成", viewModel.AccessibleStatus);
+    }
+
+    [Fact]
+    public async Task Idle_wake_at_local_midnight_builds_the_new_day_without_user_action()
+    {
+        var zone = TimeZoneInfo.CreateCustomTimeZone("UTC+08-vm-midnight", TimeSpan.FromHours(8), "UTC+08-vm-midnight", "UTC+08-vm-midnight");
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 8, 13, 15, 59, 0, TimeSpan.Zero), zone);
+        var todayCard = Card(2, "bolster", "/ˈbəʊlstə/", "支持") with
+        {
+            QueueDay = new DateOnly(2026, 8, 14),
+        };
+        var loads = 0;
+        DateTimeOffset? scheduledWake = null;
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        var operations = new FloatingCardOperations(
+            (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(++loads == 1 ? null : todayCard)),
+            (_, _) => throw new NotSupportedException(),
+            (_, _) => throw new NotSupportedException(),
+            (_, _) => throw new NotSupportedException(),
+            _ => Task.FromResult<UseCaseResult<DateTimeOffset?>>(new Success<DateTimeOffset?>(null)));
+        using var viewModel = new FloatingCardViewModel(
+            operations,
+            EmptyDrawer("近义辨析", "暂无可靠近义词"),
+            EmptyDrawer("形近易混", "暂无可靠易混词"),
+            labels,
+            timeProvider: clock);
+        viewModel.IdleWakeScheduleChanged += (_, args) => scheduledWake = args.DueAtUtc;
+
+        await viewModel.InitializeAsync();
+
+        Assert.Equal(new DateTimeOffset(2026, 8, 13, 16, 0, 0, TimeSpan.Zero), scheduledWake);
+        clock.UtcNow = scheduledWake!.Value.AddSeconds(1);
+        await viewModel.WakeIdleAsync();
+        Assert.Equal("bolster", viewModel.Word);
+        Assert.Equal(2, loads);
+    }
+
+    [Fact]
+    public async Task Rollover_transition_shows_todays_actual_card_and_announces_that_the_click_was_not_committed()
+    {
+        var yesterday = Card(1, "abate", "/əˈbeɪt/", "减轻") with { QueueDay = new DateOnly(2026, 8, 13) };
+        var today = Card(2, "bolster", "/ˈbəʊlstə/", "支持") with { QueueDay = new DateOnly(2026, 8, 14) };
+        using var labels = new ShortcutLabelMap(new FakeShortcutService());
+        using var viewModel = CreateViewModel(labels, yesterday,
+            submit: (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(
+                new Success<LearningTransition>(new(
+                    yesterday.Card, today, Status: LearningTransitionStatus.QueueDayRolledOver))));
+        await viewModel.InitializeAsync();
+
+        await viewModel.RateAsync(RatingShortcut.F3);
+
+        Assert.Equal("bolster", viewModel.Word);
+        Assert.Contains("上一日卡片未提交", viewModel.AccessibleStatus);
+        Assert.Contains("请重新评分", viewModel.AccessibleStatus);
+        Assert.False(viewModel.UndoCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Rating_forwards_the_exact_current_queue_item_identity()
     {
         var queueItemId = Guid.NewGuid();
@@ -131,6 +224,7 @@ public sealed class FloatingCardViewModelTests
     {
         var initial = Card(1, "abate", "/əˈbeɪt/", "减轻");
         Guid? ratingEventId = null;
+        var committedEventId = Guid.NewGuid();
         UndoLastActionRequest? undoRequest = null;
         using var labels = new ShortcutLabelMap(new FakeShortcutService());
         var operations = new FloatingCardOperations(
@@ -139,7 +233,9 @@ public sealed class FloatingCardViewModelTests
             {
                 ratingEventId = request.EventId;
                 return Task.FromResult<UseCaseResult<LearningTransition>>(
-                    new Success<LearningTransition>(new(initial.Card, initial)));
+                    new Success<LearningTransition>(new(initial.Card, initial,
+                        CommittedEventId: committedEventId,
+                        CommittedQueueDay: new DateOnly(2026, 8, 13))));
             },
             (_, _) => throw new NotSupportedException(),
             (request, _) =>
@@ -160,6 +256,7 @@ public sealed class FloatingCardViewModelTests
         Assert.NotNull(ratingEventId);
         Assert.NotNull(undoRequest);
         Assert.NotEqual(ratingEventId, undoRequest!.EventId);
+        Assert.Equal(committedEventId, undoRequest.CompletedEventId);
     }
 
     [Fact]
@@ -446,7 +543,7 @@ public sealed class FloatingCardViewModelTests
     {
         var state = new CardState(Id(index), null, DateTimeOffset.UtcNow);
         return new(state, Guid.NewGuid(), new VocabularyWord(Id(index), word, index, true, phonetic, chinese),
-            null, Id(1000 + index), DailyQueueItemKind.New);
+            null, Id(1000 + index), DailyQueueItemKind.New, new DateOnly(2026, 8, 13));
     }
 
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
@@ -487,5 +584,12 @@ public sealed class FloatingCardViewModelTests
         public void OnCardChanged(Guid? wordId, string? word, bool isPaused) => CardWords.Add(word);
         public void SetPaused(bool paused) => PauseStates.Add(paused);
         public void Stop() => CardWords.Add(null);
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset utcNow, TimeZoneInfo? zone = null) : TimeProvider
+    {
+        public DateTimeOffset UtcNow { get; set; } = utcNow;
+        public override DateTimeOffset GetUtcNow() => UtcNow;
+        public override TimeZoneInfo LocalTimeZone => zone ?? TimeZoneInfo.Utc;
     }
 }

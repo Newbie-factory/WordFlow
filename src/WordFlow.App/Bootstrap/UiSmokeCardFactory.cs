@@ -20,7 +20,8 @@ internal static class UiSmokeCardFactory
         var next = new NextCard(card, Guid.Parse("1803b0c0-34a4-4eca-b8c1-84f1499aa101"),
             new VocabularyWord(id, "meticulous", 4242, true, "/məˈtɪkjələs/", "一丝不苟的；极其仔细的", "careful and precise", "a"),
             new CurrentPrimarySense("smoke-primary", "careful and precise", "a", false),
-            Guid.Parse("38589214-bb3a-4375-a8af-f21bef731953"), DailyQueueItemKind.New);
+            Guid.Parse("38589214-bb3a-4375-a8af-f21bef731953"), DailyQueueItemKind.New,
+            DateOnly.FromDateTime(DateTime.Today));
         var operations = new FloatingCardOperations(
             (_, _) => Task.FromResult<UseCaseResult<NextCard?>>(new Success<NextCard?>(next)),
             (_, _) => Task.FromResult<UseCaseResult<LearningTransition>>(new Success<LearningTransition>(new(card, next))),

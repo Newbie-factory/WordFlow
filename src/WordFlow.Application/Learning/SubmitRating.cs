@@ -13,6 +13,7 @@ public sealed record SubmitRatingRequest(
     Guid ExpectedRevision,
     Guid QueueItemId,
     RatingShortcut Shortcut,
+    DateOnly QueueDay,
     DailyPlan? Plan = null);
 
 public enum NextCardRefreshStatus
@@ -21,11 +22,20 @@ public enum NextCardRefreshStatus
     Failed,
 }
 
+public enum LearningTransitionStatus
+{
+    Committed,
+    QueueDayRolledOver,
+}
+
 public sealed record LearningTransition(
     CardState Card,
     NextCard? NextCard,
     NextCardRefreshStatus RefreshStatus = NextCardRefreshStatus.Resolved,
-    string? RefreshFailureMessage = null);
+    string? RefreshFailureMessage = null,
+    LearningTransitionStatus Status = LearningTransitionStatus.Committed,
+    Guid? CommittedEventId = null,
+    DateOnly? CommittedQueueDay = null);
 
 public sealed class SubmitRating
 {
@@ -53,6 +63,7 @@ public sealed class SubmitRating
         return await LearningMutation.CommitAndAdvanceAsync(
             store, nextCard, request.CommandId, request.EventId, request.ExpectedCard, request.ExpectedRevision,
             request.QueueItemId, DailyQueueItemStatus.Completed,
-            card => actions.Review(request.EventId, card, rating), request.Plan ?? DailyPlan.Default, ct).ConfigureAwait(false);
+            card => actions.Review(request.EventId, card, rating), request.Plan ?? DailyPlan.Default,
+            request.QueueDay, ct).ConfigureAwait(false);
     }
 }

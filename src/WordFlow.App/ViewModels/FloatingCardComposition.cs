@@ -33,7 +33,8 @@ public static class FloatingCardComposition
             (plan, ct) => getNextCard.HandleAsync(new(plan), ct),
             submitRating.HandleAsync,
             slashWord.HandleAsync,
-            undoLastAction.HandleAsync);
+            undoLastAction.HandleAsync,
+            getNextCard.GetNextRelearningDueAsync);
         var synonyms = new RelationDrawerViewModel(
             "近义辨析", "暂无可靠近义词",
             async (wordId, ct) => MapSynonyms(await getSynonyms.HandleAsync(new(wordId), ct)), actionHost, usesSenseGroups: true);

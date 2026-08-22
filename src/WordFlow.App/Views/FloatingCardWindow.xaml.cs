@@ -31,6 +31,7 @@ public partial class FloatingCardWindow : Window
     private readonly ThemeSettingsViewModel? themeSettings;
     private readonly ThemeImageCache themeImageCache = new();
     private readonly DispatcherTimer? placementSaveTimer;
+    private readonly IdleWakeController? idleWakeController;
     private readonly CancellationTokenSource lifetime = new();
     private readonly HashSet<Task> pendingOperations = [];
     private HwndSource? source;
@@ -78,6 +79,12 @@ public partial class FloatingCardWindow : Window
 
         placementSaveTimer = new(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(300) };
         placementSaveTimer.Tick += (_, _) => { placementSaveTimer.Stop(); SavePlacement(); };
+        idleWakeController = new(new DispatcherIdleWakeTickSource(Dispatcher), TimeProvider.System)
+        {
+            Visible = IsVisible,
+        };
+        idleWakeController.Wake += OnIdleWake;
+        viewModel.IdleWakeScheduleChanged += OnIdleWakeScheduleChanged;
     }
 
     public FloatingCardWindow(FloatingCardViewModel viewModel, IShortcutService shortcutService,
@@ -108,12 +115,15 @@ public partial class FloatingCardWindow : Window
     public void SetPaused(bool paused)
     {
         viewModel?.SetPaused(paused);
+        if (idleWakeController is not null) idleWakeController.Paused = paused;
         if (paused) CloseDrawers();
     }
 
     public void PrepareForHide()
     {
         if (topmostController is not null) topmostController.Visible = false;
+        if (idleWakeController is not null) idleWakeController.Visible = false;
+        viewModel?.SetVisible(false);
         CloseDrawers();
     }
 
@@ -158,8 +168,13 @@ public partial class FloatingCardWindow : Window
         if (args.NewValue is not true)
         {
             if (topmostController is not null) topmostController.Visible = false;
+            if (idleWakeController is not null) idleWakeController.Visible = false;
+            viewModel?.SetVisible(false);
             return;
         }
+
+        if (idleWakeController is not null) idleWakeController.Visible = true;
+        viewModel?.SetVisible(true);
 
         if (topmostController is not null)
         {
@@ -274,6 +289,12 @@ public partial class FloatingCardWindow : Window
         if (viewModel is not null && !viewModel.IsPaused) Track(viewModel.HandleShortcutAsync(action, lifetime.Token));
     }
     private void OnActionRequested(object? sender, RelationActionRequestedEventArgs args) => RelationActionRequested?.Invoke(this, args);
+    private void OnIdleWakeScheduleChanged(object? sender, IdleWakeScheduleChangedEventArgs args) =>
+        idleWakeController?.Schedule(args.DueAtUtc);
+    private void OnIdleWake(object? sender, EventArgs args)
+    {
+        if (viewModel is not null) Track(viewModel.WakeIdleAsync(lifetime.Token));
+    }
     private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? ImageTheme.Default);
     private void OnThemeFeedback(string message) { }
 
@@ -347,6 +368,11 @@ public partial class FloatingCardWindow : Window
     {
         if (placementService is null || applyingPlacement || !IsLoaded || closing) return;
         placementSaveTimer?.Stop();
+        if (idleWakeController is not null)
+        {
+            idleWakeController.Wake -= OnIdleWake;
+            idleWakeController.Dispose();
+        }
         placementSaveTimer?.Start();
     }
     private void SavePlacement()
@@ -441,7 +467,12 @@ public partial class FloatingCardWindow : Window
             shortcutFaultConnection?.Dispose();
             focusedShortcuts.Dispose();
         }
-        if (viewModel is not null) { viewModel.ActionRequested -= OnActionRequested; viewModel.Dispose(); }
+        if (viewModel is not null)
+        {
+            viewModel.ActionRequested -= OnActionRequested;
+            viewModel.IdleWakeScheduleChanged -= OnIdleWakeScheduleChanged;
+            viewModel.Dispose();
+        }
         if (themeSettings is not null) { themeSettings.ThemeChanged -= OnThemeChanged; themeSettings.Feedback -= OnThemeFeedback; }
         lifetime.Dispose();
     }
@@ -467,6 +498,44 @@ public partial class FloatingCardWindow : Window
             if (disposed) return;
             timer.Interval = interval;
             if (!timer.IsEnabled) timer.Start();
+        }
+
+        public void Stop()
+        {
+            if (!disposed) timer.Stop();
+        }
+
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            timer.Stop();
+            timer.Tick -= OnTimerTick;
+            Tick = null;
+        }
+
+        private void OnTimerTick(object? sender, EventArgs args) => Tick?.Invoke(this, args);
+    }
+
+    private sealed class DispatcherIdleWakeTickSource : IIdleWakeTickSource
+    {
+        private readonly DispatcherTimer timer;
+        private bool disposed;
+
+        public DispatcherIdleWakeTickSource(Dispatcher dispatcher)
+        {
+            timer = new(DispatcherPriority.Background, dispatcher);
+            timer.Tick += OnTimerTick;
+        }
+
+        public event EventHandler? Tick;
+
+        public void Start(TimeSpan interval)
+        {
+            if (disposed) return;
+            timer.Stop();
+            timer.Interval = interval;
+            timer.Start();
         }
 
         public void Stop()

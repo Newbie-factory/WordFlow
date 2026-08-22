@@ -234,6 +234,26 @@ public sealed class SqliteDailyQueueStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Pending_same_day_again_exposes_its_exact_durable_wake_time_until_materialized()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("relearning-wake.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var learning = new SqliteLearningStore(factory);
+        var snapshot = await queue.GetOrCreateAsync(Seed(Today, 0, 1, reviews: [Id(1)]), default);
+        var card = new CardState(Id(1), null, Now);
+        var again = new LearningActions(new Fsrs6Scheduler(), new FixedTimeProvider(Now)).Review(Id(511), card, Rating.Again);
+        await learning.ApplyQueuedAsync(new LearningCommand(Id(611), again, CardProjection.InitialRevision),
+            snapshot.Items[0].ItemId, DailyQueueItemStatus.Completed, default);
+
+        var wakeAt = await queue.GetNextRelearningDueAsync(Today, Now, default);
+
+        Assert.Equal(again.After.DueAt, wakeAt);
+        await queue.EnsureDueRelearningAsync(Today, again.After.DueAt, default);
+        Assert.Null(await queue.GetNextRelearningDueAsync(Today, again.After.DueAt, default));
+        Assert.Equal(Id(1), (await queue.GetNextPendingAsync(Today, again.After.DueAt, default))!.CardId);
+    }
+
+    [Fact]
     public async Task History_returns_every_one_of_183_dates_and_fills_absent_days()
     {
         var factory = await CreateMigratedFactoryAsync(Database("history.db"));

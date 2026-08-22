@@ -3,7 +3,7 @@ using WordFlow.Domain.Learning;
 
 namespace WordFlow.Application.Learning;
 
-public sealed record UndoLastActionRequest(Guid CommandId, Guid EventId);
+public sealed record UndoLastActionRequest(Guid CommandId, Guid EventId, Guid CompletedEventId);
 
 public sealed class UndoLastAction
 {
@@ -22,9 +22,9 @@ public sealed class UndoLastAction
         try
         {
             var localNow = timeProvider.GetLocalNow();
-            var commit = await store.UndoLatestQueuedAsync(new UndoLearningCommand(
+            var commit = await store.UndoQueuedAsync(new UndoLearningCommand(
                 request.CommandId, request.EventId, localNow.ToUniversalTime()),
-                DateOnly.FromDateTime(localNow.DateTime), ct).ConfigureAwait(false);
+                request.CompletedEventId, ct).ConfigureAwait(false);
             return new Success<CardState>(commit.Card);
         }
         catch (LearningNotFoundException exception) { return new NotFound<CardState>(exception.Message); }

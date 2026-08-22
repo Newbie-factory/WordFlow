@@ -26,7 +26,7 @@ public sealed class DurableDailyLearningIntegrationTests : IDisposable
         {
             var result = await firstRun.Submit.HandleAsync(new(
                 Guid.NewGuid(), Guid.NewGuid(), current!.Card, current.Revision,
-                current.QueueItemId, RatingShortcut.F3, new DailyPlan(40, 0)), default);
+                current.QueueItemId, RatingShortcut.F3, current.QueueDay, new DailyPlan(40, 0)), default);
             current = Assert.IsType<Success<LearningTransition>>(result).Value.NextCard;
         }
 
@@ -53,7 +53,7 @@ public sealed class DurableDailyLearningIntegrationTests : IDisposable
 
         var result = await failing.Submit.HandleAsync(new(
             Guid.NewGuid(), Guid.NewGuid(), current!.Card, current.Revision,
-            current.QueueItemId, RatingShortcut.F3, new DailyPlan(2, 0)), default);
+            current.QueueItemId, RatingShortcut.F3, current.QueueDay, new DailyPlan(2, 0)), default);
         var reopened = Runtime(paths, clock);
         var resumed = await reopened.Coordinator.GetNextAsync(new DailyPlan(2, 0), default);
 

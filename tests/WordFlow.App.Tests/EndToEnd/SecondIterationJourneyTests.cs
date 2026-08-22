@@ -45,7 +45,7 @@ public sealed class SecondIterationJourneyTests : IDisposable
             {
                 var result = await submit.HandleAsync(new SubmitRatingRequest(
                     Guid.NewGuid(), Guid.NewGuid(), current.Card, current.Revision,
-                    current.QueueItemId, RatingShortcut.F3, Plan), default);
+                    current.QueueItemId, RatingShortcut.F3, current.QueueDay, Plan), default);
                 current = Assert.IsType<NextCard>(Assert.IsType<Success<LearningTransition>>(result).Value.NextCard);
             }
 
@@ -78,7 +78,7 @@ public sealed class SecondIterationJourneyTests : IDisposable
             GoalProgress beforeSlash = await queueStore.GetGoalProgressAsync(default);
             var slashResult = await reopened.GetRequiredService<SlashWord>().HandleAsync(new SlashWordRequest(
                 Guid.NewGuid(), Guid.NewGuid(), dayTwoCard.Card, dayTwoCard.Revision,
-                dayTwoCard.QueueItemId, Plan), default);
+                dayTwoCard.QueueItemId, dayTwoCard.QueueDay, Plan), default);
             CardState slashedCard = Assert.IsType<Success<LearningTransition>>(slashResult).Value.Card;
             GoalProgress afterSlash = await queueStore.GetGoalProgressAsync(default);
             Assert.Equal(beforeSlash.SlashedWords + 1, afterSlash.SlashedWords);

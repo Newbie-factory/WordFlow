@@ -9,6 +9,7 @@ namespace WordFlow.Application.Tests.Learning;
 public sealed class LearningUseCaseTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 14, 8, 0, 0, TimeSpan.Zero);
+    private static readonly DateOnly QueueDay = DateOnly.FromDateTime(Now.UtcDateTime);
 
     [Fact]
     public void Interactive_learning_command_requires_an_explicit_non_nullable_revision()
@@ -32,7 +33,7 @@ public sealed class LearningUseCaseTests
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
         await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current, CardProjection.InitialRevision, QueueItem(current.Id), shortcut), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), current, CardProjection.InitialRevision, QueueItem(current.Id), shortcut, QueueDay), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(expected, Assert.Single(store.Applied).Event.Action switch
@@ -54,7 +55,7 @@ public sealed class LearningUseCaseTests
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => handler.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), (RatingShortcut)99), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), (RatingShortcut)99, QueueDay), default));
 
         Assert.Empty(store.Applied);
         Assert.Equal(0, store.CardPageReads);
@@ -67,7 +68,7 @@ public sealed class LearningUseCaseTests
         var queue = Queue(store, [Word(1), Word(2)]);
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3, QueueDay), default);
 
         Assert.IsType<StorageFailure<LearningTransition>>(result);
         Assert.Equal(0, store.CardPageReads);
@@ -84,7 +85,7 @@ public sealed class LearningUseCaseTests
 
         var result = await handler.HandleAsync(new(
             Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision,
-            QueueItem(Id(1)), RatingShortcut.F3), default);
+            QueueItem(Id(1)), RatingShortcut.F3, QueueDay), default);
 
         var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
         Assert.Equal(NextCardRefreshStatus.Failed, transition.RefreshStatus);
@@ -102,7 +103,7 @@ public sealed class LearningUseCaseTests
         var handler = new SlashWord(store, queue, Clock());
         await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1))), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), QueueDay), default);
 
         var success = Assert.IsType<Success<LearningTransition>>(result);
         Assert.Equal(LearningAction.Slash, Assert.Single(store.Applied).Event.Action);
@@ -156,8 +157,8 @@ public sealed class LearningUseCaseTests
         var eventId = Guid.NewGuid();
         var handler = new UndoLastAction(store, Clock());
 
-        var first = await handler.HandleAsync(new(commandId, eventId), default);
-        var second = await handler.HandleAsync(new(commandId, Guid.NewGuid()), default);
+        var first = await handler.HandleAsync(new(commandId, eventId, original.EventId), default);
+        var second = await handler.HandleAsync(new(commandId, Guid.NewGuid(), original.EventId), default);
 
         var restored = Assert.IsType<Success<CardState>>(first).Value;
         Assert.False(restored.Slash.IsSlashed);
@@ -175,12 +176,12 @@ public sealed class LearningUseCaseTests
         var submit = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
 
         Assert.IsType<NotFound<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1, QueueDay), default));
 
         store.Cards[Id(1)] = Card(1);
         store.ApplyFailure = new LearningConcurrencyException(Id(1));
         Assert.IsType<Conflict<LearningTransition>>(await submit.HandleAsync(
-            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1), default));
+            new(Guid.NewGuid(), Guid.NewGuid(), Card(1), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F1, QueueDay), default));
     }
 
     [Fact]
@@ -191,7 +192,7 @@ public sealed class LearningUseCaseTests
         var handler = new SubmitRating(store, queue, new RecordingScheduler(), Clock());
         await queue.HandleAsync(new(DailyPlan.Default), default);
 
-        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), new CardState(Id(1), null, Now), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3), default);
+        var result = await handler.HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), new CardState(Id(1), null, Now), CardProjection.InitialRevision, QueueItem(Id(1)), RatingShortcut.F3, QueueDay), default);
 
         var transition = Assert.IsType<Success<LearningTransition>>(result).Value;
         Assert.Equal(Id(1), transition.Card.Id);
@@ -277,8 +278,8 @@ public sealed class LearningUseCaseTests
         store.Events.Add(new ReviewEvent(Id(91), original.Id, Now, LearningAction.Good, original, original));
         var queue = Queue(store, [Word(1), Word(2)]);
         UseCaseResult<LearningTransition> result = slash
-            ? await new SlashWord(store, queue, Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id)), default)
-            : await new SubmitRating(store, queue, new RecordingScheduler(), Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id), RatingShortcut.F3), default);
+            ? await new SlashWord(store, queue, Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id), QueueDay), default)
+            : await new SubmitRating(store, queue, new RecordingScheduler(), Clock()).HandleAsync(new(Guid.NewGuid(), Guid.NewGuid(), original, CardProjection.InitialRevision, QueueItem(original.Id), RatingShortcut.F3, QueueDay), default);
 
         Assert.IsType<Conflict<LearningTransition>>(result);
         Assert.Equal(0, store.CardPageReads);
@@ -417,9 +418,9 @@ public sealed class LearningUseCaseTests
             return ApplyAsync(new LearningCommand(command.CommandId, undo, revision), ct);
         }
 
-        public Task<CommitResult> UndoLatestQueuedAsync(
+        public Task<CommitResult> UndoQueuedAsync(
             UndoLearningCommand command,
-            DateOnly localDay,
+            Guid completedEventId,
             CancellationToken ct) => UndoLatestAsync(command, ct);
     }
 
@@ -427,6 +428,9 @@ public sealed class LearningUseCaseTests
     {
         private DailySessionSnapshot? session;
         public Exception? GetNextPendingFailure { get; set; }
+
+        public Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct) =>
+            Task.FromResult(session is { LocalDay: var day } && day == localDay ? session : null);
 
         public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct)
         {
@@ -447,6 +451,8 @@ public sealed class LearningUseCaseTests
             return Task.FromResult(session?.Items.FirstOrDefault(item => item.Status == DailyQueueItemStatus.Pending));
         }
         public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => Task.CompletedTask;
+        public Task<DateTimeOffset?> GetNextRelearningDueAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
+            Task.FromResult<DateTimeOffset?>(null);
         public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<DailyHistoryEntry>>([]);
         public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Task.FromResult(new GoalProgress(0, 0));

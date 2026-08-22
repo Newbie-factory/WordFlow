@@ -23,7 +23,7 @@ public sealed record LearningCommand
     public Guid ExpectedRevision { get; }
 }
 
-public sealed record CommitResult(bool Applied, Guid EventId, CardState Card);
+public sealed record CommitResult(bool Applied, Guid EventId, CardState Card, DateOnly? QueueDay = null);
 
 public sealed record CardProjection(CardState Card, Guid Revision)
 {
@@ -56,9 +56,9 @@ public interface ILearningStore
 
     Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct);
 
-    Task<CommitResult> UndoLatestQueuedAsync(
+    Task<CommitResult> UndoQueuedAsync(
         UndoLearningCommand command,
-        DateOnly localDay,
+        Guid completedEventId,
         CancellationToken ct);
 }
 

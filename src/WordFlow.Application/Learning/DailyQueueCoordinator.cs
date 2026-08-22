@@ -29,34 +29,53 @@ public sealed class DailyQueueCoordinator
 
     public IReadOnlyList<Guid> LastBuiltQueue { get; private set; } = [];
 
+    public Task<DateTimeOffset?> GetNextRelearningDueAsync(CancellationToken ct)
+    {
+        var localNow = timeProvider.GetLocalNow();
+        return dailyQueue.GetNextRelearningDueAsync(
+            DateOnly.FromDateTime(localNow.DateTime), localNow.ToUniversalTime(), ct);
+    }
+
     public async Task<NextCard?> GetNextAsync(DailyPlan plan, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var localNow = timeProvider.GetLocalNow();
         var localDay = DateOnly.FromDateTime(localNow.DateTime);
         var now = localNow.ToUniversalTime();
-        var cards = await PagedReads.AllAsync(store.GetCardsAsync, store.ProbeCardsEndAsync, ct).ConfigureAwait(false);
-        var words = await PagedReads.AllAsync(vocabulary.GetWordsAsync, vocabulary.ProbeWordsEndAsync, ct).ConfigureAwait(false);
-        var headwords = words.Where(word => word.IsLearningHeadword).ToDictionary(word => word.WordId);
-        var knownCards = cards.Select(card => card.Id).ToHashSet();
-        var queuePlan = queuePolicy.BuildPlan(new QueueInput(
-            cards,
-            headwords.Keys.Where(id => !knownCards.Contains(id)),
-            plan,
-            now));
-        LastBuiltQueue = queuePlan.ReviewCardIds.Concat(queuePlan.NewCardIds).ToArray();
-
-        await dailyQueue.GetOrCreateAsync(new DailyQueueSeed(
-            localDay,
-            plan,
-            queuePlan.ReviewCardIds,
-            queuePlan.NewCardIds,
-            now), ct).ConfigureAwait(false);
+        var session = await dailyQueue.GetAsync(localDay, ct).ConfigureAwait(false);
+        if (session is null)
+        {
+            var cards = await PagedReads.AllAsync(store.GetCardsAsync, store.ProbeCardsEndAsync, ct).ConfigureAwait(false);
+            var words = await PagedReads.AllAsync(vocabulary.GetWordsAsync, vocabulary.ProbeWordsEndAsync, ct).ConfigureAwait(false);
+            var headwordIds = words.Where(word => word.IsLearningHeadword).Select(word => word.WordId).ToArray();
+            var knownCards = cards.Select(card => card.Id).ToHashSet();
+            var queuePlan = queuePolicy.BuildPlan(new QueueInput(
+                cards,
+                headwordIds.Where(id => !knownCards.Contains(id)),
+                plan,
+                now));
+            LastBuiltQueue = queuePlan.ReviewCardIds.Concat(queuePlan.NewCardIds).ToArray();
+            session = await dailyQueue.GetOrCreateAsync(new DailyQueueSeed(
+                localDay,
+                plan,
+                queuePlan.ReviewCardIds,
+                queuePlan.NewCardIds,
+                now), ct).ConfigureAwait(false);
+        }
+        else
+        {
+            LastBuiltQueue = session.Items
+                .Where(item => item.Status == DailyQueueItemStatus.Pending)
+                .OrderBy(item => item.Ordinal)
+                .Select(item => item.CardId)
+                .ToArray();
+        }
         await dailyQueue.EnsureDueRelearningAsync(localDay, now, ct).ConfigureAwait(false);
         var item = await dailyQueue.GetNextPendingAsync(localDay, now, ct).ConfigureAwait(false);
         if (item is null) return null;
 
-        if (!headwords.TryGetValue(item.CardId, out var word))
+        var word = await vocabulary.GetWordAsync(item.CardId, ct).ConfigureAwait(false);
+        if (word is not { IsLearningHeadword: true })
             throw new InvalidDataException($"Learning card {item.CardId:D} has no vocabulary headword.");
         var projection = await ResolveProjectionAsync(item.CardId, ct).ConfigureAwait(false)
             ?? throw new InvalidDataException($"Queue card {item.CardId:D} has no projection.");
@@ -67,7 +86,8 @@ public sealed class DailyQueueCoordinator
             word,
             primarySense,
             item.ItemId,
-            item.Kind);
+            item.Kind,
+            item.LocalDay);
     }
 
     internal async Task<CardProjection?> ResolveProjectionAsync(Guid cardId, CancellationToken ct)

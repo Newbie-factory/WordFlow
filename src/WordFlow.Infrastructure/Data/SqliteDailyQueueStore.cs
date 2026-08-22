@@ -13,6 +13,16 @@ public sealed class SqliteDailyQueueStore : IDailyQueueStore
     public SqliteDailyQueueStore(SqliteConnectionFactory factory) =>
         this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
 
+    public Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(async () =>
+        {
+            await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction(deferred: true);
+            var snapshot = await ReadSnapshotAsync(connection, transaction, localDay, ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return snapshot;
+        });
+
     public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct) =>
         SqliteStorageBoundary.TranslateAsync(() => GetOrCreateCoreAsync(seed, ct));
 
@@ -123,6 +133,33 @@ public sealed class SqliteDailyQueueStore : IDailyQueueStore
 
     public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
         SqliteStorageBoundary.TranslateAsync(() => EnsureDueRelearningCoreAsync(localDay, now, ct));
+
+    public Task<DateTimeOffset?> GetNextRelearningDueAsync(
+        DateOnly localDay, DateTimeOffset now, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync<DateTimeOffset?>(async () =>
+        {
+            await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT MIN(c.due_at_utc)
+                FROM review_event r
+                JOIN daily_queue_items completed
+                  ON completed.completed_event_id=r.event_id AND completed.local_day=$day
+                JOIN card_state c ON c.card_id=r.card_id
+                WHERE r.action='Again'
+                  AND c.is_slashed=0
+                  AND c.due_at_utc > $now
+                  AND NOT EXISTS (SELECT 1 FROM review_event undo WHERE undo.compensates_event_id=r.event_id)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM daily_queue_items pending
+                      WHERE pending.local_day=$day AND pending.card_id=r.card_id
+                        AND pending.kind='Relearning' AND pending.status='Pending')
+                """;
+            command.Parameters.AddWithValue("$day", DayText(localDay));
+            command.Parameters.AddWithValue("$now", UtcText(now));
+            var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            return value is null or DBNull ? null : ParseUtc(Convert.ToString(value, CultureInfo.InvariantCulture)!);
+        });
 
     private async Task EnsureDueRelearningCoreAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct)
     {

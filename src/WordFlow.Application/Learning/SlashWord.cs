@@ -9,6 +9,7 @@ public sealed record SlashWordRequest(
     CardState ExpectedCard,
     Guid ExpectedRevision,
     Guid QueueItemId,
+    DateOnly QueueDay,
     DailyPlan? Plan = null);
 
 public sealed class SlashWord
@@ -30,6 +31,7 @@ public sealed class SlashWord
         return LearningMutation.CommitAndAdvanceAsync(
             store, nextCard, request.CommandId, request.EventId, request.ExpectedCard, request.ExpectedRevision,
             request.QueueItemId, DailyQueueItemStatus.Slashed,
-            card => actions.Slash(request.EventId, card), request.Plan ?? DailyPlan.Default, ct);
+            card => actions.Slash(request.EventId, card), request.Plan ?? DailyPlan.Default,
+            request.QueueDay, ct);
     }
 }

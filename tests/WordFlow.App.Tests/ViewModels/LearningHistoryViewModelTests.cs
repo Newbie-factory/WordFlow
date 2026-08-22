@@ -91,9 +91,11 @@ public sealed class LearningHistoryViewModelTests
         public DateOnly RequestedThroughDay { get; private set; }
         public int RequestedDayCount { get; private set; }
 
+        public Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct) => Task.FromResult<DailySessionSnapshot?>(null);
         public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct) => throw new NotSupportedException();
         public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
         public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
+        public Task<DateTimeOffset?> GetNextRelearningDueAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
         public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Task.FromResult(goal);
         public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct)
         {
@@ -109,9 +111,11 @@ public sealed class LearningHistoryViewModelTests
     {
         private int calls;
 
+        public Task<DailySessionSnapshot?> GetAsync(DateOnly localDay, CancellationToken ct) => Task.FromResult<DailySessionSnapshot?>(null);
         public Task<DailySessionSnapshot> GetOrCreateAsync(DailyQueueSeed seed, CancellationToken ct) => throw new NotSupportedException();
         public Task<DailyQueueItem?> GetNextPendingAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
         public Task EnsureDueRelearningAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
+        public Task<DateTimeOffset?> GetNextRelearningDueAsync(DateOnly localDay, DateTimeOffset now, CancellationToken ct) => throw new NotSupportedException();
         public Task<GoalProgress> GetGoalProgressAsync(CancellationToken ct) => Interlocked.Increment(ref calls) == 1
             ? firstGoal.Task : Task.FromResult(new GoalProgress(9, 100));
         public Task<IReadOnlyList<DailyHistoryEntry>> GetHistoryAsync(DateOnly throughDay, int dayCount, CancellationToken ct) => Volatile.Read(ref calls) == 1
