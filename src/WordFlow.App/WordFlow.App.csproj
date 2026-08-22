@@ -5,6 +5,10 @@
     <UseWPF>true</UseWPF>
     <Platforms>x64</Platforms>
   </PropertyGroup>
+  <PropertyGroup>
+    <WordFlowApplicationIcon Condition="'$(WordFlowApplicationIcon)' == ''">Assets\Icons\wordflow-classic.ico</WordFlowApplicationIcon>
+    <ApplicationIcon>$(WordFlowApplicationIcon)</ApplicationIcon>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
@@ -15,10 +19,10 @@
     <ProjectReference Include="..\WordFlow.Infrastructure\WordFlow.Infrastructure.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="..\..\data\ielts\vocabulary.sqlite3" Link="Data\ielts\vocabulary.sqlite3" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\data\ielts\relations.sqlite3" Link="Data\ielts\relations.sqlite3" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\data\ielts\manifest.json" Link="Data\ielts\manifest.json" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\data\ielts\relations-manifest.json" Link="Data\ielts\relations-manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\data\ielts\vocabulary.sqlite3" Link="Data\ielts\vocabulary.sqlite3" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\data\ielts\relations.sqlite3" Link="Data\ielts\relations.sqlite3" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\data\ielts\manifest.json" Link="Data\ielts\manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\data\ielts\relations-manifest.json" Link="Data\ielts\relations-manifest.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="WordFlow.App.Tests" />

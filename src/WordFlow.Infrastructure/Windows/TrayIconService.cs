@@ -8,6 +8,7 @@ namespace WordFlow.Infrastructure.Windows;
 public sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon notifyIcon;
+    private readonly Icon? extractedIcon;
     private int disposed;
 
     public TrayIconService(TrayLifecycleController controller)
@@ -21,10 +22,15 @@ public sealed class TrayIconService : IDisposable
             menu.Items.Add(item);
         }
 
+        string? processPath = Environment.ProcessPath;
+        extractedIcon = string.IsNullOrWhiteSpace(processPath)
+            ? null
+            : Icon.ExtractAssociatedIcon(processPath);
+
         notifyIcon = new NotifyIcon
         {
             Text = "WordFlow",
-            Icon = SystemIcons.Application,
+            Icon = extractedIcon ?? SystemIcons.Application,
             ContextMenuStrip = menu,
             Visible = true,
         };
@@ -37,5 +43,6 @@ public sealed class TrayIconService : IDisposable
         notifyIcon.Visible = false;
         notifyIcon.ContextMenuStrip?.Dispose();
         notifyIcon.Dispose();
+        extractedIcon?.Dispose();
     }
 }
