@@ -63,6 +63,27 @@ public sealed class SqliteDailyQueueStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Migration_three_rejects_nil_guid_in_every_uuid_field()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("nil-uuid-guards.db"));
+        await using var connection = await factory.OpenUserAsync(default);
+        const string nil = "00000000-0000-0000-0000-000000000000";
+        const string at = "2026-08-13T08:00:00.0000000Z";
+        await ExecuteAsync(connection,
+            $"INSERT INTO daily_sessions VALUES ('2026-08-13',1,0,1,0,NULL,'{at}','{at}')");
+        await ExecuteAsync(connection, "PRAGMA foreign_keys=OFF");
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{nil}','2026-08-13',0,'{Id(20):D}','New','2026-08-13',NULL,'Pending',NULL,'{at}',NULL)"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{Id(21):D}','2026-08-13',1,'{nil}','New','2026-08-13',NULL,'Pending',NULL,'{at}',NULL)"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{Id(22):D}','2026-08-13',2,'{Id(22):D}','New','2026-08-13','{nil}','Pending',NULL,'{at}',NULL)"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{Id(23):D}','2026-08-13',3,'{Id(23):D}','New','2026-08-13',NULL,'Completed','{nil}','{at}','{at}')"));
+    }
+
+    [Fact]
     public async Task Migration_three_rejects_correct_length_malformed_values_in_every_utc_timestamp_field()
     {
         var factory = await CreateMigratedFactoryAsync(Database("timestamp-guards.db"));
@@ -86,6 +107,28 @@ public sealed class SqliteDailyQueueStoreTests : IDisposable
 
         await ExecuteAsync(connection,
             $"INSERT INTO daily_queue_items VALUES ('{Id(12):D}','2026-08-15',2,'{Id(12):D}','New','2026-08-15',NULL,'Pending',NULL,'{valid}',NULL)");
+    }
+
+    [Fact]
+    public async Task Migration_three_rejects_hour_24_in_every_utc_timestamp_field()
+    {
+        var factory = await CreateMigratedFactoryAsync(Database("hour-24-guards.db"));
+        await using var connection = await factory.OpenUserAsync(default);
+        const string valid = "2026-08-13T08:00:00.0000000Z";
+        const string hour24 = "2026-08-13T24:00:00.0000000Z";
+
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_sessions VALUES ('2026-08-13',0,0,0,0,NULL,'{hour24}','{valid}')"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_sessions VALUES ('2026-08-14',0,0,0,0,NULL,'{valid}','{hour24}')"));
+        await ExecuteAsync(connection,
+            $"INSERT INTO daily_sessions VALUES ('2026-08-15',1,0,1,0,NULL,'{valid}','{valid}')");
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"UPDATE daily_sessions SET completed_at_utc='{hour24}' WHERE local_day='2026-08-15'"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{Id(30):D}','2026-08-15',0,'{Id(30):D}','New','2026-08-15',NULL,'Pending',NULL,'{hour24}',NULL)"));
+        await Assert.ThrowsAsync<SqliteException>(() => ExecuteAsync(connection,
+            $"INSERT INTO daily_queue_items VALUES ('{Id(31):D}','2026-08-15',1,'{Id(31):D}','New','2026-08-15',NULL,'Completed',NULL,'{valid}','{hour24}')"));
     }
 
     [Fact]
