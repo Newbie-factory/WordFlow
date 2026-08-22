@@ -79,7 +79,9 @@ public partial class App : System.Windows.Application
         }
         catch (Exception exception)
         {
-            WriteLifecycle($"fatal-startup-error pid={Environment.ProcessId} type={exception.GetType().Name}");
+            Exception root = exception.GetBaseException();
+            string detail = root.Message.Replace('\r', ' ').Replace('\n', ' ');
+            WriteLifecycle($"fatal-startup-error pid={Environment.ProcessId} type={exception.GetType().Name} root={root.GetType().Name} detail={detail}");
             MessageBox.Show($"WordFlow could not start.\n\n{exception.Message}", "WordFlow startup error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
             await ExitAsync(1);
