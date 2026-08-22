@@ -86,6 +86,36 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal(1L, await ScalarAsync(connection, $"SELECT COUNT(*) FROM daily_queue_items WHERE item_id='{item.ItemId:D}' AND status='Pending'"));
     }
 
+    [Theory]
+    [InlineData(LearningCommitStage.CardStateProjected)]
+    [InlineData(LearningCommitStage.QueueItemCompleted)]
+    [InlineData(LearningCommitStage.SessionCompletionRecomputed)]
+    public async Task Queued_apply_late_failure_rolls_back_event_card_queue_and_session(
+        LearningCommitStage failureStage)
+    {
+        var factory = await CreateMigratedFactoryAsync(Database($"queued-late-{failureStage}.db"));
+        var queue = new SqliteDailyQueueStore(factory);
+        var session = await queue.GetOrCreateAsync(new DailyQueueSeed(
+            DateOnly.FromDateTime(Now.UtcDateTime), new DailyPlan(1, 0), [], [InitialCard().Id], Now), default);
+        var item = Assert.Single(session.Items);
+        var learning = new SqliteLearningStore(factory, stage =>
+        {
+            if (stage == failureStage) throw new InjectedFailureException();
+        });
+
+        await Assert.ThrowsAsync<InjectedFailureException>(() => learning.ApplyQueuedAsync(
+            Command(Id(404), Review(Id(304), InitialCard(), Rating.Good)), item.ItemId,
+            DailyQueueItemStatus.Completed, default));
+
+        await using var connection = await factory.OpenUserAsync(default);
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM review_event"));
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM card_state"));
+        Assert.Equal(1L, await ScalarAsync(connection,
+            $"SELECT COUNT(*) FROM daily_queue_items WHERE item_id='{item.ItemId:D}' AND status='Pending' AND completed_event_id IS NULL AND completed_at_utc IS NULL"));
+        Assert.Equal(1L, await ScalarAsync(connection,
+            "SELECT COUNT(*) FROM daily_sessions WHERE completed_at_utc IS NULL AND updated_at_utc=created_at_utc"));
+    }
+
     [Fact]
     public async Task Failure_between_event_and_snapshot_rolls_back_both_writes()
     {

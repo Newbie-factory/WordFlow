@@ -12,6 +12,9 @@ namespace WordFlow.Infrastructure.Data;
 public enum LearningCommitStage
 {
     EventWritten,
+    CardStateProjected,
+    QueueItemCompleted,
+    SessionCompletionRecomputed,
     CardPageRowsRead,
     UndoEventSelected,
 }
@@ -126,10 +129,13 @@ public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReade
             await InsertEventAsync(connection, transaction, command, ct).ConfigureAwait(false);
             faultInjector?.Invoke(LearningCommitStage.EventWritten);
             await UpsertSnapshotAsync(connection, transaction, command.Event, ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.CardStateProjected);
             await CompleteQueueItemAsync(connection, transaction, queueItemId, terminalStatus,
                 command.Event.EventId, command.Event.OccurredAt, ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.QueueItemCompleted);
             await RecomputeSessionCompletionAsync(connection, transaction, queueDay,
                 command.Event.OccurredAt, ct).ConfigureAwait(false);
+            faultInjector?.Invoke(LearningCommitStage.SessionCompletionRecomputed);
             await transaction.CommitAsync(ct).ConfigureAwait(false);
             return new CommitResult(true, command.Event.EventId, command.Event.After);
         }
