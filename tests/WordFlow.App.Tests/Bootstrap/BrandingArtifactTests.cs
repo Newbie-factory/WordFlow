@@ -76,6 +76,16 @@ public sealed class BrandingArtifactTests
         Assert.Contains("Data\\ielts\\relations-manifest.json", script);
     }
 
+    [Fact]
+    public void DualPublishUsesAnEncodingSupportedByWindowsPowerShell()
+    {
+        string script = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(), "scripts", "build-second-iteration.ps1"));
+
+        Assert.DoesNotContain("utf8NoBOM", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("new-object System.Text.UTF8Encoding($false)", script, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static void AssertIcon(string path)
     {
         byte[] bytes = File.ReadAllBytes(path);

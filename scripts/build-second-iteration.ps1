@@ -175,7 +175,12 @@ try {
             files = Get-TreeHashes -Root (Join-Path $stagedRelease 'Data')
         }
     }
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $stagedRelease 'release-manifest.json') -Encoding utf8NoBOM
+    $manifestJson = $manifest | ConvertTo-Json -Depth 8
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText(
+        (Join-Path $stagedRelease 'release-manifest.json'),
+        $manifestJson,
+        $utf8WithoutBom)
 
     $releaseParent = Split-Path -Parent $expectedReleaseDirectory
     New-Item -ItemType Directory -Force -Path $releaseParent | Out-Null

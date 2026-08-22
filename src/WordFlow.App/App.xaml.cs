@@ -72,6 +72,7 @@ public partial class App : System.Windows.Application
                 RestorePronunciationSettingsAsync,
                 CreateCardAndTrayAsync,
                 lifetime.Token);
+            await ImportVerificationThemeAsync();
             if (openControlCenterForSmoke) OpenControlCenter();
         }
         catch (CorpusIntegrityException exception)
@@ -91,6 +92,20 @@ public partial class App : System.Windows.Application
                 MessageBoxButton.OK, MessageBoxImage.Error);
             await ExitAsync(1);
         }
+    }
+
+    private async Task ImportVerificationThemeAsync()
+    {
+        string? importPath = AppPaths.ResolveVerificationImportPath(
+            Environment.GetEnvironmentVariable(AppPaths.VerificationImportEnvironmentVariable),
+            Environment.GetEnvironmentVariable(AppPaths.VerificationModeEnvironmentVariable),
+            Environment.GetEnvironmentVariable(AppPaths.VerificationRootEnvironmentVariable));
+        if (importPath is null) return;
+        if (themeSettings is null) throw new InvalidOperationException("Theme settings are unavailable for verification import.");
+
+        await themeSettings.ImportAsync(importPath, themeSettings.Opacity, lifetime.Token);
+        await themeSettings.FlushAsync(lifetime.Token);
+        WriteLifecycle($"verification-import-complete pid={Environment.ProcessId} extension={Path.GetExtension(importPath).ToLowerInvariant()} stored={themeSettings.DisplayName}");
     }
 
     private void StartUiSmoke(bool productionActions)
