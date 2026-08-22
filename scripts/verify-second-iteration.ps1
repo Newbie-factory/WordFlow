@@ -45,10 +45,17 @@ public sealed class WordFlowVerificationCoverForm : Form
 
 $repositoryRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 Set-Location -LiteralPath $repositoryRoot
+$fullEvidencePath = Join-Path $repositoryRoot 'artifacts\verification\second-iteration-evidence.json'
+$uiEvidencePath = Join-Path $repositoryRoot 'artifacts\verification\second-iteration-ui-evidence.json'
 if ([string]::IsNullOrWhiteSpace($EvidencePath)) {
-    $EvidencePath = Join-Path $repositoryRoot 'artifacts\verification\second-iteration-evidence.json'
+    $EvidencePath = if ($UiOnly) { $uiEvidencePath } else { $fullEvidencePath }
 }
 $EvidencePath = [System.IO.Path]::GetFullPath($EvidencePath)
+if ($UiOnly -and $EvidencePath.Equals(
+        [System.IO.Path]::GetFullPath($fullEvidencePath),
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Refusing to overwrite full evidence from a UiOnly verification run.'
+}
 $releaseDirectory = 'D:\baicizhan\release\WordFlow-second-iteration'
 $photoExe = Join-Path $releaseDirectory 'WordFlow-Photo.exe'
 $classicExe = Join-Path $releaseDirectory 'WordFlow-Classic.exe'
@@ -58,6 +65,7 @@ $launchedProcesses = New-Object 'System.Collections.Generic.List[System.Diagnost
 $gateOutputs = [ordered]@{}
 $evidence = [ordered]@{
     schemaVersion = 1
+    mode = if ($UiOnly) { 'ui-only' } else { 'full' }
     startedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
     repositoryRoot = $repositoryRoot
     powershell = $PSVersionTable.PSVersion.ToString()
@@ -117,6 +125,53 @@ function Invoke-Gate {
     Write-Host "[gate:$Name] exit=$exitCode elapsedMs=$($stopwatch.ElapsedMilliseconds)"
     if ($exitCode -ne 0) { throw "Gate '$Name' failed with exit code $exitCode." }
     return $text
+}
+
+function Read-TestOutputSummary {
+    param([Parameter(Mandatory)][string]$Output)
+    $matches = [regex]::Matches(
+        $Output,
+        '(?m)(?:失败|Failed):\s*(\d+).*?(?:已跳过|Skipped):\s*(\d+).*?(?:总计|Total):\s*(\d+)')
+    Assert-Verification ($matches.Count -gt 0) 'Could not parse per-project test totals, failures, and skips from actual dotnet test output.'
+    $failed = 0
+    $skipped = 0
+    $total = 0
+    foreach ($match in $matches) {
+        $failed += [int]$match.Groups[1].Value
+        $skipped += [int]$match.Groups[2].Value
+        $total += [int]$match.Groups[3].Value
+    }
+    return [pscustomobject][ordered]@{
+        total = $total
+        failed = $failed
+        skipped = $skipped
+        projectSummariesParsed = $matches.Count
+        source = 'actual-dotnet-test-output'
+    }
+}
+
+function Assert-ReleaseManifestMatchesFiles {
+    param(
+        [Parameter(Mandatory)]$Manifest,
+        [Parameter(Mandatory)][object[]]$ReleaseFiles
+    )
+    $headOutput = @(& git rev-parse HEAD 2>&1)
+    $headExit = $LASTEXITCODE
+    Assert-Verification ($headExit -eq 0) "git rev-parse HEAD failed with exit code $headExit."
+    $head = ($headOutput -join [Environment]::NewLine).Trim()
+    Assert-Verification ($Manifest.commit -ceq $head) "Release manifest commit '$($Manifest.commit)' does not match HEAD '$head'."
+
+    $expectedNames = @('WordFlow-Photo.exe', 'WordFlow-Classic.exe')
+    Assert-Verification ($Manifest.executables.Count -eq $expectedNames.Count) 'Release manifest does not contain two executables.'
+    Assert-Verification ($ReleaseFiles.Count -eq $expectedNames.Count) 'Release directory does not contain both expected executables.'
+    foreach ($expectedName in $expectedNames) {
+        $manifestEntry = @($Manifest.executables | Where-Object { $_.fileName -ceq $expectedName })
+        $actualEntry = @($ReleaseFiles | Where-Object { $_.fileName -ceq $expectedName })
+        Assert-Verification ($manifestEntry.Count -eq 1 -and $actualEntry.Count -eq 1) "Manifest filename mismatch for exact executable '$expectedName'."
+        Assert-Verification ([long]$manifestEntry[0].sizeBytes -eq [long]$actualEntry[0].sizeBytes) "Manifest size mismatch for '$expectedName'."
+        Assert-Verification ($manifestEntry[0].sha256.ToLowerInvariant() -ceq $actualEntry[0].sha256) "Manifest SHA256 mismatch for '$expectedName'."
+    }
+    return $head
 }
 
 function Get-ExistingWordFlowProcesses {
@@ -679,7 +734,56 @@ function Write-Evidence {
     [System.IO.File]::WriteAllText($EvidencePath, $json, $utf8WithoutBom)
 }
 
+function Complete-CleanupGate {
+    $cleanupErrors = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($process in @($launchedProcesses | Sort-Object Id -Unique)) {
+        try { Stop-ExactProcess -Process $process }
+        catch {
+            $message = "Exact-PID cleanup failed for $($process.Id): $($_.Exception.Message)"
+            $cleanupErrors.Add($message)
+            Write-Warning $message
+        }
+    }
+
+    $remainingPids = @()
+    foreach ($process in @($launchedProcesses | Sort-Object Id -Unique)) {
+        if ($null -ne (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) {
+            $remainingPids += $process.Id
+        }
+    }
+
+    $resolvedRoot = [System.IO.Path]::GetFullPath($verificationRoot).TrimEnd([char]92)
+    $requiredPrefix = "$tempParent\WordFlow-second-iteration-verification-"
+    $tempRootRemoved = $false
+    try {
+        Assert-Verification ($resolvedRoot.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) "Refusing unsafe verification-root cleanup: $resolvedRoot"
+        if (Test-Path -LiteralPath $resolvedRoot) {
+            [System.IO.Directory]::Delete($resolvedRoot, $true)
+        }
+        $tempRootRemoved = -not (Test-Path -LiteralPath $resolvedRoot)
+        Assert-Verification $tempRootRemoved "Verification temp root still exists: $resolvedRoot"
+    }
+    catch {
+        $message = "Verification-root cleanup failed: $($_.Exception.Message)"
+        $cleanupErrors.Add($message)
+        Write-Warning $message
+    }
+
+    $cleanupSucceeded = $cleanupErrors.Count -eq 0 -and $remainingPids.Count -eq 0 -and $tempRootRemoved
+    return [pscustomobject][ordered]@{
+        succeeded = $cleanupSucceeded
+        launchedPids = @($launchedProcesses | ForEach-Object { $_.Id } | Sort-Object -Unique)
+        remainingPids = $remainingPids
+        exactPidOnly = $true
+        startTimeReuseGuard = $true
+        verificationRoot = $verificationRoot
+        tempRootRemoved = $tempRootRemoved
+        errors = @($cleanupErrors)
+    }
+}
+
 New-Item -ItemType Directory -Path $verificationRoot | Out-Null
+$verificationFailure = $null
 try {
     if (-not $UiOnly) {
         $vocabularyText = Invoke-Gate -Name 'vocabulary-relations' -Command 'python' -Arguments @(
@@ -704,12 +808,10 @@ try {
 
         $testText = Invoke-Gate -Name 'tests' -Command 'dotnet' -Arguments @(
             'test', 'WordFlow.sln', '-c', 'Release', '--no-restore') -DisplayCommand 'dotnet test WordFlow.sln -c Release --no-restore'
-        $testMatches = [regex]::Matches($testText, '(?:总计|Total):\s*(\d+)')
-        $testTotal = 0
-        foreach ($match in $testMatches) { $testTotal += [int]$match.Groups[1].Value }
-        Assert-Verification ($testTotal -gt 0) 'Could not parse the test total.'
-        Assert-Verification ($testText -notmatch '(?:失败|Failed):\s*[1-9]') 'Test output reported failures.'
-        $evidence.tests = [pscustomobject][ordered]@{ total = $testTotal; failed = 0; skipped = 0 }
+        $testSummary = Read-TestOutputSummary -Output $testText
+        Assert-Verification ($testSummary.failed -eq 0) "Test output reported $($testSummary.failed) failure(s)."
+        Assert-Verification ($testSummary.skipped -eq 0) "Expected zero skipped tests, parsed $($testSummary.skipped)."
+        $evidence.tests = $testSummary
 
         $buildText = Invoke-Gate -Name 'build' -Command 'dotnet' -Arguments @(
             'build', 'WordFlow.sln', '-c', 'Release', '--no-restore') -DisplayCommand 'dotnet build WordFlow.sln -c Release --no-restore'
@@ -739,11 +841,13 @@ try {
         }
     }
     Assert-Verification ($releaseFiles[0].sha256 -ne $releaseFiles[1].sha256) 'Release executable hashes are identical.'
-    Assert-Verification ($manifest.executables.Count -eq 2) 'Release manifest does not contain two executables.'
     Assert-Verification ($manifest.executables[0].iconArtifactSha256 -ne $manifest.executables[1].iconArtifactSha256) 'Release manifest icon hashes are identical.'
+    $verifiedHead = Assert-ReleaseManifestMatchesFiles -Manifest $manifest -ReleaseFiles $releaseFiles
     $evidence.release = [pscustomobject][ordered]@{
         directory = $releaseDirectory
         manifestCommit = $manifest.commit
+        verifiedHead = $verifiedHead
+        manifestMatchesFiles = $true
         executables = $releaseFiles
         iconArtifactSha256 = @($manifest.executables | ForEach-Object { $_.iconArtifactSha256 })
     }
@@ -752,36 +856,28 @@ try {
         (Test-DualInstanceOrder -PrimaryExe $photoExe -SecondaryExe $classicExe -Name 'photo-then-classic' -DataRoot (Join-Path $verificationRoot 'single-photo'))
         (Test-DualInstanceOrder -PrimaryExe $classicExe -SecondaryExe $photoExe -Name 'classic-then-photo' -DataRoot (Join-Path $verificationRoot 'single-classic')))
     $evidence.ui = Test-UiJourney
-    $evidence.status = 'passed'
 }
 catch {
-    $evidence.status = 'failed'
+    $verificationFailure = $_
     $evidence.failure = $_.Exception.ToString()
-    throw
 }
 finally {
-    foreach ($process in @($launchedProcesses | Sort-Object Id -Unique)) {
-        try { Stop-ExactProcess -Process $process }
-        catch { Write-Warning "Exact-PID cleanup failed for $($process.Id): $($_.Exception.Message)" }
+    $evidence.cleanup = Complete-CleanupGate
+    $cleanupSucceeded = $evidence.cleanup.succeeded
+    if (-not $cleanupSucceeded) {
+        $cleanupMessage = "Cleanup gate failed: remainingPids=$(@($evidence.cleanup.remainingPids) -join ','); tempRootRemoved=$($evidence.cleanup.tempRootRemoved); errors=$(@($evidence.cleanup.errors) -join ' | ')"
+        if ($null -eq $verificationFailure) { $verificationFailure = [System.Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new($cleanupMessage), 'CleanupGateFailed', [System.Management.Automation.ErrorCategory]::OperationStopped, $null) }
+        $evidence.failure = $cleanupMessage
     }
-    $remaining = @()
-    foreach ($process in @($launchedProcesses | Sort-Object Id -Unique)) {
-        if ($null -ne (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { $remaining += $process.Id }
-    }
-    $evidence.cleanup = [pscustomobject][ordered]@{
-        launchedPids = @($launchedProcesses | ForEach-Object { $_.Id } | Sort-Object -Unique)
-        remainingPids = $remaining
-        exactPidOnly = $true
-        verificationRoot = $verificationRoot
-    }
-    try { Write-Evidence } catch { Write-Warning "Could not write evidence: $($_.Exception.Message)" }
-    $resolvedRoot = [System.IO.Path]::GetFullPath($verificationRoot).TrimEnd([char]92)
-    $requiredPrefix = "$tempParent\WordFlow-second-iteration-verification-"
-    if ($resolvedRoot.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase) -and
-        (Test-Path -LiteralPath $resolvedRoot)) {
-        [System.IO.Directory]::Delete($resolvedRoot, $true)
+    $evidence.status = if ($null -ne $verificationFailure) { 'failed' } elseif ($UiOnly) { 'partial-ui-only' } else { 'passed' }
+    try { Write-Evidence }
+    catch {
+        if ($null -eq $verificationFailure) { $verificationFailure = $_ }
+        Write-Warning "Could not write evidence: $($_.Exception.Message)"
     }
 }
 
 Write-Host "VERIFICATION_EVIDENCE=$EvidencePath"
 Write-Host ($evidence | ConvertTo-Json -Depth 12)
+if ($null -ne $verificationFailure) { throw $verificationFailure }

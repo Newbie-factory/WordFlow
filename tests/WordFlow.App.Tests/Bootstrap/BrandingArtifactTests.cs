@@ -86,6 +86,54 @@ public sealed class BrandingArtifactTests
         Assert.Contains("new-object System.Text.UTF8Encoding($false)", script, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void SecondIterationVerifierTreatsCleanupAsARequiredFinalGate()
+    {
+        string script = ReadVerificationScript();
+
+        Assert.Contains("function Complete-CleanupGate", script);
+        Assert.Contains("cleanupSucceeded", script);
+        Assert.Contains("remainingPids", script);
+        Assert.Contains("tempRootRemoved", script);
+    }
+
+    [Fact]
+    public void SecondIterationVerifierParsesTestTotalsAndSkipsFromActualOutput()
+    {
+        string script = ReadVerificationScript();
+
+        Assert.Contains("function Read-TestOutputSummary", script);
+        Assert.Contains("Could not parse per-project test totals, failures, and skips", script);
+        Assert.Contains("Expected zero skipped tests", script);
+        Assert.Contains("skipped", script);
+        Assert.DoesNotContain("$evidence.tests = [pscustomobject][ordered]@{ total = $testTotal; failed = 0; skipped = 0 }", script);
+    }
+
+    [Fact]
+    public void SecondIterationVerifierCrossChecksEveryManifestExecutableAndHead()
+    {
+        string script = ReadVerificationScript();
+
+        Assert.Contains("function Assert-ReleaseManifestMatchesFiles", script);
+        Assert.Contains("git rev-parse HEAD", script);
+        Assert.Contains("Manifest filename mismatch", script);
+        Assert.Contains("Manifest size mismatch", script);
+        Assert.Contains("Manifest SHA256 mismatch", script);
+    }
+
+    [Fact]
+    public void UiOnlyVerificationUsesPartialEvidenceAndCannotOverwriteTheFullEvidence()
+    {
+        string script = ReadVerificationScript();
+
+        Assert.Contains("second-iteration-ui-evidence.json", script);
+        Assert.Contains("partial-ui-only", script);
+        Assert.Contains("Refusing to overwrite full evidence", script);
+    }
+
+    private static string ReadVerificationScript() => File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "scripts", "verify-second-iteration.ps1"));
+
     private static void AssertIcon(string path)
     {
         byte[] bytes = File.ReadAllBytes(path);

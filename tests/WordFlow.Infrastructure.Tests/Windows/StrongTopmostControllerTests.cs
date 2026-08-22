@@ -65,6 +65,8 @@ public sealed class StrongTopmostControllerTests
         zOrder.Calls.Clear();
 
         ticks.Fire();
+        Assert.Empty(zOrder.Calls);
+
         controller.Visible = true;
         zOrder.Calls.Clear();
         ticks.Fire();

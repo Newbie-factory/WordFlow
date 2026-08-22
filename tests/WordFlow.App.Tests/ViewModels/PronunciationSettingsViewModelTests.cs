@@ -351,6 +351,57 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Autoplay_count_ten_completes_exactly_ten_calls_in_order_with_one_active_and_one_final_publish()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync())
+        {
+            Autoplay = true,
+            AutoplayRepeatCount = 10,
+        };
+        var feedback = new ConcurrentQueue<PronunciationPlaybackResult>();
+        settings.PlaybackFeedback += (_, result) => feedback.Enqueue(result);
+
+        settings.OnCardChanged(Guid.NewGuid(), "alpha", isPaused: false);
+        for (int index = 0; index < 10; index++)
+        {
+            await service.WaitForCallsAsync(index + 1);
+            Assert.Equal(1, service.ActiveCalls);
+            service.Complete(index, PronunciationPlaybackResult.Completed($"alpha-{index + 1}"));
+        }
+        await WaitUntilAsync(() => feedback.Count == 1);
+
+        Assert.Equal(10, service.SpokenWords.Count);
+        Assert.Equal(Enumerable.Range(1, 10), service.PlaybackStartOrder);
+        Assert.Equal(1, service.MaxConcurrentCalls);
+        var published = Assert.Single(feedback);
+        Assert.Equal(PronunciationPlaybackStatus.Completed, published.Status);
+        Assert.Equal("已播放 alpha 的离线发音", published.Message);
+    }
+
+    [Fact]
+    public async Task Autoplay_count_one_completes_once_and_publishes_completed()
+    {
+        var service = new FakePronunciationService { DelayCompletion = true };
+        var settings = new PronunciationSettingsViewModel(service, await StoreAsync())
+        {
+            Autoplay = true,
+            AutoplayRepeatCount = 1,
+        };
+        var feedback = new TaskCompletionSource<PronunciationPlaybackResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        settings.PlaybackFeedback += (_, result) => feedback.TrySetResult(result);
+
+        settings.OnCardChanged(Guid.NewGuid(), "solo", isPaused: false);
+        await service.WaitForCallsAsync(1);
+        service.Complete(0, PronunciationPlaybackResult.Completed("solo-1"));
+
+        var published = await feedback.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Single(service.SpokenWords);
+        Assert.Equal(1, service.MaxConcurrentCalls);
+        Assert.Equal(PronunciationPlaybackStatus.Completed, published.Status);
+    }
+
+    [Fact]
     public async Task Autoplay_failure_short_circuits_remaining_repetitions()
     {
         var service = new FakePronunciationService { DelayCompletion = true };
@@ -561,7 +612,10 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         public PronunciationAvailability Availability { get; set; } =
             new(true, "可用", PronunciationInventoryState.AuthoritativeAvailable);
         public ConcurrentQueue<string> SpokenWords { get; } = [];
+        public ConcurrentQueue<int> PlaybackStartOrder { get; } = [];
         public IReadOnlyList<PendingPlayback> Pending => pending;
+        public int ActiveCalls => Volatile.Read(ref activeCalls);
+        public int MaxConcurrentCalls => Volatile.Read(ref maxConcurrentCalls);
         public int CancelCalls { get; private set; }
         public int SelectVoiceCalls { get; private set; }
         public bool DelayCompletion { get; set; }
@@ -571,6 +625,9 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
         private TaskCompletionSource<bool>? publicationEntered;
         private TaskCompletionSource<bool>? publicationRelease;
         private TaskCompletionSource<bool>? publicationCompleted;
+        private int activeCalls;
+        private int maxConcurrentCalls;
+        private int playbackSequence;
         public PronunciationVoice? SelectVoice(string? voiceId, PronunciationAccent preference)
         {
             SelectVoiceCalls++;
@@ -596,10 +653,19 @@ public sealed class PronunciationSettingsViewModelTests : IDisposable
                 pending.Add(new(completion, ct));
             }
             SpokenWords.Enqueue(text);
+            PlaybackStartOrder.Enqueue(Interlocked.Increment(ref playbackSequence));
+            int active = Interlocked.Increment(ref activeCalls);
+            int observedMaximum;
+            while (active > (observedMaximum = Volatile.Read(ref maxConcurrentCalls)) &&
+                   Interlocked.CompareExchange(ref maxConcurrentCalls, active, observedMaximum) != observedMaximum) { }
             calls.Release();
             if (wasBlocked) publicationCompleted!.TrySetResult(true);
-            if (completion is null) return PronunciationPlaybackResult.Completed(text);
-            return await completion.Task;
+            try
+            {
+                if (completion is null) return PronunciationPlaybackResult.Completed(text);
+                return await completion.Task;
+            }
+            finally { Interlocked.Decrement(ref activeCalls); }
         }
         public Task CancelAsync()
         {
