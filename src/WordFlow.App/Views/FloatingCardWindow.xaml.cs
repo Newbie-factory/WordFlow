@@ -261,7 +261,13 @@ public partial class FloatingCardWindow : Window
         ImageBrush? brush = null;
         if (!theme.IsDefault)
         {
-            brush = new ImageBrush(new BitmapImage(new Uri(theme.ImagePath, UriKind.Absolute))) { Stretch = Stretch.Fill };
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.UriSource = new Uri(theme.ImagePath, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            brush = new ImageBrush(image) { Stretch = Stretch.Fill };
         }
         ThemeImageLayer.Background = brush;
         updatingThemeControls = true;

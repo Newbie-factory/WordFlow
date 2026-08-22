@@ -23,16 +23,25 @@ public sealed class ImageThemeService
     public const string LegacyImagePathKey = "theme.png_path";
     public const string OpacityKey = "theme.opacity";
     public const long MaxFileBytes = 20 * 1024 * 1024;
+    public const int MaxImageDimension = 8192;
+    public const long MaxImagePixels = 16L * 1024 * 1024;
 
     private static readonly byte[] PngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
     private static readonly byte[] JpegSignature = [255, 216, 255];
     private readonly AppPaths paths;
     private readonly SqliteAppSettingStore store;
+    private readonly Action<string, string> copyFile;
 
     public ImageThemeService(AppPaths paths, SqliteAppSettingStore store)
+        : this(paths, store, File.Copy)
+    {
+    }
+
+    internal ImageThemeService(AppPaths paths, SqliteAppSettingStore store, Action<string, string> copyFile)
     {
         this.paths = paths ?? throw new ArgumentNullException(nameof(paths));
         this.store = store ?? throw new ArgumentNullException(nameof(store));
+        this.copyFile = copyFile ?? throw new ArgumentNullException(nameof(copyFile));
     }
 
     public async Task<ImageTheme> RestoreAsync(CancellationToken ct = default)
@@ -57,18 +66,18 @@ public sealed class ImageThemeService
     public async Task<ImageTheme> ImportAsync(string sourcePath, double opacity, CancellationToken ct = default)
     {
         if (!TryValidateImage(sourcePath, out var format, out string error)) throw new ArgumentException(error, nameof(sourcePath));
-        Directory.CreateDirectory(paths.SkinsDirectory);
+        EnsureSafeSkinsDirectory();
         string destination = Path.Combine(paths.SkinsDirectory, $"theme-{Guid.NewGuid():N}{GetFileExtension(format)}");
-        File.Copy(sourcePath, destination, overwrite: false);
         try
         {
+            copyFile(sourcePath, destination);
             var theme = new ImageTheme(destination, ClampOpacity(opacity));
             await SaveAsync(theme, ct).ConfigureAwait(false);
             return theme;
         }
         catch
         {
-            try { File.Delete(destination); } catch { }
+            TryDeleteGeneratedDestination(destination);
             throw;
         }
     }
@@ -112,7 +121,7 @@ public sealed class ImageThemeService
             if (!TryReadFormat(stream, out format)) { error = "文件不是有效的 PNG 或 JPEG。"; return false; }
             stream.Position = 0;
             var headerDecoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.None);
-            if (headerDecoder.Frames.Count == 0 || headerDecoder.Frames.Any(frame => frame.PixelWidth > 8192 || frame.PixelHeight > 8192))
+            if (headerDecoder.Frames.Count == 0 || headerDecoder.Frames.Any(IsUnsafeImageSize))
             {
                 error = "图片尺寸过大或不包含图像帧。";
                 return false;
@@ -123,7 +132,12 @@ public sealed class ImageThemeService
             if (decoder.Frames.Count == 0) { error = "图片不包含图像帧。"; return false; }
             return true;
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
+        catch (OutOfMemoryException)
+        {
+            error = "图片占用资源过多，无法读取。";
+            return false;
+        }
+        catch (Exception)
         {
             error = "图片无法读取或已损坏。";
             return false;
@@ -134,25 +148,66 @@ public sealed class ImageThemeService
     {
         string full;
         try { full = Path.GetFullPath(path); } catch { return false; }
-        string root = Path.GetFullPath(paths.SkinsDirectory).TrimEnd(Path.DirectorySeparatorChar);
-        return full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-            && HasSupportedExtension(full)
-            && !ContainsReparsePoint(full, root);
+        return IsManagedPathWithoutReparse(full, paths.RootDirectory, File.GetAttributes)
+            && HasSupportedExtension(full);
     }
 
-    private static bool ContainsReparsePoint(string fullPath, string root)
+    internal static bool IsManagedPathWithoutReparse(string candidatePath, string trustedAppDataRoot, Func<string, FileAttributes> getAttributes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidatePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(trustedAppDataRoot);
+        ArgumentNullException.ThrowIfNull(getAttributes);
+
+        try
+        {
+            string root = Path.GetFullPath(trustedAppDataRoot).TrimEnd(Path.DirectorySeparatorChar);
+            string full = Path.GetFullPath(candidatePath);
+            if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return false;
+
+            string relative = Path.GetRelativePath(root, full);
+            string current = root;
+            if (HasReparsePoint(current, getAttributes)) return false;
+            foreach (string segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                if (string.IsNullOrEmpty(segment) || segment == ".") continue;
+                current = Path.Combine(current, segment);
+                if (HasReparsePoint(current, getAttributes)) return false;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private void EnsureSafeSkinsDirectory()
+    {
+        if (!Directory.Exists(paths.RootDirectory) || !IsManagedPathWithoutReparse(paths.SkinsDirectory, paths.RootDirectory, File.GetAttributes))
+            throw new InvalidOperationException("皮肤目录不安全，无法导入图片。");
+        Directory.CreateDirectory(paths.SkinsDirectory);
+        if (!IsManagedPathWithoutReparse(paths.SkinsDirectory, paths.RootDirectory, File.GetAttributes))
+            throw new InvalidOperationException("皮肤目录不安全，无法导入图片。");
+    }
+
+    private void TryDeleteGeneratedDestination(string destination)
     {
         try
         {
-            for (string? current = fullPath; current is not null; current = Path.GetDirectoryName(current))
-            {
-                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
-                if (string.Equals(current, root, StringComparison.OrdinalIgnoreCase)) return false;
-            }
+            if (File.Exists(destination) && IsManagedPathWithoutReparse(destination, paths.RootDirectory, File.GetAttributes))
+                File.Delete(destination);
         }
         catch { }
-        return true;
     }
+
+    private static bool HasReparsePoint(string path, Func<string, FileAttributes> getAttributes)
+    {
+        try { return (getAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
+
+    private static bool IsUnsafeImageSize(BitmapFrame frame) =>
+        frame.PixelWidth <= 0 || frame.PixelHeight <= 0
+        || frame.PixelWidth > MaxImageDimension || frame.PixelHeight > MaxImageDimension
+        || frame.PixelWidth > MaxImagePixels / frame.PixelHeight;
 
     private static bool TryReadFormat(Stream stream, out ThemeImageFormat format)
     {

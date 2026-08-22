@@ -66,6 +66,27 @@ public sealed class ImageThemeServiceTests
     }
 
     [Fact]
+    public void Managed_path_guard_rejects_reparse_points_on_the_skins_root_and_its_ancestors()
+    {
+        string appRoot = Path.Combine(Path.GetTempPath(), "wordflow-app-root");
+        string skinsRoot = Path.Combine(appRoot, "Skins");
+        string imagePath = Path.Combine(skinsRoot, "theme.png");
+        var normal = new Dictionary<string, FileAttributes>(StringComparer.OrdinalIgnoreCase)
+        {
+            [appRoot] = FileAttributes.Directory,
+            [skinsRoot] = FileAttributes.Directory,
+            [imagePath] = FileAttributes.Normal,
+        };
+
+        Assert.True(ImageThemeService.IsManagedPathWithoutReparse(imagePath, appRoot, normal.GetValueOrDefault));
+        Assert.False(ImageThemeService.IsManagedPathWithoutReparse(imagePath, appRoot,
+            path => path == skinsRoot ? FileAttributes.Directory | FileAttributes.ReparsePoint : normal.GetValueOrDefault(path)));
+        Assert.False(ImageThemeService.IsManagedPathWithoutReparse(imagePath, appRoot,
+            path => path == appRoot ? FileAttributes.Directory | FileAttributes.ReparsePoint : normal.GetValueOrDefault(path)));
+        Assert.False(ImageThemeService.IsManagedPathWithoutReparse(Path.Combine(Path.GetTempPath(), "outside.png"), appRoot, normal.GetValueOrDefault));
+    }
+
+    [Fact]
     public async Task Import_uses_detected_format_for_managed_copy_and_preserves_exact_opacity()
     {
         string root = Directory.CreateTempSubdirectory("wordflow-theme-").FullName;
@@ -85,6 +106,27 @@ public sealed class ImageThemeServiceTests
 
             await service.SaveAsync(new ImageTheme(imported.ImagePath, 1d));
             Assert.Equal(1d, (await service.RestoreAsync()).Opacity);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Import_removes_its_generated_destination_after_a_partial_copy_failure()
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-").FullName;
+        try
+        {
+            var (paths, store) = await CreateStoreAsync(root);
+            string source = WritePng(root, "source.png");
+            var service = new ImageThemeService(paths, store, (_, destination) =>
+            {
+                File.WriteAllText(destination, "partial copy");
+                throw new IOException("simulated copy failure");
+            });
+
+            await Assert.ThrowsAsync<IOException>(() => service.ImportAsync(source, .7d));
+
+            Assert.Empty(Directory.GetFiles(paths.SkinsDirectory));
         }
         finally { Directory.Delete(root, true); }
     }
@@ -157,6 +199,27 @@ public sealed class ImageThemeServiceTests
             var restored = await new ImageThemeService(paths, store).RestoreAsync();
 
             Assert.True(restored.IsDefault);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task Import_rejects_a_reparse_point_replacing_the_skins_directory_before_copying()
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-").FullName;
+        try
+        {
+            var (paths, store) = await CreateStoreAsync(root);
+            string source = WritePng(root, "source.png");
+            string outsideDirectory = Path.Combine(root, "outside-skins");
+            Directory.CreateDirectory(outsideDirectory);
+            Directory.Delete(paths.SkinsDirectory);
+            try { Directory.CreateSymbolicLink(paths.SkinsDirectory, outsideDirectory); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => new ImageThemeService(paths, store).ImportAsync(source, .7d));
+
+            Assert.Empty(Directory.GetFiles(outsideDirectory));
         }
         finally { Directory.Delete(root, true); }
     }
