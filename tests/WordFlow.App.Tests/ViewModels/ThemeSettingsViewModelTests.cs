@@ -211,6 +211,94 @@ public sealed class ThemeSettingsViewModelTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task Durable_sequence_does_not_start_current_until_a_faulted_predecessor_completes()
+    {
+        var predecessorRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool currentStarted = false;
+        Task predecessor = Task.Run(async () =>
+        {
+            await predecessorRelease.Task;
+            throw new InvalidOperationException("expected predecessor failure");
+        });
+
+        Task current = ThemeSettingsViewModel.RunAfterPredecessorAsync(predecessor, () =>
+        {
+            currentStarted = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.False(currentStarted);
+        predecessorRelease.SetResult();
+        await current.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(currentStarted);
+    }
+
+    [Fact]
+    public async Task Durable_sequence_surfaces_the_current_operation_failure_to_its_caller()
+    {
+        var failure = new InvalidOperationException("current operation failed");
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ThemeSettingsViewModel.RunAfterPredecessorAsync(
+                Task.CompletedTask,
+                () => Task.FromException(failure)));
+
+        Assert.Same(failure, thrown);
+    }
+
+    [Fact]
+    public async Task Later_reset_executes_after_held_import_and_flush_waits_through_both_in_order()
+    {
+        string root = Directory.CreateTempSubdirectory("wordflow-theme-vm-").FullName;
+        try
+        {
+            var service = await CreateServiceAsync(root);
+            var importEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var importRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var resetEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var resetRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var order = new List<string>();
+            var imported = new ImageTheme(Path.Combine(root, "ordered-import.png"), .52);
+            var viewModel = new ThemeSettingsViewModel(
+                service,
+                (_, _) => Task.CompletedTask,
+                TimeSpan.FromMilliseconds(10),
+                importAsync: async (_, _, _) =>
+                {
+                    order.Add("import-start");
+                    importEntered.SetResult();
+                    await importRelease.Task;
+                    order.Add("import-end");
+                    return imported;
+                },
+                resetAsync: async _ =>
+                {
+                    order.Add("reset-start");
+                    resetEntered.SetResult();
+                    await resetRelease.Task;
+                    order.Add("reset-end");
+                });
+
+            Task import = viewModel.ImportAsync("source.png", imported.Opacity);
+            await importEntered.Task;
+            Task reset = viewModel.ResetAsync();
+            Task flush = viewModel.FlushAsync();
+
+            Assert.False(resetEntered.Task.IsCompleted);
+            Assert.False(flush.IsCompleted);
+            importRelease.SetResult();
+            await resetEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(flush.IsCompleted);
+            resetRelease.SetResult();
+
+            await Task.WhenAll(import, reset, flush).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(["import-start", "import-end", "reset-start", "reset-end"], order);
+            Assert.Equal(ImageTheme.Default, viewModel.Current);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static async Task<ImageThemeService> CreateServiceAsync(string root)
     {
         var paths = new AppPaths(Path.Combine(root, "local"), Path.Combine(root, "bundled"));

@@ -145,9 +145,11 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
             debounceCancellation = new CancellationTokenSource();
             token = debounceCancellation.Token;
             long scheduledRevision = ++revision;
+            Task predecessor = durableTail;
             Task operation = RunRegisteredAsync(start.Task,
-                () => DebounceAndPersistAsync(scheduledRevision, snapshot, token));
-            durableTail = CompleteBarrierAsync(durableTail, operation);
+                () => RunAfterPredecessorAsync(predecessor,
+                    () => DebounceAndPersistAsync(scheduledRevision, snapshot, token)));
+            durableTail = ObserveCompletionAsync(operation);
         }
         CancelAndDispose(previous);
         start.SetResult();
@@ -163,8 +165,10 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
         {
             cancellation = debounceCancellation;
             debounceCancellation = null;
-            registered = RunRegisteredAsync(start.Task, operation);
-            durableTail = CompleteBarrierAsync(durableTail, registered);
+            Task predecessor = durableTail;
+            registered = RunRegisteredAsync(start.Task,
+                () => RunAfterPredecessorAsync(predecessor, operation));
+            durableTail = ObserveCompletionAsync(registered);
         }
         CancelAndDispose(cancellation);
         start.SetResult();
@@ -177,11 +181,18 @@ public sealed class ThemeSettingsViewModel : INotifyPropertyChanged
         await operation().ConfigureAwait(false);
     }
 
-    private static async Task CompleteBarrierAsync(Task previous, Task current)
+    internal static async Task RunAfterPredecessorAsync(Task predecessor, Func<Task> operation)
     {
-        try { await previous.ConfigureAwait(false); }
+        ArgumentNullException.ThrowIfNull(predecessor);
+        ArgumentNullException.ThrowIfNull(operation);
+        try { await predecessor.ConfigureAwait(false); }
         catch { }
-        try { await current.ConfigureAwait(false); }
+        await operation().ConfigureAwait(false);
+    }
+
+    private static async Task ObserveCompletionAsync(Task operation)
+    {
+        try { await operation.ConfigureAwait(false); }
         catch { }
     }
 
