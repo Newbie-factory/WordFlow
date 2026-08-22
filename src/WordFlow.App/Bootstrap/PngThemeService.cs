@@ -28,16 +28,17 @@ public sealed class PngThemeService
 
     public async Task<PngTheme> RestoreAsync(CancellationToken ct = default)
     {
-        var values = await store.GetManyAsync([ImagePathKey, OpacityKey], ct).ConfigureAwait(false);
-        string path = values[ImagePathKey] ?? string.Empty;
-        double opacity = ParseOpacity(values[OpacityKey]);
-        if (string.IsNullOrWhiteSpace(path)) return new PngTheme(string.Empty, opacity);
-        if (!IsSafeStoredPath(path) || !TryValidatePng(path, out _))
+        try
         {
-            await ResetAsync(ct).ConfigureAwait(false);
-            return PngTheme.Default;
+            var values = await store.GetManyAsync([ImagePathKey, OpacityKey], ct).ConfigureAwait(false);
+            string path = values[ImagePathKey] ?? string.Empty;
+            double opacity = ParseOpacity(values[OpacityKey]);
+            if (string.IsNullOrWhiteSpace(path)) return new PngTheme(string.Empty, opacity);
+            if (!IsSafeStoredPath(path) || !TryValidatePng(path, out _)) return PngTheme.Default;
+            return new(path, opacity);
         }
-        return new(path, opacity);
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { return PngTheme.Default; }
     }
 
     public async Task<PngTheme> ImportAsync(string sourcePath, double opacity, CancellationToken ct = default)
@@ -97,7 +98,7 @@ public sealed class PngThemeService
             { error = "PNG 尺寸过大或不包含图像帧。"; return false; }
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         { error = "PNG 无法读取或已损坏。"; return false; }
     }
 

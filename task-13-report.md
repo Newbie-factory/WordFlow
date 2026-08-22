@@ -9,3 +9,11 @@ Implemented the bounded local PNG theme flow.
 - Added import/restore/reset, malformed-file, and opacity tests.
 
 Verification: `dotnet test tests/WordFlow.App.Tests/WordFlow.App.Tests.csproj --no-restore` — 112 passed.
+
+## Review follow-up
+
+- Added a visible, accessible 外观 / 换肤 panel with PNG chooser, opacity slider, and restore-default action.
+- Opacity changes are persisted immediately through `ThemeSettingsViewModel` and report save failures to the UI.
+- PNG decoder failures and startup restore failures now fall back to the default theme without rewriting or corrupting stored settings.
+
+Follow-up verification: focused theme tests 5 passed; `dotnet build WordFlow.sln --no-restore -c Release` passed with 0 warnings and 0 errors.

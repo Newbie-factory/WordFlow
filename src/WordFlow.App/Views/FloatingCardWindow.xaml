@@ -125,6 +125,19 @@
             </Grid>
 
             <StackPanel Grid.Row="2">
+                <Border Margin="20,0,20,10" Padding="8" Background="{StaticResource Brush.SurfaceRaised}" CornerRadius="{StaticResource Radius.Control}">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock Text="外观 / 换肤" FontWeight="SemiBold" VerticalAlignment="Center" AutomationProperties.Name="外观换肤设置" />
+                            <RepeatButton x:Name="ThemeImportButton" DockPanel.Dock="Right" Style="{StaticResource Button.Base}" Padding="8,3" Click="ThemeImport_Click" AutomationProperties.Name="选择 PNG 背景">选择 PNG</RepeatButton>
+                        </DockPanel>
+                        <DockPanel Margin="0,6,0,0">
+                            <RepeatButton x:Name="ThemeResetButton" DockPanel.Dock="Right" Style="{StaticResource Button.Base}" Padding="8,3" Click="ThemeReset_Click" AutomationProperties.Name="恢复默认背景">恢复默认</RepeatButton>
+                            <Slider x:Name="ThemeOpacitySlider" Minimum="0.15" Maximum="1" TickFrequency="0.05" IsSnapToTickEnabled="False" ValueChanged="ThemeOpacity_Changed" TabIndex="12" AutomationProperties.Name="背景透明度" />
+                        </DockPanel>
+                        <TextBlock x:Name="ThemeStatus" Margin="0,4,0,0" FontSize="11" Foreground="{StaticResource Brush.InkMuted}" AutomationProperties.LiveSetting="Polite" />
+                    </StackPanel>
+                </Border>
                 <Border Margin="20,0,20,12" Padding="10,8" Background="{StaticResource Brush.ErrorSurface}"
                         CornerRadius="{StaticResource Radius.Control}"
                         Visibility="{Binding HasError, Converter={StaticResource BoolVisibility}}">
