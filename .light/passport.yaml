@@ -41,10 +41,16 @@ gates:
     evidence: verifier exit 0; vocabulary 12046 integrity ok; relations 43947 senses and 47934 published integrity ok
   - name: second_iteration_tests_build_publish
     status: PASS
-    evidence: 598 passed 0 failed 0 skipped; build 0 warnings 0 errors; both release variants published
+    evidence: 604 passed 0 failed 0 skipped parsed from 4 actual project summaries; build 0 warnings 0 errors; both release variants published and manifest matched HEAD/files
   - name: second_iteration_windows_ui
     status: PASS_WITH_CONCERNS
-    evidence: sliders/topmost/navigation/undo/restart passed at 150 percent DPI; native file picker unavailable so guarded isolated import seam used
+    evidence: sliders/topmost/navigation/undo/restart passed at 150 percent DPI; 198 ms reassert without focus theft; native file picker unavailable so guarded isolated import seam used
+  - name: second_iteration_cleanup
+    status: PASS
+    evidence: final cleanup gate succeeded; 10 exact launched PIDs, 0 remaining, start-time reuse guard active, temp root removed, 0 cleanup errors
+  - name: second_iteration_ui_only_evidence_isolation
+    status: PASS
+    evidence: partial-ui-only evidence written separately; full evidence SHA256 unchanged; 0 residual PIDs/temp roots
 known_limitations:
   - Windows exclusive fullscreen, secure desktop, or higher-integrity processes can outrank ordinary desktop topmost windows.
   - Native OpenFileDialog interaction was not observable in the automation session; import format and restart coverage used the guarded isolated startup seam.

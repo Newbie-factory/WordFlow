@@ -1,10 +1,10 @@
 # WordFlow Second-Iteration Release Verification
 
-Status: **PASS_WITH_CONCERNS**. All executable completion gates passed from source commit `76264f488551db5d82e59e56fbadd49a17744d62`. The concerns are the native file-picker automation limitation and two exploratory launches that reached the real user profile before the guarded isolation seam was added; both are detailed below.
+Status: **PASS_WITH_CONCERNS**. The fresh full verifier reached `status: passed` only after all four executable gates, release/UI checks, exact-PID cleanup, and verified temp-root deletion succeeded from source commit `9fdab96869ae64017cbef3839c25b2b7236e72a6`. The concerns are the native file-picker automation limitation and two historical exploratory launches that reached the real user profile before the guarded isolation seam was added; both are detailed below.
 
 ## Environment and evidence source
 
-- Executed 2026-08-22 beginning `2026-08-22T09:43:11.1973151Z` in Windows interactive session 1.
+- Executed 2026-08-22 beginning `2026-08-22T10:07:20.1009956Z` in Windows interactive session 1.
 - Windows PowerShell `5.1.26100.9168`; no package download or update was requested. Publish restore reported all projects already up to date.
 - UI DPI: 144 DPI (150%).
 - Machine-readable evidence: ignored build artifact `artifacts/verification/second-iteration-evidence.json`.
@@ -14,16 +14,16 @@ Status: **PASS_WITH_CONCERNS**. All executable completion gates passed from sour
 
 | Order | Command | Exit | Time | Exact result |
 |---:|---|---:|---:|---|
-| 1 | `python tools\vocabulary\verify_vocabulary.py --artifact-dir data\ielts --curated data\curated\required_vocabulary.csv --source-registry data\curated\source_registry.json --report-root data\reports --relations --relations-curated data\curated\confusable_groups.csv --misspellings data\curated\misspellings.csv --oewn data\sources\oewn\english-wordnet-2025-json.zip --relations-quality data\reports\relations-quality.json --relations-manifest data\ielts\relations-manifest.json` | 0 | 10,522 ms | vocabulary `passed: true`, integrity `ok`; relations `passed: true`, integrity `ok` |
-| 2 | `dotnet test WordFlow.sln -c Release --no-restore` | 0 | 9,333 ms | 598 passed, 0 failed, 0 skipped (130 Domain + 58 Application + 225 Infrastructure + 185 App) |
-| 3 | `dotnet build WordFlow.sln -c Release --no-restore` | 0 | 1,128 ms | 0 warnings, 0 errors |
-| 4 | `powershell -ExecutionPolicy Bypass -File scripts\build-second-iteration.ps1` | 0 | 19,158 ms | both self-contained single-file variants published |
+| 1 | `python tools\vocabulary\verify_vocabulary.py --artifact-dir data\ielts --curated data\curated\required_vocabulary.csv --source-registry data\curated\source_registry.json --report-root data\reports --relations --relations-curated data\curated\confusable_groups.csv --misspellings data\curated\misspellings.csv --oewn data\sources\oewn\english-wordnet-2025-json.zip --relations-quality data\reports\relations-quality.json --relations-manifest data\ielts\relations-manifest.json` | 0 | 10,781 ms | vocabulary `passed: true`, integrity `ok`; relations `passed: true`, integrity `ok` |
+| 2 | `dotnet test WordFlow.sln -c Release --no-restore` | 0 | 9,975 ms | 604 passed, 0 failed, 0 skipped (130 Domain + 58 Application + 225 Infrastructure + 191 App); four project summaries parsed from actual output |
+| 3 | `dotnet build WordFlow.sln -c Release --no-restore` | 0 | 2,126 ms | 0 warnings, 0 errors |
+| 4 | `powershell -ExecutionPolicy Bypass -File scripts\build-second-iteration.ps1` | 0 | 21,846 ms | both self-contained single-file variants published |
 
 Vocabulary totals were 12,046 total and 12,046 case-insensitively unique, with all 46 required items present. Relations contained 43,947 senses, 47,934 published relations, and 19,520 candidates. All empty/invalid/missing/undocumented verifier counters were zero.
 
 ## Critical journey and named behavior coverage
 
-`SecondIterationJourneyTests.Critical_journey_resumes_carries_within_target_and_updates_goal_and_history` uses a temporary user SQLite database, disposable service providers, and a mutable UTC/local fake clock. In the 598-test gate it proved:
+`SecondIterationJourneyTests.Critical_journey_resumes_carries_within_target_and_updates_goal_and_history` uses a temporary user SQLite database, disposable service providers, and a mutable UTC/local fake clock. In the 604-test gate it proved:
 
 - day 1 configured target `40/120`, effective fresh queue `40/0`;
 - 13 new completions followed by disposal/recreation and recovery of the exact same 14th word and queue-item IDs;
@@ -31,15 +31,15 @@ Vocabulary totals were 12,046 total and 12,046 case-insensitively unique, with a
 - slash increments the global numerator by one and scheduled restore decrements it by one;
 - history contains exactly 183 consecutive local-date cells.
 
-A fresh focused run also passed 57/57 relevant tests: the journey; one decode per normalized theme path and debounced latest-only persistence; strong-topmost enabled/disabled/hidden behavior; and autoplay range, serial repetition, cancellation, and manual-single-play behavior.
+Fresh focused commands passed 7/7 strong-topmost tests and 51/51 pronunciation/verifier-contract tests. The hidden-tick test now asserts zero z-order calls immediately after the hidden tick. Autoplay count 10 completes all ten `SpeakAsync` calls in invocation order with maximum concurrency one, no eleventh call, and one final Completed publication; count 1, mid-sequence cancellation, and manual-single-play coverage also pass.
 
 ## Windows UI automation
 
 - Both real WPF theme sliders exposed range `0..1`. UIA set `0`, `0.37`, and `1`; physical pointer clicks at each Thumb center preserved the requested value.
 - Floating-card Thumb x deltas from the linear expected position were `0`, `0.08`, and `0` pixels. Control-center deltas were `0`, `0.37`, and `0` pixels.
-- PNG, `.JPG`, and `.JPEG` inputs were imported through the guarded isolated startup seam. Stored names were respectively `theme-aee15f984d3e40279ba72bb16a2f0e06.png`, `theme-202bea47917c49beaeb14f7424ca84b7.jpg`, and `theme-0015ee94619f442a8fc088cea7d07fd8.jpg`.
-- Restart restored `theme-0015ee94619f442a8fc088cea7d07fd8.jpg` and value `0.37` on both real sliders.
-- A controlled topmost cover began above the card. WordFlow returned above it in 311 ms; the foreground handle remained exactly `4853718`, so WordFlow did not steal focus. After disabling the setting, the cover remained above for the full 750 ms observation.
+- PNG, `.JPG`, and `.JPEG` inputs were imported through the guarded isolated startup seam. Stored names were respectively `theme-1eaf9692b2b649fea7b8d55b9fd87f12.png`, `theme-5ba5af20824a4fdca55b775eb2851277.jpg`, and `theme-ae339dbdacf74c488e4cdd5ff30c9ff3.jpg`.
+- Restart restored `theme-ae339dbdacf74c488e4cdd5ff30c9ff3.jpg` and value `0.37` on both real sliders.
+- A controlled topmost cover began above the card. WordFlow returned above it in 198 ms; the foreground handle remained exactly `8523846`, so WordFlow did not steal focus. After disabling the setting, the cover remained above for the full 750 ms observation.
 - All six control-center pages and all six settings tabs were selected through UIA; the process remained alive.
 - Visible undo elements: 0. Invoking Good changed the card, then focused `Ctrl+Z` through the real shortcut dispatcher restored the original `bumptious` card.
 
@@ -47,18 +47,22 @@ The native `OpenFileDialog` did not surface in this desktop/UIA session after `I
 
 ## Release and single-instance evidence
 
-Release directory: `D:\baicizhan\release\WordFlow-second-iteration`; manifest source commit: `76264f488551db5d82e59e56fbadd49a17744d62`.
+Release directory: `D:\baicizhan\release\WordFlow-second-iteration`; manifest source commit and verifier HEAD were both `9fdab96869ae64017cbef3839c25b2b7236e72a6`. The verifier matched both exact filenames, byte sizes, and SHA-256 values against the manifest.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `WordFlow-Photo.exe` | 191,383,417 | `44367748a07370c828df0c8f354b08cff0a92fe434726b1568480bd157064ea1` |
-| `WordFlow-Classic.exe` | 191,178,617 | `7046f334b246b67714890db33768d8b846cbe8dcba68261b0cb8192b940d5ade` |
+| `WordFlow-Photo.exe` | 191,383,417 | `9e28619f6992f027a82f18d86e819dd69c8e69d341c35328f82338f7632e8602` |
+| `WordFlow-Classic.exe` | 191,178,617 | `6a5b42e086ba253c998b21755233f1918bd979b13a2c128a9d99a2f8709dfb37` |
 
 Embedded icon artifact hashes also differ: photo `05fac549624c5eed05205a5e009b3961f85ab6657ae71c460c073c51a74dde32`; classic `895c0d6a90e418c245a2d926d6eca67a9bf1b2ff02a3e9a14e467d47745fa092`.
 
-- Photo then Classic: primary PID 42596, secondary PID 41548 exited 0, exactly one remaining PID 42596 after 18 ms convergence.
-- Classic then Photo: primary PID 25332, secondary PID 44376 exited 0, exactly one remaining PID 25332 after 11 ms convergence.
-- The verifier launched ten exact PIDs in total and recorded zero remaining PIDs. Every profile, database, imported skin, and helper artifact used by the final verifier was below one validated system-temp root, which was deleted afterward.
+- Photo then Classic: primary PID 44648, secondary PID 43740 exited 0, exactly one remaining PID 44648 after 28 ms convergence.
+- Classic then Photo: primary PID 27128, secondary PID 43060 exited 0, exactly one remaining PID 27128 after 15 ms convergence.
+- Cleanup was a final required gate: ten exact PIDs were recorded, `remainingPids` was empty, the start-time PID-reuse guard remained active, `tempRootRemoved` was true, and cleanup errors were empty. Only then was overall status written as `passed`.
+
+## `UiOnly` evidence isolation
+
+A separate diagnostic run used the default `artifacts/verification/second-iteration-ui-evidence.json`. It exited 0 with status `partial-ui-only`, zero full-gate records, successful exact-PID/temp-root cleanup, and no residual processes or roots. The full evidence SHA-256 was `A770D8FA06CF458086F68FD18821031516391AAACC868C6DFB2A35338A8D3479` both before and after the diagnostic run, proving `UiOnly` did not overwrite it.
 
 ## Limitations and incident record
 
