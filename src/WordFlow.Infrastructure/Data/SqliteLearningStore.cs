@@ -15,7 +15,7 @@ public enum LearningCommitStage
     UndoEventSelected,
 }
 
-public sealed class SqliteLearningStore : ILearningStore
+public sealed class SqliteLearningStore : ILearningStore, ILearningProgressReader
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -33,6 +33,23 @@ public sealed class SqliteLearningStore : ILearningStore
 
     public Task<CommitResult> ApplyAsync(LearningCommand command, CancellationToken ct) =>
         TranslateAsync(() => ApplyCoreAsync(command, ct));
+
+    public Task<DailyLearningStatistics> GetDailyStatisticsAsync(DateOnly day, CancellationToken ct) =>
+        TranslateAsync(async () =>
+        {
+            var start = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
+            var end = start.AddDays(1);
+            await using var connection = await factory.OpenUserAsync(ct).ConfigureAwait(false);
+            await using var reviewed = connection.CreateCommand();
+            reviewed.CommandText = "SELECT COUNT(*) FROM review_event WHERE action <> 'Undo' AND occurred_at_utc >= $start AND occurred_at_utc < $end";
+            reviewed.Parameters.AddWithValue("$start", MigrationRunner.UtcText(start));
+            reviewed.Parameters.AddWithValue("$end", MigrationRunner.UtcText(end));
+            var reviewedToday = Convert.ToInt32(await reviewed.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
+            await using var slashed = connection.CreateCommand();
+            slashed.CommandText = "SELECT COUNT(*) FROM card_state WHERE is_slashed=1";
+            var slashedTotal = Convert.ToInt32(await slashed.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
+            return new DailyLearningStatistics(reviewedToday, slashedTotal);
+        });
 
     private async Task<CommitResult> ApplyCoreAsync(LearningCommand command, CancellationToken ct)
     {

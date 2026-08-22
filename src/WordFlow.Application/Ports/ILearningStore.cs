@@ -50,6 +50,13 @@ public interface ILearningStore
     Task<CommitResult> UndoLatestAsync(UndoLearningCommand command, CancellationToken ct);
 }
 
+public sealed record DailyLearningStatistics(int ReviewedToday, int SlashedTotal);
+
+public interface ILearningProgressReader
+{
+    Task<DailyLearningStatistics> GetDailyStatisticsAsync(DateOnly day, CancellationToken ct);
+}
+
 public sealed class LearningConcurrencyException : InvalidOperationException
 {
     public LearningConcurrencyException(Guid cardId)

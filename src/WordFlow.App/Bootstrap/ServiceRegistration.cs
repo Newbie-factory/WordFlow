@@ -22,8 +22,11 @@ public static class ServiceRegistration
             paths.UserDatabasePath, paths.VocabularyDatabasePath, paths.RelationDatabasePath));
         services.AddSingleton(provider => new MigrationRunner(
             provider.GetRequiredService<SqliteConnectionFactory>(), backupDirectory: paths.BackupsDirectory));
-        services.AddSingleton<ILearningStore, SqliteLearningStore>();
+        services.AddSingleton<SqliteLearningStore>();
+        services.AddSingleton<ILearningStore>(provider => provider.GetRequiredService<SqliteLearningStore>());
+        services.AddSingleton<ILearningProgressReader>(provider => provider.GetRequiredService<SqliteLearningStore>());
         services.AddSingleton<SqliteAppSettingStore>();
+        services.AddSingleton<DailyPlanSettingsViewModel>();
         services.AddSingleton<PngThemeService>();
         services.AddSingleton<ThemeSettingsViewModel>();
         services.AddSingleton<IPronunciationService, WindowsSpeechPronunciationService>();

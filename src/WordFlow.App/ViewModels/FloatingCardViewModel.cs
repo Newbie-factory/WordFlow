@@ -20,7 +20,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     private static readonly IReadOnlyList<string> StableReadingOrder = ["Word", "Phonetic", "Chinese"];
     private readonly FloatingCardOperations operations;
     private readonly ShortcutLabelMap shortcutLabels;
-    private readonly DailyPlan plan;
+    private readonly Func<DailyPlan> planProvider;
     private readonly IFloatingCardActionHost actionHost;
     private readonly ICardPronunciationPlayback? pronunciation;
     private NextCard? current;
@@ -40,7 +40,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         ShortcutLabelMap shortcutLabels,
         IFloatingCardActionHost? actionHost = null,
         DailyPlan? plan = null,
-        ICardPronunciationPlayback? pronunciation = null)
+        ICardPronunciationPlayback? pronunciation = null,
+        Func<DailyPlan>? planProvider = null)
     {
         this.operations = operations ?? throw new ArgumentNullException(nameof(operations));
         Synonyms = synonyms ?? throw new ArgumentNullException(nameof(synonyms));
@@ -48,7 +49,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         this.shortcutLabels = shortcutLabels ?? throw new ArgumentNullException(nameof(shortcutLabels));
         this.actionHost = actionHost ?? FloatingCardActionHost.Unavailable;
         this.pronunciation = pronunciation;
-        this.plan = plan ?? DailyPlan.Default;
+        this.planProvider = planProvider ?? (() => plan ?? DailyPlan.Default);
         shortcutLabels.PropertyChanged += OnShortcutLabelsChanged;
         Synonyms.ActionRequested += OnRelationActionRequested;
         Confusables.ActionRequested += OnRelationActionRequested;
@@ -135,7 +136,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
-            var result = await operations.GetNextCard(plan, linked.Token);
+            var result = await operations.GetNextCard(planProvider(), linked.Token);
             if (disposed) return;
             switch (result)
             {
@@ -161,11 +162,11 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     public Task RateAsync(RatingShortcut rating, CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SubmitRating(
-            new(commandId, eventId, card.Card, card.Revision, rating, plan), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, rating, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public Task SlashAsync(CancellationToken ct = default) =>
         MutateAsync((card, commandId, eventId, token) => operations.SlashWord(
-            new(commandId, eventId, card.Card, card.Revision, plan), token), eventIdOnSuccess: true, ct);
+            new(commandId, eventId, card.Card, card.Revision, planProvider()), token), eventIdOnSuccess: true, ct);
 
     public async Task UndoAsync(CancellationToken ct = default)
     {
@@ -286,7 +287,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task ReloadAfterUndoAsync(long operationGeneration, CancellationToken ct)
     {
-        var result = await operations.GetNextCard(plan, ct);
+        var result = await operations.GetNextCard(planProvider(), ct);
         if (disposed || generation != operationGeneration) return;
         if (result is Success<NextCard?> success) SetCurrent(success.Value);
         else if (result is StorageFailure<NextCard?> failure) SetFailure("已撤销，但无法刷新学习卡", failure.Message);

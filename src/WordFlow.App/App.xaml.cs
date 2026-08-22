@@ -28,7 +28,9 @@ public partial class App : System.Windows.Application
     private IFloatingCardActionHost? cardActionHost;
     private PronunciationSettingsViewModel? pronunciationSettings;
     private ThemeSettingsViewModel? themeSettings;
+    private DailyPlanSettingsViewModel? dailyPlanSettings;
     private ControlCenterWindow? controlCenter;
+    private ControlCenterViewModel? controlCenterViewModel;
     private bool exiting;
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -133,6 +135,8 @@ public partial class App : System.Windows.Application
             WriteLifecycle($"shortcut-callback-fault pid={Environment.ProcessId} type={args.Exception.GetType().Name}");
         var pronunciation = pronunciationSettings
             ?? throw new InvalidOperationException("Pronunciation settings were not prepared.");
+        dailyPlanSettings = services.GetRequiredService<DailyPlanSettingsViewModel>();
+        await dailyPlanSettings.RestoreAsync(cancellationToken);
         cardActionHost = new FloatingCardActionHost(offlineSpeech: pronunciation);
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
@@ -143,7 +147,8 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<GetConfusables>(),
             new ShortcutLabelMap(shortcutService),
             cardActionHost,
-            pronunciation);
+            pronunciation,
+            dailyPlanSettings);
         var paths = services.GetRequiredService<AppPaths>();
         themeSettings = services.GetRequiredService<ThemeSettingsViewModel>();
         await themeSettings.RestoreAsync(cancellationToken);
@@ -153,7 +158,15 @@ public partial class App : System.Windows.Application
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults,
             themeSettings);
-        controlCenter = new ControlCenterWindow(themeSettings);
+        controlCenterViewModel = new ControlCenterViewModel(
+            dailyPlanSettings,
+            new ShortcutSettingsViewModel(shortcutService),
+            pronunciation,
+            themeSettings,
+            services.GetRequiredService<ILearningProgressReader>(),
+            SynchronizationContext.Current);
+        await controlCenterViewModel.LoadAsync(cancellationToken);
+        controlCenter = new ControlCenterWindow(controlCenterViewModel);
         var appSettings = services.GetRequiredService<SqliteAppSettingStore>();
         try { card.SuppressTopmostForFullscreen = await appSettings.GetBooleanAsync(FullscreenSuppressionSetting, true, cancellationToken); }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -219,8 +232,8 @@ public partial class App : System.Windows.Application
     {
         if (controlCenter is null || !controlCenter.IsLoaded)
         {
-            if (themeSettings is null) return;
-            controlCenter = new ControlCenterWindow(themeSettings);
+            if (controlCenterViewModel is null) return;
+            controlCenter = new ControlCenterWindow(controlCenterViewModel);
         }
         if (!controlCenter.IsVisible) controlCenter.Show();
         if (controlCenter.WindowState == WindowState.Minimized) controlCenter.WindowState = WindowState.Normal;
