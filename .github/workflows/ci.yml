@@ -32,4 +32,23 @@ jobs:
       - name: Restore
         run: dotnet restore WordFlow.sln
       - name: Test
-        run: dotnet test ${{ matrix.project }} -c Release --no-restore --nologo --logger "console;verbosity=normal"
+        shell: pwsh
+        run: |
+          $resultPath = Join-Path $env:RUNNER_TEMP "${{ matrix.name }}.trx"
+          dotnet test "${{ matrix.project }}" -c Release --no-restore --nologo `
+            --logger "console;verbosity=normal" `
+            --logger "trx;LogFileName=$resultPath"
+          $testExitCode = $LASTEXITCODE
+
+          if ($testExitCode -ne 0 -and (Test-Path -LiteralPath $resultPath)) {
+            [xml]$results = Get-Content -LiteralPath $resultPath -Raw
+            $results.TestRun.Results.UnitTestResult |
+              Where-Object outcome -eq 'Failed' |
+              ForEach-Object {
+                $message = "{0}: {1}" -f $_.testName, $_.Output.ErrorInfo.Message
+                $escaped = $message.Replace('%', '%25').Replace("`r", '').Replace("`n", '%0A')
+                Write-Host "::error title=Failed test::$escaped"
+              }
+          }
+
+          exit $testExitCode
