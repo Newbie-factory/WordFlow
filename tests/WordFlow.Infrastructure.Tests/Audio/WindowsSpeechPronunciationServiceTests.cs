@@ -275,6 +275,12 @@ public sealed class WindowsSpeechPronunciationServiceTests
     [Fact]
     public async Task Real_installed_English_voice_null_output_smoke_is_guarded_and_stops_cleanly()
     {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("WORDFLOW_RUN_REAL_SPEECH_TESTS"),
+                "1",
+                StringComparison.Ordinal))
+            return;
+
         using var service = new WindowsSpeechPronunciationService(
             new SystemSpeechEngineFactory(SpeechOutputPolicy.Null));
         var voice = service.SelectVoice(null, PronunciationAccent.Automatic);

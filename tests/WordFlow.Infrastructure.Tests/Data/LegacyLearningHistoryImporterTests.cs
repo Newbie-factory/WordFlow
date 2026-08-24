@@ -144,7 +144,12 @@ public sealed class LegacyLearningHistoryImporterTests : IDisposable
 
     private string CopyExternalBaseline()
     {
-        const string source = @"D:\baicizhan\data\ielts\ielts_vocabulary.sqlite3";
+        var source = Path.Combine(
+            FindRepositoryRoot(),
+            "tests",
+            "WordFlow.Infrastructure.Tests",
+            "Fixtures",
+            "ielts_vocabulary.sqlite3");
         Assert.True(File.Exists(source), $"Required retained baseline missing: {source}");
         var target = Path.Combine(directory, "ielts_vocabulary.sqlite3");
         File.Copy(source, target);
