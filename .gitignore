@@ -34,5 +34,3 @@ data/sources/oewn/english-wordnet-2025-json.zip
 data/ielts/ielts_8000.csv
 data/ielts/ielts_vocabulary.sqlite3
 data/ielts/vocabulary.csv
-data/ielts/vocabulary.sqlite3
-data/ielts/relations.sqlite3
