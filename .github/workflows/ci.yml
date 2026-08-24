@@ -10,13 +10,26 @@ permissions:
 
 jobs:
   test:
+    name: test (${{ matrix.name }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Domain
+            project: tests/WordFlow.Domain.Tests/WordFlow.Domain.Tests.csproj
+          - name: Application
+            project: tests/WordFlow.Application.Tests/WordFlow.Application.Tests.csproj
+          - name: Infrastructure
+            project: tests/WordFlow.Infrastructure.Tests/WordFlow.Infrastructure.Tests.csproj
+          - name: App
+            project: tests/WordFlow.App.Tests/WordFlow.App.Tests.csproj
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
       - name: Restore
         run: dotnet restore WordFlow.sln
       - name: Test
-        run: dotnet test WordFlow.sln -c Release --no-restore --nologo
+        run: dotnet test ${{ matrix.project }} -c Release --no-restore --nologo --logger "console;verbosity=normal"
