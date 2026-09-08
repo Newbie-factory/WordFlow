@@ -37,6 +37,36 @@ public sealed class RepositoryContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Corpus_literal_escaped_newlines_are_normalized_to_real_newlines()
+    {
+        var vocabulary = CopyArtifact("vocabulary.sqlite3");
+        var relations = CopyArtifact("relations.sqlite3");
+        var repository = new SqliteVocabularyRepository(Factory(vocabulary, relations));
+
+        var raw = await RawWordWithEscapedNewlineAsync(vocabulary);
+        var word = await repository.GetWordAsync(raw, default);
+        var entry = await repository.GetWordEntryAsync(raw, default);
+
+        Assert.NotNull(word);
+        Assert.DoesNotContain("\\n", word.Chinese, StringComparison.Ordinal);
+        Assert.Contains('\n', word.Chinese);
+        Assert.NotNull(entry);
+        Assert.DoesNotContain("\\n", entry.Chinese, StringComparison.Ordinal);
+        Assert.Contains('\n', entry.Chinese);
+    }
+
+    private static async Task<Guid> RawWordWithEscapedNewlineAsync(string path)
+    {
+        await using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT stable_id FROM vocabulary WHERE translation_zh_cn LIKE '%\\n%' LIMIT 1";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync(), "No corpus row contains an escaped newline in its Chinese translation.");
+        return Guid.Parse(reader.GetString(0));
+    }
+
+    [Fact]
     public async Task Relation_direction_is_respected_and_user_overrides_are_user_only()
     {
         var vocabulary = CopyArtifact("vocabulary.sqlite3");

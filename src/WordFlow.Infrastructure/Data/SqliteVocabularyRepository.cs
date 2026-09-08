@@ -130,24 +130,32 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return id;
     }
 
+    private static string NormalizeNewlines(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+        return value
+            .Replace("\\r\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal);
+    }
+
     private static VocabularyWord ReadWord(SqliteDataReader reader) => new(
         ParseId(reader.GetString(0)),
         reader.GetString(1),
         reader.IsDBNull(2) ? null : reader.GetInt32(2),
         true,
         reader.GetString(3),
-        reader.GetString(4),
-        reader.IsDBNull(5) ? "" : reader.GetString(5),
+        NormalizeNewlines(reader.GetString(4)),
+        reader.IsDBNull(5) ? "" : NormalizeNewlines(reader.GetString(5)),
         reader.IsDBNull(6) ? "" : reader.GetString(6));
 
     private static WordEntry ReadEntry(SqliteDataReader reader) => new(
         ParseId(reader.GetString(0)),
         reader.GetString(1),
         reader.GetString(2),
-        reader.GetString(3),
-        reader.IsDBNull(4) ? null : reader.GetString(4),
+        NormalizeNewlines(reader.GetString(3)),
+        reader.IsDBNull(4) ? null : NormalizeNewlines(reader.GetString(4)),
         reader.IsDBNull(5) ? null : reader.GetString(5),
-        reader.IsDBNull(6) ? null : reader.GetString(6),
+        reader.IsDBNull(6) ? null : NormalizeNewlines(reader.GetString(6)),
         reader.IsDBNull(7) ? null : reader.GetString(7),
         reader.IsDBNull(8) ? null : reader.GetString(8),
         reader.IsDBNull(9) ? null : reader.GetInt32(9),
