@@ -27,4 +27,10 @@
   <ItemGroup>
     <InternalsVisibleTo Include="WordFlow.App.Tests" />
   </ItemGroup>
+  <Target Name="CreateDesktopShortcut" AfterTargets="Build">
+    <PropertyGroup>
+      <DesktopLnk>$([System.Environment]::GetFolderPath(SpecialFolder.DesktopDirectory))\WordFlow.lnk</DesktopLnk>
+    </PropertyGroup>
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -Command &quot;&amp; { $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut('$(DesktopLnk)'); $sc.TargetPath = '$(TargetDir)\WordFlow.App.exe'; $sc.WorkingDirectory = '$(TargetDir)'; $sc.Save() }&quot;" />
+  </Target>
 </Project>

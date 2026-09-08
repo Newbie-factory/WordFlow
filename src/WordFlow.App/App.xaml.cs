@@ -153,7 +153,22 @@ public partial class App : System.Windows.Application
             ?? throw new InvalidOperationException("Pronunciation settings were not prepared.");
         dailyPlanSettings = services.GetRequiredService<DailyPlanSettingsViewModel>();
         await dailyPlanSettings.RestoreAsync(cancellationToken);
-        cardActionHost = new FloatingCardActionHost(offlineSpeech: pronunciation);
+        var getWordEntry = services.GetRequiredService<GetWordEntry>();
+        cardActionHost = new FloatingCardActionHost(
+            offlineSpeech: pronunciation,
+            details: new DelegateFloatingCardActionPort((wordId, word) =>
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    var entryViewModel = new WordEntryViewModel(getWordEntry, wordId, word);
+                    var window = new WordEntryWindow(entryViewModel)
+                    {
+                        Owner = card is { IsVisible: true } ? card : null,
+                    };
+                    window.Show();
+                });
+                return FloatingCardActionResult.Completed($"已打开 {word} 的完整词条");
+            }));
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
             services.GetRequiredService<SubmitRating>(),

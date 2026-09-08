@@ -1,0 +1,89 @@
+<Window x:Class="WordFlow.App.Views.WordEntryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{Binding Word, StringFormat=词条 · {0}}" Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize" MinWidth="360" MaxWidth="560"
+        SnapsToDevicePixels="True" UseLayoutRounding="True"
+        AutomationProperties.Name="{Binding Word, StringFormat=词条详情 {0}}">
+    <Window.Background>
+        <SolidColorBrush Color="{StaticResource Color.Canvas}" />
+    </Window.Background>
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="{Binding Word}" FontFamily="{StaticResource Font.Display}"
+                   FontSize="{StaticResource Type.Word}" FontWeight="SemiBold"
+                   AutomationProperties.Name="{Binding Word, StringFormat=单词 {0}}" />
+
+        <StackPanel Grid.Row="1" Margin="0,6,0,10">
+            <TextBlock Text="{Binding Phonetic}" FontSize="15" Foreground="{StaticResource Brush.AccentStrong}"
+                       Visibility="{Binding HasPhoneticVisibility}"
+                       AutomationProperties.Name="{Binding Phonetic, StringFormat=音标 {0}}" />
+            <TextBlock Text="{Binding Chinese}" Margin="0,6,0,0" FontSize="16" FontWeight="Medium" TextWrapping="Wrap"
+                       AutomationProperties.Name="{Binding Chinese, StringFormat=中文释义 {0}}" />
+        </StackPanel>
+
+        <Border Grid.Row="2" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+                BorderThickness="1" CornerRadius="{StaticResource Radius.Control}" Padding="14">
+            <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="420">
+                <StackPanel>
+                    <Border Background="{StaticResource Brush.AccentSurface}" CornerRadius="{StaticResource Radius.Badge}"
+                            Padding="6,2" HorizontalAlignment="Left" Margin="0,0,0,8" Visibility="{Binding HasPartOfSpeechVisibility}">
+                        <TextBlock Text="{Binding PartOfSpeech}" FontSize="12" Foreground="{StaticResource Brush.AccentStrong}" />
+                    </Border>
+
+                    <StackPanel Visibility="{Binding HasDefinitionVisibility}" Margin="0,0,0,10">
+                        <TextBlock Text="英文释义" FontSize="12" Foreground="{StaticResource Brush.InkMuted}" />
+                        <TextBlock Text="{Binding PrimaryDefinition}" FontSize="14" TextWrapping="Wrap" Margin="0,2,0,0" />
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding HasExchangeVisibility}" Margin="0,0,0,10">
+                        <TextBlock Text="词形变化" FontSize="12" Foreground="{StaticResource Brush.InkMuted}" />
+                        <TextBlock Text="{Binding Exchange}" FontSize="14" TextWrapping="Wrap" Margin="0,2,0,0"
+                                   AutomationProperties.Name="{Binding Exchange, StringFormat=词形变化 {0}}" />
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding HasTagsVisibility}" Margin="0,0,0,10">
+                        <TextBlock Text="考纲标签" FontSize="12" Foreground="{StaticResource Brush.InkMuted}" />
+                        <TextBlock Text="{Binding Tags}" FontSize="14" TextWrapping="Wrap" Margin="0,2,0,0"
+                                   AutomationProperties.Name="{Binding Tags, StringFormat=考纲标签 {0}}" />
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding HasTierVisibility}" Margin="0,0,0,10">
+                        <TextBlock Text="词库分层" FontSize="12" Foreground="{StaticResource Brush.InkMuted}" />
+                        <TextBlock Text="{Binding Tier}" FontSize="14" TextWrapping="Wrap" Margin="0,2,0,0"
+                                   AutomationProperties.Name="{Binding Tier, StringFormat=词库分层 {0}}" />
+                    </StackPanel>
+
+                    <StackPanel Visibility="{Binding HasRankVisibility}">
+                        <TextBlock Text="词频与评级" FontSize="12" Foreground="{StaticResource Brush.InkMuted}" />
+                        <WrapPanel Margin="0,4,0,0">
+                            <TextBlock Text="{Binding FrequencyRank, StringFormat=词频 #{0}}" FontSize="13" Margin="0,0,12,0"
+                                       Visibility="{Binding HasFrequencyVisibility}" />
+                            <TextBlock Text="{Binding Collins, StringFormat=柯林斯 {0} 星}" FontSize="13" Margin="0,0,12,0" />
+                            <TextBlock Text="{Binding Oxford, StringFormat=牛津 {0} 星}" FontSize="13" Margin="0,0,12,0" />
+                            <TextBlock Text="{Binding BncRank, StringFormat=BNC #{0}}" FontSize="13" />
+                        </WrapPanel>
+                    </StackPanel>
+
+                    <TextBlock Text="正在加载词条…" FontSize="14" Foreground="{StaticResource Brush.InkMuted}"
+                               Visibility="{Binding HasLoadingVisibility}" />
+                    <Border Background="{StaticResource Brush.ErrorSurface}" CornerRadius="{StaticResource Radius.Control}"
+                            Padding="10,8" Visibility="{Binding HasErrorVisibility}">
+                        <TextBlock Text="{Binding ErrorMessage}" FontSize="14" Foreground="{StaticResource Brush.Error}"
+                                   TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <Button Grid.Row="3" Content="关闭" Style="{StaticResource Button.Base}" HorizontalAlignment="Right"
+                MinWidth="88" Margin="0,14,0,0" Click="Close_Click" TabIndex="0"
+                AutomationProperties.Name="关闭词条详情窗口" />
+    </Grid>
+</Window>

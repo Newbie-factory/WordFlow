@@ -200,6 +200,14 @@ public sealed class RelationUseCaseTests
             if (Failure is not null) throw Failure;
             return Task.FromResult(allWords.SingleOrDefault(x => x.WordId == wordId));
         }
+        public Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct)
+        {
+            if (Failure is not null) throw Failure;
+            return Task.FromResult(allWords.SingleOrDefault(x => x.WordId == wordId) is { } word
+                ? new WordEntry(word.WordId, word.Lemma, word.Phonetic, word.Chinese, word.PrimaryDefinition, word.PrimaryPartOfSpeech,
+                    null, null, null, word.FrequencyRank, null, null, null)
+                : null);
+        }
         public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= allWords.Length, "words:v1"));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct)
         {

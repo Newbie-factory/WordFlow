@@ -35,6 +35,21 @@ public sealed record VocabularyWord(
 
 public sealed record VocabularySense(string SenseId, Guid WordId, string Definition, string? PartOfSpeech = null);
 
+public sealed record WordEntry(
+    Guid WordId,
+    string Lemma,
+    string Phonetic,
+    string Chinese,
+    string? PrimaryDefinition,
+    string? PartOfSpeech,
+    string? Exchange,
+    string? Tags,
+    string? Tier,
+    int? FrequencyRank,
+    int? Collins,
+    int? Oxford,
+    int? BncRank);
+
 public interface IVocabularyRepository
 {
     Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct);
@@ -42,6 +57,8 @@ public interface IVocabularyRepository
     Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct);
 
     Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct);
+
+    Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct);
 
     Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct);
 

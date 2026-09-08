@@ -61,6 +61,21 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         return ReadWord(reader);
     }
 
+    public Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct) =>
+        SqliteStorageBoundary.TranslateAsync(() => GetWordEntryCoreAsync(wordId, ct));
+
+    private async Task<WordEntry?> GetWordEntryCoreAsync(Guid wordId, CancellationToken ct)
+    {
+        if (wordId == Guid.Empty) throw new ArgumentException("A word ID cannot be empty.", nameof(wordId));
+        await using var connection = await factory.OpenVocabularyAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT stable_id,word,phonetic,translation_zh_cn,definition_en,pos,exchange,tags,tier,frequency_rank,collins,oxford,bnc_rank FROM vocabulary WHERE stable_id=$wordId";
+        command.Parameters.AddWithValue("$wordId", wordId.ToString("D"));
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
+        return ReadEntry(reader);
+    }
+
     public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
         SqliteStorageBoundary.TranslateAsync(() => GetSensesCoreAsync(wordId, page, ct));
 
@@ -124,4 +139,19 @@ public sealed class SqliteVocabularyRepository : IVocabularyRepository
         reader.GetString(4),
         reader.IsDBNull(5) ? "" : reader.GetString(5),
         reader.IsDBNull(6) ? "" : reader.GetString(6));
+
+    private static WordEntry ReadEntry(SqliteDataReader reader) => new(
+        ParseId(reader.GetString(0)),
+        reader.GetString(1),
+        reader.GetString(2),
+        reader.GetString(3),
+        reader.IsDBNull(4) ? null : reader.GetString(4),
+        reader.IsDBNull(5) ? null : reader.GetString(5),
+        reader.IsDBNull(6) ? null : reader.GetString(6),
+        reader.IsDBNull(7) ? null : reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetString(8),
+        reader.IsDBNull(9) ? null : reader.GetInt32(9),
+        reader.IsDBNull(10) ? null : reader.GetInt32(10),
+        reader.IsDBNull(11) ? null : reader.GetInt32(11),
+        reader.IsDBNull(12) ? null : reader.GetInt32(12));
 }

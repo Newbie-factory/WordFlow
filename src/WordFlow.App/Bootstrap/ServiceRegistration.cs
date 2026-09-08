@@ -44,6 +44,7 @@ public static class ServiceRegistration
         services.AddSingleton<QueuePolicy>();
         services.AddSingleton<DailyQueueCoordinator>();
         services.AddSingleton<GetNextCard>();
+        services.AddSingleton<GetWordEntry>();
         services.AddSingleton<SubmitRating>();
         services.AddSingleton<SlashWord>();
         services.AddSingleton<RestoreSlashedWords>();

@@ -419,6 +419,11 @@ public sealed class DailyQueueCoordinatorTests
             return Task.FromResult(new Page<VocabularyWord>(items, all.Length, page.Offset + items.Length < all.Length, "words:test"));
         }
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId));
+        public Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct) =>
+            Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId) is { } word
+                ? new WordEntry(word.WordId, word.Lemma, word.Phonetic, word.Chinese, word.PrimaryDefinition, word.PrimaryPartOfSpeech,
+                    null, null, null, word.FrequencyRank, null, null, null)
+                : null);
         public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) =>
             Task.FromResult(new ExhaustionProbe(offset >= all.Length, "words:test"));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
@@ -434,6 +439,7 @@ public sealed class DailyQueueCoordinatorTests
         public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) =>
             throw new IOException("Candidate enumeration must not run for a persisted session.");
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => inner.GetWordAsync(wordId, ct);
+        public Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct) => inner.GetWordEntryAsync(wordId, ct);
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
             inner.GetSensesAsync(wordId, page, ct);
         public Task<ExhaustionProbe> ProbeSensesEndAsync(Guid wordId, int offset, string snapshotId, CancellationToken ct) =>

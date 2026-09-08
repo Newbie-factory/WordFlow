@@ -62,6 +62,45 @@ public sealed class LearningUseCaseTests
     }
 
     [Fact]
+    public async Task Get_word_entry_returns_the_full_offline_entry_when_present()
+    {
+        var handler = new GetWordEntry(new FakeVocabularyRepository([Word(1)]));
+
+        var result = await handler.HandleAsync(new GetWordEntryRequest(Id(1)), default);
+
+        var success = Assert.IsType<Success<WordEntry>>(result);
+        Assert.Equal(Id(1), success.Value.WordId);
+        Assert.Equal("word-001", success.Value.Lemma);
+        Assert.Equal(1, success.Value.FrequencyRank);
+    }
+
+    [Fact]
+    public async Task Get_word_entry_reports_not_found_for_an_unknown_word()
+    {
+        var handler = new GetWordEntry(new FakeVocabularyRepository([Word(1)]));
+
+        var result = await handler.HandleAsync(new GetWordEntryRequest(Id(999)), default);
+
+        Assert.IsType<NotFound<WordEntry>>(result);
+    }
+
+    [Fact]
+    public async Task Get_word_entry_rejects_an_empty_word_id()
+    {
+        var handler = new GetWordEntry(new FakeVocabularyRepository([Word(1)]));
+
+        var result = await handler.HandleAsync(new GetWordEntryRequest(Guid.Empty), default);
+
+        Assert.IsType<NotFound<WordEntry>>(result);
+    }
+
+    [Fact]
+    public void Get_word_entry_request_requires_a_word_id_argument()
+    {
+        Assert.Throws<ArgumentNullException>(() => new GetWordEntry(null!));
+    }
+
+    [Fact]
     public async Task Failed_commit_never_reads_or_advances_the_next_card()
     {
         var store = new FakeLearningStore([Card(1), Card(2)]) { ApplyFailure = new TransientStorageException("busy", new IOException()) };
@@ -480,6 +519,11 @@ public sealed class LearningUseCaseTests
         public Task<Page<VocabularyWord>> GetWordsAsync(PageRequest page, CancellationToken ct) =>
             Task.FromResult(new Page<VocabularyWord>(all.Skip(page.Offset).Take(page.Limit).ToArray(), all.Length, page.Offset + Math.Min(page.Limit, Math.Max(0, all.Length - page.Offset)) < all.Length, "words:v1"));
         public Task<VocabularyWord?> GetWordAsync(Guid wordId, CancellationToken ct) => Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId));
+        public Task<WordEntry?> GetWordEntryAsync(Guid wordId, CancellationToken ct) =>
+            Task.FromResult(all.SingleOrDefault(x => x.WordId == wordId) is { } word
+                ? new WordEntry(word.WordId, word.Lemma, word.Phonetic, word.Chinese, word.PrimaryDefinition, word.PrimaryPartOfSpeech,
+                    null, null, null, word.FrequencyRank, null, null, null)
+                : null);
         public Task<ExhaustionProbe> ProbeWordsEndAsync(int offset, string snapshotId, CancellationToken ct) => Task.FromResult(new ExhaustionProbe(offset >= all.Length, "words:v1"));
         public Task<Page<VocabularySense>> GetSensesAsync(Guid wordId, PageRequest page, CancellationToken ct) =>
             Task.FromResult(new Page<VocabularySense>(allSenses.Where(x => x.WordId == wordId).Skip(page.Offset).Take(page.Limit).ToArray(), allSenses.Count(x => x.WordId == wordId), false, "senses:v1"));
