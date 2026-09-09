@@ -45,6 +45,7 @@ public partial class FloatingCardWindow : Window
     private bool alwaysOnTopEnabled = true;
     private bool closing;
     private bool updatingScaleControl;
+    private bool scaleInitialized;
     private string? appliedThemePath;
 
     public FloatingCardWindow() => InitializeComponent();
@@ -55,6 +56,8 @@ public partial class FloatingCardWindow : Window
         this.placementService = placementService ?? throw new ArgumentNullException(nameof(placementService));
         this.themeSettings = themeSettings;
         this.appSettings = appSettings;
+        updatingScaleControl = true;
+        scaleInitialized = false;
         InitializeComponent();
         DataContext = viewModel;
         if (themeSettings is not null)
@@ -305,7 +308,7 @@ public partial class FloatingCardWindow : Window
 
     private void CardScale_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
     {
-        if (updatingScaleControl) return;
+        if (updatingScaleControl || !scaleInitialized) return;
         ApplyCardScale(args.NewValue);
         if (appSettings is not null)
         {
@@ -344,6 +347,7 @@ public partial class FloatingCardWindow : Window
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { }
         ApplyCardScale(scale);
+        scaleInitialized = true;
     }
 
     private void ApplyTheme(ImageTheme theme)
