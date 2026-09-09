@@ -119,9 +119,21 @@
             </Grid>
 
             <StackPanel Grid.Row="2">
+                <Button x:Name="AddToNotebookButton" Style="{StaticResource Button.Base}" Margin="20,0,20,8"
+                        Command="{Binding AddToNotebookCommand}" TabIndex="10"
+                        AutomationProperties.Name="加入生词本"
+                        AutomationProperties.HelpText="{Binding AddToNotebookAvailabilityHelp}">
+                    <StackPanel><TextBlock Text="加入生词本" HorizontalAlignment="Center" /><TextBlock Text="{Binding AddToNotebookAvailabilityHelp}" HorizontalAlignment="Center" FontSize="10" Foreground="{StaticResource Brush.InkMuted}" /></StackPanel>
+                </Button>
                 <Border Margin="20,0,20,10" Padding="8" Background="{StaticResource Brush.SurfaceRaised}" CornerRadius="{StaticResource Radius.Control}">
                     <Slider x:Name="CardScaleSlider" Minimum="0.5" Maximum="1.0" TickFrequency="0.05" IsSnapToTickEnabled="False"
                             IsMoveToPointEnabled="True" ValueChanged="CardScale_Changed" TabIndex="8" AutomationProperties.Name="卡片内容缩放" />
+                </Border>
+                <Border Margin="20,0,20,8" Padding="10,6" Background="{StaticResource Brush.AccentSurface}"
+                        CornerRadius="{StaticResource Radius.Control}"
+                        Visibility="{Binding HasStatusMessageVisibility}">
+                    <TextBlock x:Name="StatusMessage" Text="{Binding StatusMessage}" Foreground="{StaticResource Brush.AccentStrong}"
+                               FontSize="12" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
                 </Border>
                 <Border Margin="20,0,20,12" Padding="10,8" Background="{StaticResource Brush.ErrorSurface}"
                         CornerRadius="{StaticResource Radius.Control}"

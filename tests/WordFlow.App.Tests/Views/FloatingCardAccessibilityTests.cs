@@ -34,7 +34,7 @@ public sealed class FloatingCardAccessibilityTests
             .Select(button => int.Parse((string?)button.Attribute("TabIndex") ?? throw new Xunit.Sdk.XunitException("Every card button requires an explicit TabIndex.")))
             .OrderBy(index => index)
             .ToArray();
-        Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7], tabOrder);
+        Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7, 10], tabOrder);
 
         var cardSlider = card.Descendants(presentation + "Slider").Single(element => (string?)element.Attribute(x + "Name") == "CardScaleSlider");
         Assert.Equal("0.5", (string?)cardSlider.Attribute("Minimum"));

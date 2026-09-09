@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WordFlow.App.Bootstrap;
 using WordFlow.App.ViewModels;
 using WordFlow.App.Views;
+using WordFlow.Application;
 using WordFlow.Application.Learning;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Relations;
@@ -29,6 +30,7 @@ public partial class App : System.Windows.Application
     private PronunciationSettingsViewModel? pronunciationSettings;
     private ThemeSettingsViewModel? themeSettings;
     private DailyPlanSettingsViewModel? dailyPlanSettings;
+    private GetWordEntry? getWordEntry;
     private ControlCenterWindow? controlCenter;
     private ControlCenterViewModel? controlCenterViewModel;
     private bool exiting;
@@ -153,7 +155,8 @@ public partial class App : System.Windows.Application
             ?? throw new InvalidOperationException("Pronunciation settings were not prepared.");
         dailyPlanSettings = services.GetRequiredService<DailyPlanSettingsViewModel>();
         await dailyPlanSettings.RestoreAsync(cancellationToken);
-        var getWordEntry = services.GetRequiredService<GetWordEntry>();
+        getWordEntry = services.GetRequiredService<GetWordEntry>();
+        var addToNotebook = services.GetRequiredService<AddToNotebook>();
         cardActionHost = new FloatingCardActionHost(
             offlineSpeech: pronunciation,
             details: new DelegateFloatingCardActionPort((wordId, word) =>
@@ -168,6 +171,30 @@ public partial class App : System.Windows.Application
                     window.Show();
                 });
                 return FloatingCardActionResult.Completed($"已打开 {word} 的完整词条");
+            }),
+            addToLearning: new DelegateFloatingCardActionPort((wordId, word) =>
+            {
+                try
+                {
+                    var result = addToNotebook.HandleAsync(new AddToNotebookRequest(wordId, DateTimeOffset.Now), cancellationToken)
+                        .GetAwaiter().GetResult();
+                    return result switch
+                    {
+                        Success<AddToNotebookResult> success when success.Value.AlreadyPresent =>
+                            FloatingCardActionResult.Completed($"{word} 已在生词本中"),
+                        Success<AddToNotebookResult> success when success.Value.Added =>
+                            FloatingCardActionResult.Completed($"已将 {word} 加入生词本"),
+                        Success<AddToNotebookResult> =>
+                            FloatingCardActionResult.Failed($"加入生词本失败：{word}"),
+                        NotFound<AddToNotebookResult> missing => FloatingCardActionResult.Failed(missing.Message),
+                        StorageFailure<AddToNotebookResult> failure => FloatingCardActionResult.Failed($"加入生词本失败：{failure.Message}"),
+                        _ => FloatingCardActionResult.Failed("加入生词本失败"),
+                    };
+                }
+                catch (OperationCanceledException)
+                {
+                    return FloatingCardActionResult.Failed("加入生词本已取消");
+                }
             }));
         var viewModel = FloatingCardComposition.Create(
             services.GetRequiredService<GetNextCard>(),
@@ -218,9 +245,24 @@ public partial class App : System.Windows.Application
             services.GetRequiredService<IDailyQueueStore>(),
             services.GetRequiredService<TimeProvider>(),
             alwaysOnTopEnabled,
-            services.GetRequiredService<LearningDataChangeNotifier>());
+            services.GetRequiredService<LearningDataChangeNotifier>(),
+            services.GetRequiredService<GetNotebookEntries>(),
+            services.GetRequiredService<RemoveFromNotebook>());
         await controlCenterViewModel.LoadAsync(cancellationToken);
-        controlCenter = new ControlCenterWindow(controlCenterViewModel);
+        controlCenter = new ControlCenterWindow(controlCenterViewModel, (wordId, word) =>
+        {
+            if (getWordEntry is null) return;
+            var entryService = getWordEntry;
+            Dispatcher.InvokeAsync(() =>
+            {
+                var entryViewModel = new WordEntryViewModel(entryService, wordId, word);
+                var window = new WordEntryWindow(entryViewModel)
+                {
+                    Owner = controlCenter is { IsVisible: true } ? controlCenter : null,
+                };
+                window.Show();
+            });
+        });
         controlCenter.AlwaysOnTopChanged += (_, _) =>
         {
             bool enabled = controlCenterViewModel.AlwaysOnTopEnabled;
@@ -275,12 +317,24 @@ public partial class App : System.Windows.Application
     private void ShowLocalInformation(string title, string message) =>
         MessageBox.Show(card, message, title, MessageBoxButton.OK, MessageBoxImage.Information);
 
-    private void OpenControlCenter()
+private void OpenControlCenter()
     {
         if (controlCenter is null)
         {
-            if (controlCenterViewModel is null) return;
-            controlCenter = new ControlCenterWindow(controlCenterViewModel);
+            if (controlCenterViewModel is null || getWordEntry is null) return;
+            var entryService = getWordEntry;
+            controlCenter = new ControlCenterWindow(controlCenterViewModel, (wordId, word) =>
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    var entryViewModel = new WordEntryViewModel(entryService, wordId, word);
+                    var window = new WordEntryWindow(entryViewModel)
+                    {
+                        Owner = controlCenter is { IsVisible: true } ? controlCenter : null,
+                    };
+                    window.Show();
+                });
+            });
         }
         if (!controlCenter.IsVisible) controlCenter.Show();
         if (controlCenter.WindowState == WindowState.Minimized) controlCenter.WindowState = WindowState.Normal;

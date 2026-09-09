@@ -79,6 +79,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         ToggleConfusablesCommand = Command(() => ToggleDrawerAsync(Confusables), () => !IsPaused && HasCard && !IsBusy);
         SpeakCurrentWordCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.Speak), () => !IsPaused && HasCard && !IsBusy && CanSpeakCurrentWord);
         OpenCurrentDetailsCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.OpenDetails), () => !IsPaused && HasCard && !IsBusy && CanOpenCurrentDetails);
+        AddToNotebookCommand = new ActionCommand(() => PublishCurrent(RelationActionKind.AddToLearning), () => !IsPaused && HasCard && !IsBusy && CanAddToNotebook);
     }
 
     public IReadOnlyList<string> ReadingOrder => StableReadingOrder;
@@ -92,8 +93,10 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public bool IsPaused => isPaused;
     public bool CanSpeakCurrentWord => actionHost.Capability(RelationActionKind.Speak).IsAvailable;
     public bool CanOpenCurrentDetails => actionHost.Capability(RelationActionKind.OpenDetails).IsAvailable;
+    public bool CanAddToNotebook => actionHost.Capability(RelationActionKind.AddToLearning).IsAvailable;
     public string SpeakAvailabilityHelp => $"{actionHost.Capability(RelationActionKind.Speak).HelpText} · 快捷键 {PronunciationGesture}";
     public string DetailsAvailabilityHelp => actionHost.Capability(RelationActionKind.OpenDetails).HelpText;
+    public string AddToNotebookAvailabilityHelp => actionHost.Capability(RelationActionKind.AddToLearning).HelpText;
     public bool IsBusy
     {
         get => isBusy;
@@ -138,6 +141,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ToggleConfusablesCommand { get; }
     public ICommand SpeakCurrentWordCommand { get; }
     public ICommand OpenCurrentDetailsCommand { get; }
+    public ICommand AddToNotebookCommand { get; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public event EventHandler<RelationActionRequestedEventArgs>? ActionRequested;
@@ -294,6 +298,8 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
             pronunciation.PlaybackFeedback -= OnPronunciationFeedback;
             pronunciation.Stop();
         }
+        transientStatusCancellation?.Cancel();
+        transientStatusCancellation?.Dispose();
         Synonyms.Dispose();
         Confusables.Dispose();
         shortcutLabels.Dispose();
@@ -422,7 +428,7 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
     {
         foreach (var command in new[] { AgainCommand, HardCommand, GoodCommand, SlashCommand, UndoCommand, ToggleSynonymsCommand, ToggleConfusablesCommand })
             if (command is AsyncActionCommand asyncCommand) asyncCommand.RaiseCanExecuteChanged();
-        foreach (var command in new[] { SpeakCurrentWordCommand, OpenCurrentDetailsCommand })
+        foreach (var command in new[] { SpeakCurrentWordCommand, OpenCurrentDetailsCommand, AddToNotebookCommand })
             if (command is ActionCommand actionCommand) actionCommand.RaiseCanExecuteChanged();
     }
 
@@ -431,6 +437,40 @@ public sealed class FloatingCardViewModel : INotifyPropertyChanged, IDisposable
         if (disposed) return;
         AccessibleStatus = message;
         if (isError) ErrorMessage = message;
+        else ShowTransientStatus(message);
+    }
+
+    private CancellationTokenSource? transientStatusCancellation;
+
+    public string? StatusMessage { get; private set; }
+    public bool HasStatusMessage => !string.IsNullOrWhiteSpace(StatusMessage);
+    public string HasStatusMessageVisibility => HasStatusMessage ? "Visible" : "Collapsed";
+
+    private void ShowTransientStatus(string message)
+    {
+        transientStatusCancellation?.Cancel();
+        transientStatusCancellation?.Dispose();
+        StatusMessage = message;
+        OnPropertyChanged(nameof(StatusMessage));
+        OnPropertyChanged(nameof(HasStatusMessage));
+        OnPropertyChanged(nameof(HasStatusMessageVisibility));
+        var cancellation = new CancellationTokenSource();
+        transientStatusCancellation = cancellation;
+        _ = ClearTransientStatusAsync(cancellation.Token);
+    }
+
+    private async Task ClearTransientStatusAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(3), token).ConfigureAwait(true);
+            if (token.IsCancellationRequested || disposed) return;
+            StatusMessage = null;
+            OnPropertyChanged(nameof(StatusMessage));
+            OnPropertyChanged(nameof(HasStatusMessage));
+            OnPropertyChanged(nameof(HasStatusMessageVisibility));
+        }
+        catch (OperationCanceledException) { }
     }
 
     public void RequestCurrentDetailsFromSurface()

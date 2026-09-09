@@ -21,7 +21,7 @@ public sealed class SqliteDailyQueueStoreTests : IDisposable
         var factory = await CreateMigratedFactoryAsync(Database("schema.db"));
         await using var connection = await factory.OpenUserAsync(default);
 
-        Assert.Equal(3L, await ScalarAsync(connection, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(4L, await ScalarAsync(connection, "SELECT MAX(version) FROM schema_version"));
         var tables = await StringsAsync(connection,
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('daily_sessions','daily_queue_items')");
         Assert.Equal(new[] { "daily_queue_items", "daily_sessions" }, tables.Order());

@@ -640,7 +640,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         }
         var runner = new MigrationRunner(factory, new[]
         {
-            new SqliteMigration(4, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
+            new SqliteMigration(5, "broken", "CREATE TABLE should_rollback(id INTEGER); INSERT INTO missing_table VALUES (1);")
         });
 
         await Assert.ThrowsAsync<SqliteException>(() => runner.MigrateAsync(default));
@@ -649,9 +649,9 @@ public sealed class SqliteLearningStoreTests : IDisposable
         Assert.Equal("dark", await TextAsync(verify, "SELECT value FROM app_setting WHERE key='theme'"));
         Assert.Equal(0L, await ScalarAsync(verify,
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='should_rollback'"));
-        Assert.Equal(3L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
-        Assert.Equal(3L, await ScalarAsync(verify, "SELECT COUNT(*) FROM schema_version"));
-        Assert.Single(Directory.GetFiles(directory, "user.db.v3.*.backup"));
+        Assert.Equal(4L, await ScalarAsync(verify, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(4L, await ScalarAsync(verify, "SELECT COUNT(*) FROM schema_version"));
+        Assert.Single(Directory.GetFiles(directory, "user.db.v4.*.backup"));
     }
 
     [Fact]
@@ -667,7 +667,7 @@ public sealed class SqliteLearningStoreTests : IDisposable
         await new MigrationRunner(factory).MigrateAsync(default);
 
         await using var after = await factory.OpenUserAsync(default);
-        Assert.Equal(3L, await ScalarAsync(after, "SELECT MAX(version) FROM schema_version"));
+        Assert.Equal(4L, await ScalarAsync(after, "SELECT MAX(version) FROM schema_version"));
         Assert.Equal(6L, await ScalarAsync(after, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('fsrs_parameter_snapshot_insert_identity','fsrs_parameter_snapshot_update_guard','fsrs_parameter_snapshot_delete_guard','review_event_insert_identity','slash_event_insert_identity','fsrs_parameter_activation_insert_identity')"));
         Assert.Single(Directory.GetFiles(directory, "upgrade.db.v1.*.backup"));
     }

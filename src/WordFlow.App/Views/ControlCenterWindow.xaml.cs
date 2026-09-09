@@ -8,6 +8,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using Microsoft.Win32;
 using WordFlow.App.ViewModels;
+using WordFlow.Application.Learning;
 using WordFlow.Application.Shortcuts;
 
 namespace WordFlow.App.Views;
@@ -16,12 +17,14 @@ public partial class ControlCenterWindow : Window
 {
     private const int WmNcHitTest = 0x0084;
     private readonly ControlCenterViewModel viewModel;
+    private readonly Action<Guid, string>? openWordEntry;
     private HwndSource? windowSource;
     public bool PermitClose { get; set; }
 
-    public ControlCenterWindow(ControlCenterViewModel viewModel)
+    public ControlCenterWindow(ControlCenterViewModel viewModel, Action<Guid, string>? openWordEntry = null)
     {
         this.viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
+        this.openWordEntry = openWordEntry;
         InitializeComponent();
         DataContext = viewModel;
         viewModel.Theme.Feedback += ThemeFeedback;
@@ -57,6 +60,7 @@ public partial class ControlCenterWindow : Window
         SlashedPage.Visibility = page == "Slashed" ? Visibility.Visible : Visibility.Collapsed;
         StatisticsPage.Visibility = page == "Statistics" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = page == "Settings" ? Visibility.Visible : Visibility.Collapsed;
+        NotebookPage.Visibility = page == "Notebook" ? Visibility.Visible : Visibility.Collapsed;
 
         (PageTitle.Text, PageSubtitle.Text) = page switch
         {
@@ -65,11 +69,13 @@ public partial class ControlCenterWindow : Window
             "Slashed" => ("已斩词汇", "每页 100 条，保留历史并支持取消斩"),
             "Statistics" => ("学习统计", "从不可变学习事件读取真实进展"),
             "Settings" => ("设置", "学习、快捷键、悬浮卡、发音、数据与 FSRS"),
+            "Notebook" => ("生词本", "收藏并管理你在学习中标记的单词"),
             _ => ("今日学习", "今天学多少、复习多少、进展如何"),
         };
         try
         {
             if (page == "Slashed") await viewModel.LoadSlashedPageAsync();
+            else if (page == "Notebook") await viewModel.LoadNotebookAsync();
             else if (page is "Dashboard" or "Statistics") await viewModel.RefreshProgressAsync();
         }
         catch (Exception ex) { ShowPageError(ex); }
@@ -198,6 +204,35 @@ public partial class ControlCenterWindow : Window
     {
         try { await viewModel.RestoreSelectedSlashedAsync(); }
         catch (Exception ex) { ShowPageError(ex); }
+    }
+
+    private async void RemoveNotebook_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: Guid wordId }) return;
+        try { await viewModel.RemoveNotebookEntryAsync(wordId); }
+        catch (Exception ex) { ShowPageError(ex); }
+    }
+
+    private async void RefreshNotebook_Click(object sender, RoutedEventArgs e)
+    {
+        try { await viewModel.LoadNotebookAsync(); }
+        catch (Exception ex) { ShowPageError(ex); }
+    }
+
+    private void NotebookCard_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: NotebookItem item }) return;
+        if (IsInsideRemoveButton(e.OriginalSource)) return;
+        openWordEntry?.Invoke(item.WordId, item.Lemma);
+    }
+
+    private static bool IsInsideRemoveButton(object originalSource)
+    {
+        for (DependencyObject? current = originalSource as DependencyObject; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is Button) return true;
+        }
+        return false;
     }
 
     private async void SavePronunciation_Click(object sender, RoutedEventArgs e)

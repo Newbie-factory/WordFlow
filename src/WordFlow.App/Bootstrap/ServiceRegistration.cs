@@ -39,6 +39,10 @@ public static class ServiceRegistration
             SynchronizationContext.Current));
         services.AddSingleton<IVocabularyRepository, SqliteVocabularyRepository>();
         services.AddSingleton<IRelationRepository, SqliteRelationRepository>();
+        services.AddSingleton<INotebookRepository, SqliteNotebookRepository>();
+        services.AddSingleton<AddToNotebook>();
+        services.AddSingleton<RemoveFromNotebook>();
+        services.AddSingleton<GetNotebookEntries>();
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IFsrsScheduler, Fsrs6Scheduler>();
         services.AddSingleton<QueuePolicy>();

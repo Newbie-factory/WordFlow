@@ -21,6 +21,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private readonly GetConfusables? getConfusables;
     private readonly ILearningStore? learningStore;
     private readonly RestoreSlashedWords? restoreSlashedWords;
+    private readonly GetNotebookEntries? getNotebookEntries;
+    private readonly RemoveFromNotebook? removeFromNotebook;
     private readonly LearningDataChangeNotifier? dataChanges;
     private IReadOnlyList<VocabularyWord>? vocabularyCache;
     private int reviewedToday;
@@ -31,6 +33,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     private string libraryStatus = "输入单词后搜索本地 IELTS 词库";
     private string confusableStatus = "输入单词后查看本地易混关系";
     private string slashedStatus = "尚未加载已斩词汇";
+    private string notebookStatus = "尚未加载生词本";
     private int slashedPage = 1;
     private int slashedPageSize = 100;
     private int slashedCount;
@@ -54,7 +57,9 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         IDailyQueueStore? dailyQueueStore = null,
         TimeProvider? clock = null,
         bool alwaysOnTopEnabled = true,
-        LearningDataChangeNotifier? dataChanges = null)
+        LearningDataChangeNotifier? dataChanges = null,
+        GetNotebookEntries? getNotebookEntries = null,
+        RemoveFromNotebook? removeFromNotebook = null)
     {
         DailyPlan = dailyPlan ?? throw new ArgumentNullException(nameof(dailyPlan));
         Shortcuts = shortcuts ?? throw new ArgumentNullException(nameof(shortcuts));
@@ -69,6 +74,8 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         this.restoreSlashedWords = restoreSlashedWords;
         this.alwaysOnTopEnabled = alwaysOnTopEnabled;
         this.dataChanges = dataChanges;
+        this.getNotebookEntries = getNotebookEntries;
+        this.removeFromNotebook = removeFromNotebook;
         LearningHistory = dailyQueueStore is null ? null : new LearningHistoryViewModel(dailyQueueStore, this.clock, context);
         if (dataChanges is not null) dataChanges.CommittedDataChanged += OnCommittedDataChanged;
     }
@@ -81,6 +88,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<VocabularyWord> VocabularyResults { get; } = [];
     public ObservableCollection<ConfusableItem> ConfusableResults { get; } = [];
     public ObservableCollection<SlashedWordRow> SlashedWords { get; } = [];
+    public ObservableCollection<NotebookItem> NotebookItems { get; } = [];
     public ObservableCollection<DailyTrendPoint> SevenDayTrend { get; } = [];
 
     public int ReviewedToday { get => reviewedToday; private set => Set(ref reviewedToday, value); }
@@ -98,6 +106,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
     public string LibraryStatus { get => libraryStatus; private set => Set(ref libraryStatus, value); }
     public string ConfusableStatus { get => confusableStatus; private set => Set(ref confusableStatus, value); }
     public string SlashedStatus { get => slashedStatus; private set => Set(ref slashedStatus, value); }
+    public string NotebookStatus { get => notebookStatus; private set => Set(ref notebookStatus, value); }
     public int SlashedPage { get => slashedPage; private set => Set(ref slashedPage, value); }
     public int SlashedPageSize { get => slashedPageSize; set { if (Set(ref slashedPageSize, value)) { SlashedPage = 1; Raise(nameof(SlashedRange)); } } }
     public int SlashedCount { get => slashedCount; private set { if (Set(ref slashedCount, value)) { Raise(nameof(SlashedRange)); Raise(nameof(SlashedPageCount)); } } }
@@ -111,6 +120,7 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
         await DailyPlan.RestoreAsync(ct).ConfigureAwait(false);
         await Pronunciation.RestoreAsync(ct).ConfigureAwait(false);
         await RefreshProgressAsync(ct).ConfigureAwait(false);
+        await LoadNotebookAsync(ct).ConfigureAwait(false);
         if (!dailyPlanSubscribed)
         {
             DailyPlan.PropertyChanged += OnDailyPlanChanged;
@@ -234,6 +244,42 @@ public sealed class ControlCenterViewModel : INotifyPropertyChanged, IDisposable
             await LoadSlashedPageAsync(ct).ConfigureAwait(false);
             await RefreshProgressAsync(ct).ConfigureAwait(false);
         }
+    }
+
+    public async Task LoadNotebookAsync(CancellationToken ct = default)
+    {
+        if (getNotebookEntries is null) { NotebookStatus = "生词本服务尚未连接"; return; }
+        var result = await getNotebookEntries.HandleAsync(ct).ConfigureAwait(false);
+        Publish(() =>
+        {
+            NotebookItems.Clear();
+            if (result is Success<IReadOnlyList<NotebookItem>> success)
+            {
+                foreach (var item in success.Value) NotebookItems.Add(item);
+                NotebookStatus = success.Value.Count == 0 ? "生词本还是空的" : $"共 {success.Value.Count} 个生词";
+            }
+            else NotebookStatus = result switch
+            {
+                StorageFailure<IReadOnlyList<NotebookItem>> failure => failure.Message,
+                _ => "无法读取生词本",
+            };
+        });
+    }
+
+    public async Task RemoveNotebookEntryAsync(Guid wordId, CancellationToken ct = default)
+    {
+        if (removeFromNotebook is null) { NotebookStatus = "生词本服务尚未连接"; return; }
+        var result = await removeFromNotebook.HandleAsync(new RemoveFromNotebookRequest(wordId), ct).ConfigureAwait(false);
+        if (result is Success<bool>)
+        {
+            await LoadNotebookAsync(ct).ConfigureAwait(false);
+            NotebookStatus = "已从生词本移除";
+        }
+        else NotebookStatus = result switch
+        {
+            StorageFailure<bool> failure => $"移除失败：{failure.Message}",
+            _ => "移除失败，请重试",
+        };
     }
 
     public void Dispose()
