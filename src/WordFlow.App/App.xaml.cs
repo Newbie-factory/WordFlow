@@ -198,10 +198,12 @@ public partial class App : System.Windows.Application
             shortcutService,
             new WindowPlacementService(Path.Combine(paths.DataDirectory, "floating-card-placement.json")),
             shortcutFaults,
-            themeSettings)
+            themeSettings,
+            appSettings)
         {
             AlwaysOnTopEnabled = alwaysOnTopEnabled,
         };
+        await card.RestoreCardScaleAsync(cancellationToken);
         controlCenterViewModel = new ControlCenterViewModel(
             dailyPlanSettings,
             new ShortcutSettingsViewModel(shortcutService),

@@ -36,11 +36,12 @@ public sealed class FloatingCardAccessibilityTests
             .ToArray();
         Assert.Equal([0, 1, 2, 3, 4, 5, 6, 7], tabOrder);
 
-        var cardSlider = card.Descendants(presentation + "Slider").Single(element => (string?)element.Attribute(x + "Name") == "ThemeOpacitySlider");
-        Assert.Equal("0", (string?)cardSlider.Attribute("Minimum"));
-        Assert.Equal("1", (string?)cardSlider.Attribute("Maximum"));
+        var cardSlider = card.Descendants(presentation + "Slider").Single(element => (string?)element.Attribute(x + "Name") == "CardScaleSlider");
+        Assert.Equal("0.5", (string?)cardSlider.Attribute("Minimum"));
+        Assert.Equal("1.0", (string?)cardSlider.Attribute("Maximum"));
         Assert.Equal("True", (string?)cardSlider.Attribute("IsMoveToPointEnabled"));
         Assert.Equal("8", (string?)cardSlider.Attribute("TabIndex"));
+        Assert.Equal("卡片内容缩放", (string?)cardSlider.Attribute("AutomationProperties.Name"));
 
         var controlCenter = XDocument.Load(Path.Combine(project, "Views", "ControlCenterWindow.xaml"));
         var themeSlider = controlCenter.Descendants(presentation + "Slider")

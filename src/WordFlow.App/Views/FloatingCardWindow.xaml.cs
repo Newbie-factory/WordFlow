@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -13,6 +14,7 @@ using WordFlow.App.Bootstrap;
 using WordFlow.App.ViewModels;
 using WordFlow.Application.Ports;
 using WordFlow.Application.Shortcuts;
+using WordFlow.Infrastructure.Data;
 using WordFlow.Infrastructure.Windows;
 using WordFlow.App.Views.Controls;
 using WordFlow.App.Styling;
@@ -23,12 +25,14 @@ public partial class FloatingCardWindow : Window
 {
     private const int DpiChangedMessage = 0x02E0;
     private const int UiSmokeLifecycleMessage = 0x806F;
+    private const string CardScaleSetting = "floating_card.scale";
     private readonly FloatingCardViewModel? viewModel;
     private readonly IShortcutService? shortcutService;
     private readonly FocusedShortcutBindingBridge? focusedShortcuts;
     private readonly IDisposable? shortcutFaultConnection;
     private readonly WindowPlacementService? placementService;
     private readonly ThemeSettingsViewModel? themeSettings;
+    private readonly SqliteAppSettingStore? appSettings;
     private readonly ThemeImageCache themeImageCache = new();
     private readonly DispatcherTimer? placementSaveTimer;
     private readonly IdleWakeController? idleWakeController;
@@ -40,16 +44,17 @@ public partial class FloatingCardWindow : Window
     private bool applyingPlacement;
     private bool alwaysOnTopEnabled = true;
     private bool closing;
-    private bool updatingThemeControls;
+    private bool updatingScaleControl;
     private string? appliedThemePath;
 
     public FloatingCardWindow() => InitializeComponent();
 
-    public FloatingCardWindow(FloatingCardViewModel viewModel, WindowPlacementService placementService, ThemeSettingsViewModel? themeSettings = null)
+    public FloatingCardWindow(FloatingCardViewModel viewModel, WindowPlacementService placementService, ThemeSettingsViewModel? themeSettings = null, SqliteAppSettingStore? appSettings = null)
     {
         this.viewModel = viewModel ?? throw new ArgumentNullException(nameof(viewModel));
         this.placementService = placementService ?? throw new ArgumentNullException(nameof(placementService));
         this.themeSettings = themeSettings;
+        this.appSettings = appSettings;
         InitializeComponent();
         DataContext = viewModel;
         if (themeSettings is not null)
@@ -88,7 +93,7 @@ public partial class FloatingCardWindow : Window
     }
 
     public FloatingCardWindow(FloatingCardViewModel viewModel, IShortcutService shortcutService,
-        WindowPlacementService placementService, ShortcutCallbackFaultHub? faultHub = null, ThemeSettingsViewModel? themeSettings = null) : this(viewModel, placementService, themeSettings)
+        WindowPlacementService placementService, ShortcutCallbackFaultHub? faultHub = null, ThemeSettingsViewModel? themeSettings = null, SqliteAppSettingStore? appSettings = null) : this(viewModel, placementService, themeSettings, appSettings)
     {
         this.shortcutService = shortcutService ?? throw new ArgumentNullException(nameof(shortcutService));
         focusedShortcuts = new(shortcutService);
@@ -298,9 +303,47 @@ public partial class FloatingCardWindow : Window
     private void OnThemeChanged(object? sender, EventArgs args) => ApplyTheme(themeSettings?.Current ?? ImageTheme.Default);
     private void OnThemeFeedback(string message) { }
 
-    private void ThemeOpacity_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
+    private void CardScale_Changed(object sender, RoutedPropertyChangedEventArgs<double> args)
     {
-        if (!updatingThemeControls && themeSettings is not null) themeSettings.Opacity = args.NewValue;
+        if (updatingScaleControl) return;
+        ApplyCardScale(args.NewValue);
+        if (appSettings is not null)
+        {
+            var store = appSettings;
+            double value = args.NewValue;
+            Track(store.SetManyAsync(new Dictionary<string, string>
+            {
+                [CardScaleSetting] = value.ToString(CultureInfo.InvariantCulture),
+            }, lifetime.Token));
+        }
+    }
+
+    private void ApplyCardScale(double scale)
+    {
+        double clamped = double.IsFinite(scale) ? Math.Clamp(scale, 0.5d, 1.0d) : 1.0d;
+        updatingScaleControl = true;
+        CardScaleSlider.Value = clamped;
+        updatingScaleControl = false;
+        CardSurfaceScale.ScaleX = clamped;
+        CardSurfaceScale.ScaleY = clamped;
+        Width = 480d * clamped;
+    }
+
+    public async Task RestoreCardScaleAsync(CancellationToken ct = default)
+    {
+        if (appSettings is null) return;
+        double scale = 1.0d;
+        try
+        {
+            var values = await appSettings.GetManyAsync([CardScaleSetting], ct).ConfigureAwait(true);
+            if (values.TryGetValue(CardScaleSetting, out var raw)
+                && raw is not null
+                && double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                scale = parsed;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch { }
+        ApplyCardScale(scale);
     }
 
     private void ApplyTheme(ImageTheme theme)
@@ -315,9 +358,6 @@ public partial class FloatingCardWindow : Window
             appliedThemePath = nextPath;
         }
 
-        updatingThemeControls = true;
-        ThemeOpacitySlider.Value = theme.Opacity;
-        updatingThemeControls = false;
         var visual = ThemeVisualMapper.Map(theme.Opacity);
         ThemeImageLayer.Opacity = theme.IsDefault ? 0 : visual.ImageOpacity;
         ThemeImageLayer.Visibility = theme.IsDefault ? Visibility.Collapsed : Visibility.Visible;
