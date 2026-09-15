@@ -178,11 +178,18 @@ public partial class App : System.Windows.Application
                 {
                     var result = addToNotebook.HandleAsync(new AddToNotebookRequest(wordId, DateTimeOffset.Now), cancellationToken)
                         .GetAwaiter().GetResult();
+                    if (result is Success<AddToNotebookResult> success && (success.Value.Added || success.Value.AlreadyPresent))
+                    {
+                        if (controlCenter is { IsVisible: true } && controlCenterViewModel is not null)
+                        {
+                            _ = RefreshNotebookAfterAddAsync(controlCenterViewModel, cancellationToken);
+                        }
+                    }
                     return result switch
                     {
-                        Success<AddToNotebookResult> success when success.Value.AlreadyPresent =>
+                        Success<AddToNotebookResult> success2 when success2.Value.AlreadyPresent =>
                             FloatingCardActionResult.Completed($"{word} 已在生词本中"),
-                        Success<AddToNotebookResult> success when success.Value.Added =>
+                        Success<AddToNotebookResult> success2 when success2.Value.Added =>
                             FloatingCardActionResult.Completed($"已将 {word} 加入生词本"),
                         Success<AddToNotebookResult> =>
                             FloatingCardActionResult.Failed($"加入生词本失败：{word}"),
@@ -351,6 +358,16 @@ private void OpenControlCenter()
     {
         OpenControlCenter();
         controlCenter?.OpenDashboard();
+    }
+
+    private static async Task RefreshNotebookAfterAddAsync(ControlCenterViewModel viewModel, CancellationToken ct)
+    {
+        try { await viewModel.LoadNotebookAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            System.Diagnostics.Debug.WriteLine($"notebook refresh after add failed: {exception.Message}");
+        }
     }
 
     private async void ExitFromTray() => await ExitAsync(0);
