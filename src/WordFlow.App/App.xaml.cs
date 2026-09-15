@@ -274,6 +274,11 @@ public partial class App : System.Windows.Application
         {
             WriteLifecycle($"card-action-requested action={request.Action} word={request.Word}");
         };
+        card.OpenNotebookRequested += () =>
+        {
+            OpenControlCenter();
+            controlCenter?.OpenNotebook();
+        };
         card.Closing += (_, args) =>
         {
             if (exiting) return;

@@ -39,6 +39,11 @@ public partial class ControlCenterWindow : Window
         SelectPage("Dashboard");
     }
 
+    public void OpenNotebook()
+    {
+        SelectPage("Notebook");
+    }
+
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
