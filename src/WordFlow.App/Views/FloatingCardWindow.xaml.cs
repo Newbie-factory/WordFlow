@@ -108,6 +108,7 @@ public partial class FloatingCardWindow : Window
 
     public event EventHandler<RelationActionRequestedEventArgs>? RelationActionRequested;
     public event Action? OpenNotebookRequested;
+    public event Action? CloseCardRequested;
     public int? WorkAreaHeightLimitPx { get; set; }
     public bool EnableUiSmokeControlMessages { get; set; }
     public bool AlwaysOnTopEnabled
@@ -256,6 +257,7 @@ public partial class FloatingCardWindow : Window
         if (args.ChangedButton == MouseButton.Left && args.ButtonState == MouseButtonState.Pressed) DragMove();
     }
     private void OpenNotebook_Click(object sender, RoutedEventArgs args) => OpenNotebookRequested?.Invoke();
+    private void CloseCard_Click(object sender, RoutedEventArgs args) => CloseCardRequested?.Invoke();
     private void CardSurface_MouseUp(object sender, MouseButtonEventArgs args)
     {
         if (args.ChangedButton != MouseButton.Left || args.OriginalSource is not DependencyObject sourceElement) return;

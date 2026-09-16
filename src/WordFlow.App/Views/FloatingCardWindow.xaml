@@ -41,6 +41,13 @@
                                    FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource Brush.InkMuted}" />
                         <Rectangle Width="28" Height="3" RadiusX="1.5" RadiusY="1.5" HorizontalAlignment="Center"
                                    VerticalAlignment="Center" Fill="{StaticResource Brush.Border}" />
+                        <Button x:Name="CloseCardButton" Width="24" Height="24" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Background="Transparent" BorderThickness="0" Padding="0" Cursor="Hand" TabIndex="12"
+                                Click="CloseCard_Click" AutomationProperties.Name="关闭悬浮卡"
+                                ToolTip="隐藏悬浮卡（可从托盘重新打开）">
+                            <Path Width="10" Height="10" Stretch="Uniform" Stroke="{StaticResource Brush.InkMuted}" StrokeThickness="1.6"
+                                   Data="M 1,1 L 9,9 M 9,1 L 1,9" />
+                        </Button>
                     </Grid>
                 </Border>
 

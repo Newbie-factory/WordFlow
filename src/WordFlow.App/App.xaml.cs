@@ -286,6 +286,12 @@ public partial class App : System.Windows.Application
             OpenControlCenter();
             controlCenter?.OpenNotebook();
         };
+        card.CloseCardRequested += () =>
+        {
+            card.PrepareForHide();
+            card.Hide();
+            trayController?.SynchronizeCardVisibility(isVisible: false);
+        };
         card.Closing += (_, args) =>
         {
             if (exiting) return;
